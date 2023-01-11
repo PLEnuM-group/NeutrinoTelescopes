@@ -21,26 +21,51 @@ using Optim
 using Base.Iterators
 using Formatting
 
-
 models = Dict(
     "1" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_1_FNL.bson"),
     "2" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_2_FNL.bson"),
     "3" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_3_FNL.bson"),
     "4" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_4_FNL.bson"),
     "5" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_5_FNL.bson"),
-    "FULL" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_FULL_FNL.bson")
+    #"FULL" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_FULL_FNL.bson")
 )
     
+targets_single = [make_pone_module(@SVector[-25., 0., -450.], 1)]
+targets_line = make_detector_line(@SVector[-25., 0.0, 0.0], 20, 50, 1)
+targets_three_l = [
+    make_detector_line(@SVector[-25., 0.0, 0.0], 20, 50, 1)
+    make_detector_line(@SVector[25., 0.0, 0.0], 20, 50, 21)
+    make_detector_line(@SVector[0., sqrt(50^2-25^2), 0.0], 20, 50, 41)]
+targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
+
+detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => targets_three_l, "Hex" => targets_hex)
+medium = make_cascadia_medium_properties(0.99f0)
 
 
-target = make_pone_module(@SVector[0.0, 0.0, 0.0], 1)
-targets = make_detector_line(@SVector[0.0, 0.0, 0.0], 20, 50)
-targets = make_hex_detector(3, 50, 20, 50, truncate=1)
-pmat = reduce(hcat,  [t.position for t in targets])
+pos = SA[8., -5., -450]
+dir_theta = 0.7
+dir_phi = 1.3
+dir = sph_to_cart(dir_theta, dir_phi)
+energy = 3e4
 
-scatter(pmat[1:2, :])
+rng = MersenneTwister(31338)
+particles = [
+        Particle(pos, dir, 0., energy, PEMinus),
+        Particle(pos .+ dir.*5, dir, 15, energy, PEMinus),
+        Particle(pos .+ dir.*10, dir, 25, energy, PEMinus)
+]
 
-@load models["4"] model hparams opt tf_dict
+
+@load models["1"] model hparams opt tf_dict
+
+c_n = c_at_wl(800f0, medium)
+
+
+
+
+
+
+
 samples = sample_event(1E4, 0.1, 0.1, SA[-10., 10., 10.], targets, model, tf_dict, rng=Random.GLOBAL_RNG)
 
 dir_theta = 0.1

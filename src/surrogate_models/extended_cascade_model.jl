@@ -25,7 +25,7 @@ using ...Utils
 using ...PhotonPropagation.Detection
 using ...PhotonPropagation.PhotonPropagationCuda
 
-export sample_cascade_event, single_cascade_likelihood, evaluate_model
+export sample_cascade_event, single_cascade_likelihood, evaluate_model, sample_multi_particle_event
 export create_pmt_table, preproc_labels, read_pmt_hits, calc_flow_input, fit_trafo_pipeline, log_likelihood_with_poisson
 export train_time_expectation_model, train_model!, RQNormFlowHParams, setup_time_expectation_model, setup_dataloaders
 export Normalizer
@@ -513,6 +513,66 @@ function sample_cascade_event(energy, dir_theta, dir_phi, position, time; target
 
     return data
 end
+
+
+function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng=nothing)
+
+    n_pmt = get_pmt_count(eltype(targets))
+    # The input is flattened such that the inner index is the targets, the outer index are the particles
+    # [particle_1_target_1_pmt_1, particle_1_target_1_pmt_2, ..., particle_1_target_2_pmt_1, ..., particle_2_target_1_pmt_1, ...]
+    input = calc_flow_input(particles, targets, tf_vec)
+    output = model.embedding(input)
+
+    flow_params = output[1:end-1, :]
+    log_expec_per_source = output[end, :]
+
+    expec_per_source = exp.(log_expec_per_source)
+
+    n_hits_per_source = pois_rand.(expec_per_source)
+    n_hits_per_source_rs = reshape(n_hits_per_source, length(targets) * n_pmt, length(particles))
+    mask = n_hits_per_source .> 0
+
+    non_zero_hits = n_hits_per_source[mask]
+
+    
+    times = sample_flow(flow_params[:, mask], model.range_min, model.range_max, non_zero_hits, rng=rng)
+    
+
+    data = Vector{Vector{Float64}}(undef, n_pmt * length(targets))
+
+    times_index = 1
+
+    for i in 1:n_pmt*length(targets)
+        targ = targets[div(i - 1, n_pmt)+1]
+
+        n_hits_this_target = sum(n_hits_per_source_rs[i, :])
+        
+        if n_hits_this_target == 0
+            data[i] = []
+            continue
+        end
+
+        data_per_target = Vector{Float64}(undef, n_hits_this_target)
+        data_index = 1
+        for j in eachindex(particles)
+            particle = particles[j]
+            this_n_hits = n_hits_per_source_rs[i, j]
+            if this_n_hits > 0
+                t_geo = calc_tgeo(norm(particle.position .- targ.position) - targ.radius, c_n)                
+                data_per_target[data_index:data_index+this_n_hits-1] = times[times_index:times_index+this_n_hits-1]  .+ t_geo .+ particle.time
+                data_index += this_n_hits
+                times_index += this_n_hits
+            end
+        end
+
+        data[i] = data_per_target
+    end
+        
+    return data
+end
+
+
+
 
 
 function evaluate_model(particles, data, targets, model, tf_vec, c_n)
