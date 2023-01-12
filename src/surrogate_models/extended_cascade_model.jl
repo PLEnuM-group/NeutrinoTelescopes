@@ -25,7 +25,8 @@ using ...Utils
 using ...PhotonPropagation.Detection
 using ...PhotonPropagation.PhotonPropagationCuda
 
-export sample_cascade_event, single_cascade_likelihood, evaluate_model, sample_multi_particle_event
+export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_likelihood
+export sample_cascade_event, evaluate_model, sample_multi_particle_event
 export create_pmt_table, preproc_labels, read_pmt_hits, calc_flow_input, fit_trafo_pipeline, log_likelihood_with_poisson
 export train_time_expectation_model, train_model!, RQNormFlowHParams, setup_time_expectation_model, setup_dataloaders
 export Normalizer
@@ -518,8 +519,6 @@ end
 function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng=nothing; oversample=1)
 
     n_pmt = get_pmt_count(eltype(targets))
-    # The input is flattened such that the inner index is the targets, the outer index are the particles
-    # [particle_1_target_1_pmt_1, particle_1_target_1_pmt_2, ..., particle_1_target_2_pmt_1, ..., particle_2_target_1_pmt_1, ...]
     input = calc_flow_input(particles, targets, tf_vec)
     output = model.embedding(input)
 
@@ -534,9 +533,7 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
 
     non_zero_hits = n_hits_per_source[mask]
 
-
     times = sample_flow(flow_params[:, mask], model.range_min, model.range_max, non_zero_hits, rng=rng)
-
 
     data = Vector{Vector{Float64}}(undef, n_pmt * length(targets))
 
@@ -564,10 +561,11 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
                 times_index += this_n_hits
             end
         end
-
+        @assert data_index-1 == n_hits_this_target
         data[i] = data_per_target
     end
 
+    @assert times_index-1 == length(times)
     return data
 end
 
@@ -617,18 +615,38 @@ function evaluate_model(particles, data, targets, model, tf_vec, c_n)
     return poiss, shape_llh_gen, log_expec
 end
 
-function single_cascade_likelihood(logenergy, dir_theta, dir_phi, position, time; data, targets, model, tf_vec, c_n)
 
+function multi_particle_likelihood(particles; data, targets, model, tf_vec, c_n)
     n_pmt = get_pmt_count(eltype(targets))
-
     @assert length(targets) * n_pmt == length(data)
-    dir = sph_to_cart(dir_theta, dir_phi)
-
-    energy = 10^logenergy
-    particles = [Particle(position, dir, time, energy, PEMinus)]
-
     pois_llh, shape_llh, _ = evaluate_model(particles, data, targets, model, tf_vec, c_n)
     return sum(pois_llh) + sum(shape_llh)
 end
+
+
+function single_cascade_likelihood(logenergy, dir_theta, dir_phi, position, time; data, targets, model, tf_vec, c_n)
+    dir = sph_to_cart(dir_theta, dir_phi)
+    energy = 10^logenergy
+    particles = [Particle(position, dir, time, energy, PEMinus)]
+    return multi_particle_likelihood(particles, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n)
+end
+
+function track_likelihood_fixed_losses(logenergy, dir_theta, dir_phi, position, time; losses, muon_energy, data, targets, model, tf_vec, c_n)
+
+    energy = 10^logenergy
+    dir = sph_to_cart(dir_theta, dir_phi)
+    dist_along = norm.([p.position .- position for p in losses])
+
+    new_loss_positions = [position .+ d .* dir for d in dist_along]
+    new_loss_times = time .+ dist_along .* 0.3
+
+    new_loss_energies = [p.energy / muon_energy * energy for p in losses]
+
+    new_losses = Particle.(new_loss_positions, [dir], new_loss_times, new_loss_energies, [PEMinus])
+
+    return multi_particle_likelihood(new_losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n)
+
+end
+
 
 end

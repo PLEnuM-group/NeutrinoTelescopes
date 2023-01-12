@@ -42,6 +42,90 @@ targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
 detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => targets_three_l, "Hex" => targets_hex)
 medium = make_cascadia_medium_properties(0.99f0)
 
+function create_mock_muon(energy, position, direction, time, mean_free_path, length, rng)
+    losses = []
+
+    step_dist = Exponential(mean_free_path)
+    eloss_logr_dist = Uniform(-5, 0)
+
+    dist_travelled = 0
+    while dist_travelled < length && energy > 1
+        step_size = rand(step_dist)
+        e_loss = energy * 10^rand(eloss_logr_dist)
+
+        energy -= e_loss
+        dist_travelled += step_size
+        pos = position .+ dist_travelled .* direction
+        t = time + dist_travelled * 0.3
+
+        push!(losses, Particle(pos, direction, t, e_loss, PEMinus))
+    
+    end
+
+    return losses
+end
+
+begin
+    pos = SA[-150., -5., -450]
+    theta = 1.4
+    phi = 0.4
+    energy = 5E4
+    rng = MersenneTwister(31339)
+    dir = sph_to_cart(theta, phi)
+
+    losses = create_mock_muon(energy, pos, dir, 0., 30, 500, rng)
+    losses_filt = [p for p in losses if p.energy > 100]
+
+    @load models["4"] model hparams opt tf_dict
+    c_n = c_at_wl(800f0, medium)
+    target_mask = any(norm.([p.position for p in losses_filt] .- permutedims([t.position for t in targets_hex])) .<= 200, dims=1)[1, :]
+
+    targets_range = targets_hex[target_mask]
+
+    particles = losses_filt
+    times = -50:1:250
+    fig = Figure(resolution=(1500, 1000))
+    ga = fig[1, 1] = GridLayout(4, 4)
+
+    n_pmt = get_pmt_count(eltype(targets_range))
+
+    t_geos = repeat([calc_tgeo(norm(particles[1].position - t.position) - t.radius, c_n) for t in targets_range], n_pmt)
+    t0 = particles[1].time
+    
+    oversample = 500
+    @load models["4"] model hparams opt tf_dict
+    samples = sample_multi_particle_event(particles, targets_range, model, tf_dict, c_n, rng, oversample=oversample)
+    tgeo = calc_tgeo(norm(particles[1].position - targets_range[1].position) - targets_range[1].radius, c_n)
+    for i in 1:16
+        row, col = divrem(i - 1, 4)
+        hist(ga[col+1, row+1], samples[i] .- tgeo .- t0 , bins=-100:3:300, normalization=:density, fillaplha=0.3, weights=fill(1/oversample, length(samples[i])))
+    end
+
+    input = calc_flow_input(particles, targets_range, tf_dict)
+        
+
+    shape_lhs = []
+    local log_expec
+    for t in times
+        _, shape_lh, log_expec = SurrogateModels.evaluate_model(particles, Vector.(eachrow(t .+ t_geos .+ t0)), targets_range, model, tf_dict, c_n)
+        push!(shape_lhs, collect(shape_lh))
+    end
+
+    shape_lh = reduce(hcat, shape_lhs)
+
+    for i in 1:16
+        row, col = divrem(i - 1, 4)
+        lines!(ga[col+1, row+1], times, exp.(shape_lh[i, :] .+ log_expec[i]))
+        
+    end
+
+    fig
+end
+
+
+
+
+
 
 pos = SA[8., -5., -450]
 dir_theta = 0.7
