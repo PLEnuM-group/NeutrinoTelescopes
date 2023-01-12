@@ -14,6 +14,7 @@ export sample_cherenkov_track_direction
 export rand_gamma
 export fwhm
 export repeat_for, repeat_for!, split_by
+export ssc
 
 const GL10 = gausslegendre(10)
 
@@ -72,11 +73,11 @@ function fast_linear_interp(x_eval::T, xs::AbstractVector{T}, ys::AbstractVector
 
     if x_eval == lower
         return ys[1]
-    elseif x_eval == upper 
+    elseif x_eval == upper
         return ys[end]
     end
 
-    ix_upper = searchsortedfirst(xs, x_eval)    
+    ix_upper = searchsortedfirst(xs, x_eval)
     ix_lower = ix_upper - 1
 
     @inbounds edge_l = xs[ix_lower]
@@ -161,23 +162,28 @@ end
 function cart_to_sph(x::Real, y::Real, z::Real)
 
     T = promote_type(typeof(x), typeof(y), typeof(z))
-    if z==1
+    if z == 1
         return zero(T), zero(T)
-    elseif z==-1
+    elseif z == -1
         return T(π), zero(T)
     end
     theta = acos(z)
-    if (x==0) && (y > 0)
-        phi = T(π/2)
-    elseif (x==0) && (y < 0)
-        phi = T(-π/2)
+    if (x == 0) && (y > 0)
+        phi = T(π / 2)
+    elseif (x == 0) && (y < 0)
+        phi = T(-π / 2)
     else
         phi = atan(y, x)
     end
+
+    if phi < 0
+        phi = 2 * π - phi
+    end
+
     return theta, phi
 end
 
-cart_to_sph(x::SVector{3, <:Real}) = cart_to_sph(x[1], x[2], x[3])
+cart_to_sph(x::SVector{3,<:Real}) = cart_to_sph(x[1], x[2], x[3])
 
 
 
@@ -191,7 +197,7 @@ Represents a Categorical distribution on a set
 - `p = CategoricalSetDistribution(Set([:EMinus, :EPlus]), Categorical([0.1, 0.9]))
    rand(p)` -- returns `:EMinus` with 10% probability and `:Eplus` with 90% probability
 
-- `p = CategoricalSetDistribution(Set([:EMinus, :EPlus]), [0.1, 0.9])` -- convenience constructor 
+- `p = CategoricalSetDistribution(Set([:EMinus, :EPlus]), [0.1, 0.9])` -- convenience constructor
 """
 struct CategoricalSetDistribution{T}
     set::OrderedSet{T}
@@ -225,7 +231,7 @@ function calc_rot_matrix(a, b)
     cross_ab = cross(a, b)
     ssc_cross_ab = ssc(cross_ab)
 
-    R = SMatrix{3,3}(I) + ssc_cross_ab + ssc_cross_ab^2 * (1-dot(a, b)) / norm(cross_ab)^2
+    R = SMatrix{3,3}(I) + ssc_cross_ab + ssc_cross_ab^2 * (1 - dot(a, b)) / norm(cross_ab)^2
 end
 
 
@@ -242,7 +248,7 @@ function apply_rot(a, b, operand)
 end
 
 
-@inline function rot_to_ez_fast(a::SVector{3, T}, operand::SVector{3, T}) where {T<:Real}
+@inline function rot_to_ez_fast(a::SVector{3,T}, operand::SVector{3,T}) where {T<:Real}
 
     if abs(a[3]) == T(1)
         return @SVector[operand[1], copysign(operand[2], a[3]), copysign(operand[3], a[3])]
@@ -260,17 +266,17 @@ end
     =#
     a1sq = a[1]^2
     a2sq = a[2]^2
-    fact = (1-a[3]) / (a2sq + a1sq)
+    fact = (1 - a[3]) / (a2sq + a1sq)
     a1a2 = a[1] * a[2]
 
-    x = fma(-a1sq, fact, 1) * operand[1] -a1a2*fact*operand[2]  -a[1]*operand[3]
-    y = -a1a2*fact*operand[1] + fma(-a2sq, fact, 1) * operand[2] -a[2]*operand[3]
-    z = a[1] * operand[1] + a[2] * operand[2] + a[3]*operand[3]
+    x = fma(-a1sq, fact, 1) * operand[1] - a1a2 * fact * operand[2] - a[1] * operand[3]
+    y = -a1a2 * fact * operand[1] + fma(-a2sq, fact, 1) * operand[2] - a[2] * operand[3]
+    z = a[1] * operand[1] + a[2] * operand[2] + a[3] * operand[3]
     return SA[x, y, z]
 end
 
 
-@inline function rot_from_ez_fast(a::SVector{3, T}, operand::SVector{3, T}) where {T<:Real}
+@inline function rot_from_ez_fast(a::SVector{3,T}, operand::SVector{3,T}) where {T<:Real}
 
     if abs(a[3]) == T(1)
         return @SVector[operand[1], copysign(operand[2], a[3]), copysign(operand[3], a[3])]
@@ -278,27 +284,27 @@ end
 
     a1sq = a[1]^2
     a2sq = a[2]^2
-    fact = (1-a[3]) / (a2sq + a1sq)
+    fact = (1 - a[3]) / (a2sq + a1sq)
     a1a2 = a[1] * a[2]
 
-    x = fma(-a1sq, fact, 1) * operand[1] -a1a2*fact*operand[2]  + a[1]*operand[3]
-    y = -a1a2*fact*operand[1] + fma(-a2sq, fact, 1) * operand[2] + a[2]*operand[3]
-    z = -a[1] * operand[1] - a[2] * operand[2] + a[3]*operand[3]
+    x = fma(-a1sq, fact, 1) * operand[1] - a1a2 * fact * operand[2] + a[1] * operand[3]
+    y = -a1a2 * fact * operand[1] + fma(-a2sq, fact, 1) * operand[2] + a[2] * operand[3]
+    z = -a[1] * operand[1] - a[2] * operand[2] + a[3] * operand[3]
     return SA[x, y, z]
 end
-    
+
 
 
 """
 """
 function sample_cherenkov_track_direction(T::Type)
     # Mystery values from clsim
-    angularDist_a = T(0.39) 
+    angularDist_a = T(0.39)
     angularDist_b = T(2.61)
     angularDist_I = T(1) - exp(-angularDist_b * 2^angularDist_a)
-    
-    costheta =  max(T(1) - (-log(T(1) - rand(T)*angularDist_I)/angularDist_b)^(1/angularDist_a), T(-1))
-    phi = T(2*π)*rand(T)
+
+    costheta = max(T(1) - (-log(T(1) - rand(T) * angularDist_I) / angularDist_b)^(1 / angularDist_a), T(-1))
+    phi = T(2 * π) * rand(T)
 
     return sph_to_cart(acos(costheta), phi)
 
@@ -309,11 +315,11 @@ end
 
 Sample gamma variates when shape > 1
 """
-function rand_gamma(shape::Real, scale::Real, T::Type{U}=Float64) where {U <: Real}
+function rand_gamma(shape::Real, scale::Real, T::Type{U}=Float64) where {U<:Real}
 
-    d = T(shape - 1/3)
-    c = one(T) / sqrt(9*d)
-   
+    d = T(shape - 1 / 3)
+    c = one(T) / sqrt(9 * d)
+
 
     while true
         x = randn(T)
@@ -326,14 +332,14 @@ function rand_gamma(shape::Real, scale::Real, T::Type{U}=Float64) where {U <: Re
         v = v * v * v
         u = rand(T)
 
-        xsq = x*x
+        xsq = x * x
 
-        if u < one(T) - fma(T(0.0331), xsq*xsq, one(xsq)) # 1 - 0.0331 * xsq^2
-            return d*v*scale
+        if u < one(T) - fma(T(0.0331), xsq * xsq, one(xsq)) # 1 - 0.0331 * xsq^2
+            return d * v * scale
         end
 
-        if log(u) < T(0.5) * xsq + d*(one(T) - v + log(v))
-            return d*v*scale
+        if log(u) < T(0.5) * xsq + d * (one(T) - v + log(v))
+            return d * v * scale
         end
     end
 end

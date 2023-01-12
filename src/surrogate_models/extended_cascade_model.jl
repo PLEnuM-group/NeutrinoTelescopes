@@ -515,7 +515,7 @@ function sample_cascade_event(energy, dir_theta, dir_phi, position, time; target
 end
 
 
-function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng=nothing)
+function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng=nothing; oversample=1)
 
     n_pmt = get_pmt_count(eltype(targets))
     # The input is flattened such that the inner index is the targets, the outer index are the particles
@@ -526,7 +526,7 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
     flow_params = output[1:end-1, :]
     log_expec_per_source = output[end, :]
 
-    expec_per_source = exp.(log_expec_per_source)
+    expec_per_source = exp.(log_expec_per_source) .* oversample
 
     n_hits_per_source = pois_rand.(expec_per_source)
     n_hits_per_source_rs = reshape(n_hits_per_source, length(targets) * n_pmt, length(particles))
@@ -534,9 +534,9 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
 
     non_zero_hits = n_hits_per_source[mask]
 
-    
+
     times = sample_flow(flow_params[:, mask], model.range_min, model.range_max, non_zero_hits, rng=rng)
-    
+
 
     data = Vector{Vector{Float64}}(undef, n_pmt * length(targets))
 
@@ -546,7 +546,7 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
         targ = targets[div(i - 1, n_pmt)+1]
 
         n_hits_this_target = sum(n_hits_per_source_rs[i, :])
-        
+
         if n_hits_this_target == 0
             data[i] = []
             continue
@@ -558,7 +558,7 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
             particle = particles[j]
             this_n_hits = n_hits_per_source_rs[i, j]
             if this_n_hits > 0
-                t_geo = calc_tgeo(norm(particle.position .- targ.position) - targ.radius, c_n)                
+                t_geo = calc_tgeo(norm(particle.position .- targ.position) - targ.radius, c_n)
                 data_per_target[data_index:data_index+this_n_hits-1] = times[times_index:times_index+this_n_hits-1]  .+ t_geo .+ particle.time
                 data_index += this_n_hits
                 times_index += this_n_hits
@@ -567,7 +567,7 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
 
         data[i] = data_per_target
     end
-        
+
     return data
 end
 

@@ -21,6 +21,7 @@ using Optim
 using Base.Iterators
 using Formatting
 
+
 models = Dict(
     "1" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_1_FNL.bson"),
     "2" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_2_FNL.bson"),
@@ -29,7 +30,7 @@ models = Dict(
     "5" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_5_FNL.bson"),
     #"FULL" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_FULL_FNL.bson")
 )
-    
+
 targets_single = [make_pone_module(@SVector[-25., 0., -450.], 1)]
 targets_line = make_detector_line(@SVector[-25., 0.0, 0.0], 20, 50, 1)
 targets_three_l = [
@@ -100,7 +101,7 @@ begin
             sel = Vector{Float64}(resampled[mask, :tres])
             push!(rs_hits, sel)
         end
-        
+
         for (mname, model_path) in models
             if !haskey(min_vals, mname)
                 min_vals[mname] = []
@@ -165,7 +166,7 @@ begin
 
     for i in 1:16
         row, col = divrem(i - 1, 4)
-        
+
         ax = Axis(ga[col+1, row+1], xlabel="Time Residual(ns)", ylabel="Photons / time", title="PMT $i")
         mask = hits[:, :pmt_id] .== i
         hist!(ax, hits[mask, :tres], bins=-10:5:100, weights=hits[mask, :total_weight], color=:blue, normalization=:density)
@@ -269,7 +270,7 @@ hist(rad2deg.(acos.(dot.(sph_to_cart.(min_vals[2, :], min_vals[3, :]), Ref(sph_t
 
 
 function calc_fisher(logenergy, dir_theta, dir_phi, n, targets, model; use_grad=false, rng=nothing)
-  
+
     matrices = []
     for _ in 1:n
 
@@ -394,7 +395,7 @@ target = MultiPMTDetector(
 
 
 begin
-   
+
 
 input = calc_flow_inputs([p], [target], tf_dict)
 output = model.embedding(input)
