@@ -425,6 +425,26 @@ function eval_transformed_normal_logpdf(
     return normal_logpdf .+ logdet_spline
 end
 
+"""
+    eval_transformed_normal_logpdf(
+        y::AbstractVector,
+        params::AbstractVector,
+        range_min, range_max)
+Evaluate flow by repeating params for each element of y
+"""
+function eval_transformed_normal_logpdf(
+    y::AbstractVector,
+    params::AbstractVector,
+    range_min, range_max)
+
+    return eval_transformed_normal_logpdf(
+        y,
+        repeat(params, 1, length(y)),
+        range_min,
+        range_max)
+end
+
+
 
 function sample_flow(params, range_min, range_max, n_per_param; rng=Random.GLOBAL_RNG)
 

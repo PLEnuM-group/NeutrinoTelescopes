@@ -42,6 +42,28 @@ targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
 detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => targets_three_l, "Hex" => targets_hex)
 medium = make_cascadia_medium_properties(0.99f0)
 
+
+compute(p, t) = vcat(repeat([p, t], 1, 5), permutedims(1:5))
+cap(particles, targets) = mapreduce(t -> compute(t[1], t[2]), hcat, product(particles, targets))
+
+out(inp) = [Tuple(sl) for sl in eachcol(inp)]
+
+particles = ["p1", "p2", "p3"]
+targets = ["t1", "t2", "t3", "t4"]
+
+out(cap(particles, targets))
+
+ix = LinearIndices((1:5, eachindex(particles), eachindex(targets)))
+res = reshape(out(cap(particles, targets)), 5, length(particles), length(targets))
+
+ix2 = LinearIndices(res)
+
+res[ix[2, 2, 2]]
+
+res[ix[2, 2, 4]]
+
+
+
 function create_mock_muon(energy, position, direction, time, mean_free_path, length, rng)
     losses = []
 
@@ -59,7 +81,7 @@ function create_mock_muon(energy, position, direction, time, mean_free_path, len
         t = time + dist_travelled * 0.3
 
         push!(losses, Particle(pos, direction, t, e_loss, PEMinus))
-    
+
     end
 
     return losses
@@ -76,14 +98,21 @@ begin
     losses = create_mock_muon(energy, pos, dir, 0., 30, 500, rng)
     losses_filt = [p for p in losses if p.energy > 100]
 
+    particles = losses_filt
+    #=particles = [
+        Particle(pos, dir, 0., energy, PEMinus),
+        Particle(pos .+ dir.*5, dir, 15, energy, PEMinus),
+        Particle(pos .+ dir.*10, dir, 25, energy, PEMinus)
+] =#
+
     @load models["4"] model hparams opt tf_dict
     c_n = c_at_wl(800f0, medium)
-    target_mask = any(norm.([p.position for p in losses_filt] .- permutedims([t.position for t in targets_hex])) .<= 200, dims=1)[1, :]
+    #target_mask = any(norm.([p.position for p in particles] .- permutedims([t.position for t in targets_hex])) .<= 200, dims=1)[1, :]
+    #targets_range = targets_hex[target_mask]
+    targets_range = targets_single
 
-    targets_range = targets_hex[target_mask]
 
-    particles = losses_filt
-    times = -50:1:250
+    times = -50:1:100
     fig = Figure(resolution=(1500, 1000))
     ga = fig[1, 1] = GridLayout(4, 4)
 
@@ -91,18 +120,18 @@ begin
 
     t_geos = repeat([calc_tgeo(norm(particles[1].position - t.position) - t.radius, c_n) for t in targets_range], n_pmt)
     t0 = particles[1].time
-    
+
     oversample = 500
     @load models["4"] model hparams opt tf_dict
     samples = sample_multi_particle_event(particles, targets_range, model, tf_dict, c_n, rng, oversample=oversample)
     tgeo = calc_tgeo(norm(particles[1].position - targets_range[1].position) - targets_range[1].radius, c_n)
     for i in 1:16
         row, col = divrem(i - 1, 4)
-        hist(ga[col+1, row+1], samples[i] .- tgeo .- t0 , bins=-100:3:300, normalization=:density, fillaplha=0.3, weights=fill(1/oversample, length(samples[i])))
+        hist(ga[col+1, row+1], samples[i] .- tgeo .- t0 , bins=-50:3:100, normalization=:density, fillaplha=0.3, weights=fill(1/oversample, length(samples[i])))
     end
 
     input = calc_flow_input(particles, targets_range, tf_dict)
-        
+
 
     shape_lhs = []
     local log_expec
@@ -116,13 +145,41 @@ begin
     for i in 1:16
         row, col = divrem(i - 1, 4)
         lines!(ga[col+1, row+1], times, exp.(shape_lh[i, :] .+ log_expec[i]))
-        
+
     end
 
     fig
 end
 
 
+
+begin
+    pos = SA[-150., -5., -450]
+    theta = 1.4
+    phi = 0.4
+    energy = 5E4
+    rng = MersenneTwister(31339)
+    dir = sph_to_cart(theta, phi)
+
+    losses = create_mock_muon(energy, pos, dir, 0., 30, 500, rng)
+    losses_filt = [p for p in losses if p.energy > 100]
+
+
+    @load models["4"] model hparams opt tf_dict
+    c_n = c_at_wl(800f0, medium)
+    target_mask = any(norm.([p.position for p in losses_filt] .- permutedims([t.position for t in targets_hex])) .<= 200, dims=1)[1, :]
+
+    targets_range = targets_hex[target_mask]
+
+    data = sample_multi_particle_event(losses_filt, targets_range, model, tf_dict, c_n, rng)
+    @profview llh = track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n)
+
+
+    logenergies = 3:0.1:5
+    llhs = [track_likelihood_fixed_losses(le, theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n) for le in logenergies]
+    scatter(logenergies, llhs)
+
+end
 
 
 

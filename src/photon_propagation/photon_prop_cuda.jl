@@ -971,10 +971,13 @@ function c_at_wl(wl, medium)
 end
 
 calc_tgeo(distance, c_n::Number) = distance / c_n
-calc_tgeo(distance, medium::MediumProperties) = calc_tgeo(distance, c_at_wl(800f0, medium))
+calc_tgeo(distance, medium::MediumProperties) = calc_tgeo(distance, c_at_wl(800.0f0, medium))
 
+function calc_tgeo(particle::Particle, target::PhotonTarget, c_n_or_medium)
+    return calc_tgeo(norm(particle.position .- target.position) - target.radius, c_n_or_medium)
+end
 
-function calc_time_residual!(df::AbstractDataFrame, setup::PhotonPropSetup)   
+function calc_time_residual!(df::AbstractDataFrame, setup::PhotonPropSetup)
 
     targ_id_map = Dict([target.module_id => target for target in setup.targets])
 
@@ -984,7 +987,7 @@ function calc_time_residual!(df::AbstractDataFrame, setup::PhotonPropSetup)
         distance = norm(setup.sources[1].position .- target.position)
         tgeo = calc_tgeo((distance - target.radius), setup.medium)
 
-        subdf[!, :tres] = (subdf[:, :time] .- tgeo .-t0)
+        subdf[!, :tres] = (subdf[:, :time] .- tgeo .- t0)
     end
 end
 

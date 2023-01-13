@@ -335,7 +335,6 @@ struct Normalizer{T}
 end
 
 Normalizer(x::AbstractVector) = Normalizer(mean(x), std(x))
-#(norm::Normalizer)(x::AbstractVector) = promote(x .- norm.mean) ./ norm.σ
 (norm::Normalizer)(x::Number) = (x - norm.mean) / norm.σ
 
 function fit_normalizer!(x::AbstractVector)
@@ -389,47 +388,6 @@ function preproc_labels(df, n_pmt, tf_vec=nothing)
     return feature_matrix, tf_vec
 end
 
-
-function calc_flow_input(particle::Particle, target::PhotonTarget, tf_vec::AbstractVector)
-
-    particle_pos = particle.position
-    particle_dir = particle.direction
-    particle_energy = particle.energy
-    target_pos = target.position
-
-    rel_pos = particle_pos .- target_pos
-    dist = norm(rel_pos)
-    normed_rel_pos = rel_pos ./ dist
-
-    n_pmt = get_pmt_count(target)
-
-    feature_matrix = repeat(
-        [
-            log(dist)
-            log(particle_energy)
-            particle_dir
-            normed_rel_pos
-        ],
-        1, n_pmt)
-
-    feature_matrix = vcat(feature_matrix, permutedims(1:n_pmt))
-
-    return apply_feature_transform(feature_matrix, tf_vec, n_pmt)
-
-end
-
-function calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
-
-    res = mapreduce(
-        t -> calc_flow_input(t[1], t[2], tf_vec),
-        hcat,
-        product(particles, targets))
-
-    return res
-end
-
-
-
 function read_pmt_hits(fnames, nsel_frac=0.8, rng=nothing)
 
     all_hits = []
@@ -471,148 +429,212 @@ end
 read_hdf(fname::String, nsel, rng) = read_hdf([fname], nsel, rng)
 
 
+"""
+    calc_flow_input(particle::Particle, target::PhotonTarget, tf_vec::AbstractVector)
 
+Transform a particle and a target into input features for a neural netork.
+
+The resulting feature matrix contains the log distance of particle and target,
+the log of the particle energy, the particle direction (in cartesian coordinates) and the
+direction from target to particle.
+These columns are repeated for the number of pmts on the target. The final column is the
+pmt index.
+The resulting feature matrix is then transformed column by column using the transformations
+included in `tf_vec`.
+"""
+function calc_flow_input(particle::Particle, target::PhotonTarget, tf_vec::AbstractVector)
+
+    particle_pos = particle.position
+    particle_dir = particle.direction
+    particle_energy = particle.energy
+    target_pos = target.position
+
+    rel_pos = particle_pos .- target_pos
+    dist = norm(rel_pos)
+    normed_rel_pos = rel_pos ./ dist
+
+    n_pmt = get_pmt_count(target)
+
+    feature_matrix = repeat(
+        [
+            log(dist)
+            log(particle_energy)
+            particle_dir
+            normed_rel_pos
+        ],
+        1, n_pmt)
+
+    feature_matrix = vcat(feature_matrix, permutedims(1:n_pmt))
+
+    return apply_feature_transform(feature_matrix, tf_vec, n_pmt)
+
+end
+
+"""
+calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
+
+For vectors of particles and targets, the resulting feature matrices for each combination
+are catted together.
+The product of `particles` and `targets` is packed densely into a single dimension with
+embedding structure: [(p_1, t_1), (p_2, t_1), ... (p_1, t_end), ... (p_end, t_end)]
+"""
+function calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
+
+    res = mapreduce(
+        t -> calc_flow_input(t[1], t[2], tf_vec),
+        hcat,
+        product(particles, targets))
+
+    return res
+end
 
 function poisson_logpmf(n, log_lambda)
     return n * log_lambda - exp(log_lambda) - loggamma(n + 1.0)
 end
 
+"""
+    create_non_uniform_ranges(n_per_split::AbstractVector)
 
-function sample_cascade_event(energy, dir_theta, dir_phi, position, time; targets, model, tf_vec, c_n, rng=nothing)
-
-    dir = sph_to_cart(dir_theta, dir_phi)
-    particle = Particle(position, dir, time, energy, PEMinus)
-    input = calc_flow_input([particle], targets, tf_vec)
-    output = model.embedding(input)
-
-    flow_params = output[1:end-1, :]
-    log_expec = output[end, :]
-
-    expec = exp.(log_expec)
-
-    n_hits = pois_rand.(expec)
-    mask = n_hits .> 0
-
-    non_zero_hits = n_hits[mask]
-
-    times = sample_flow(flow_params[:, mask], model.range_min, model.range_max, non_zero_hits, rng=rng)
-    times_per = split_by(times, n_hits)
-
-    n_pmt = get_pmt_count(eltype(targets))
-
-    data = Vector{Vector{Float64}}(undef, n_pmt * length(targets))
-
-    for i in eachindex(times_per)
-        targ = targets[div(i - 1, n_pmt)+1]
-        if length(times_per[i]) > 0
-            t_geo = calc_tgeo(norm(particle.position .- targ.position) - targ.radius, c_n)
-            data[i] = times_per[i] .+ t_geo .+ time
-        else
-            data[i] = times_per[i]
-        end
+Create a vector of UnitRanges, where each range consecutively select n from n_per_split
+"""
+function create_non_uniform_ranges(n_per_split::AbstractVector)
+    vtype = Union{UnitRange{Int64},Missing}
+    output = Vector{vtype}(undef, length(n_per_split))
+    ix = 1
+    for (i, n) in enumerate(n_per_split)
+        output[i] = n > 0 ? (ix:ix+n-1) : missing
+        ix += n
     end
-
-    return data
+    return output
 end
 
+"""
+    sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng=nothing; oversample=1)
 
+Sample arrival times at `targets` for `particles` using `model`.
+"""
 function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng=nothing; oversample=1)
 
     n_pmt = get_pmt_count(eltype(targets))
     input = calc_flow_input(particles, targets, tf_vec)
     output = model.embedding(input)
 
+    # The embedding for all the parameters is
+    # [(p_1, t_1, pmt_1), (p_1, t_1, pmt_2), ... (p_2, t_1, pmt_1), ... (p_1, t_end, pmt_1), ... (p_end, t_end, pmt_end)]
+
     flow_params = output[1:end-1, :]
     log_expec_per_source = output[end, :]
-
     expec_per_source = exp.(log_expec_per_source) .* oversample
 
     n_hits_per_source = pois_rand.(expec_per_source)
-    n_hits_per_source_rs = reshape(n_hits_per_source, length(targets) * n_pmt, length(particles))
-    mask = n_hits_per_source .> 0
+    n_hits_per_source_rs = reshape(
+        n_hits_per_source,
+        n_pmt,
+        length(particles), length(targets))
 
+    mask = n_hits_per_source .> 0
     non_zero_hits = n_hits_per_source[mask]
 
+    # Only sample times for partice-target pairs that have at least one hit
     times = sample_flow(flow_params[:, mask], model.range_min, model.range_max, non_zero_hits, rng=rng)
 
+    # Create range selectors into times for each particle-pmt pair
+    selectors = reshape(
+        create_non_uniform_ranges(n_hits_per_source),
+        n_pmt, length(particles), length(targets)
+    )
+
+
     data = Vector{Vector{Float64}}(undef, n_pmt * length(targets))
+    data_index = LinearIndices((1:n_pmt, eachindex(targets)))
 
-    times_index = 1
+    for (pmt_ix, t_ix) in product(1:n_pmt, eachindex(targets))
+        target = targets[t_ix]
 
-    for i in 1:n_pmt*length(targets)
-        targ = targets[div(i - 1, n_pmt)+1]
-
-        n_hits_this_target = sum(n_hits_per_source_rs[i, :])
+        n_hits_this_target = sum(n_hits_per_source_rs[pmt_ix, :, t_ix])
 
         if n_hits_this_target == 0
-            data[i] = []
+            data[data_index[pmt_ix, t_ix]] = []
             continue
         end
 
-        data_per_target = Vector{Float64}(undef, n_hits_this_target)
-        data_index = 1
-        for j in eachindex(particles)
-            particle = particles[j]
-            this_n_hits = n_hits_per_source_rs[i, j]
+        data_this_target = Vector{Float64}(undef, n_hits_this_target)
+        data_selectors = create_non_uniform_ranges(n_hits_per_source_rs[pmt_ix, :, t_ix])
+
+        for p_ix in eachindex(particles)
+            particle = particles[p_ix]
+            this_n_hits = n_hits_per_source_rs[pmt_ix, p_ix, t_ix]
             if this_n_hits > 0
-                t_geo = calc_tgeo(norm(particle.position .- targ.position) - targ.radius, c_n)
-                data_per_target[data_index:data_index+this_n_hits-1] = times[times_index:times_index+this_n_hits-1]  .+ t_geo .+ particle.time
-                data_index += this_n_hits
-                times_index += this_n_hits
+                t_geo = calc_tgeo(norm(particle.position .- target.position) - target.radius, c_n)
+                times_sel = selectors[pmt_ix, p_ix, t_ix]
+                data_this_target[data_selectors[p_ix]] = times[times_sel] .+ t_geo .+ particle.time
             end
         end
-        @assert data_index-1 == n_hits_this_target
-        data[i] = data_per_target
+        data[data_index[pmt_ix, t_ix]] = data_this_target
     end
-
-    @assert times_index-1 == length(times)
     return data
 end
 
 
 
+function sample_cascade_event(energy, dir_theta, dir_phi, position, time; targets, model, tf_vec, c_n, rng=nothing)
+
+    dir = sph_to_cart(dir_theta, dir_phi)
+    particle = Particle(position, dir, time, energy, PEMinus)
+    return sample_multi_particle_event([particle], targets, model, tf_vec, c_n, rng)
+end
 
 
 function evaluate_model(particles, data, targets, model, tf_vec, c_n)
     n_pmt = get_pmt_count(eltype(targets))
     @assert length(targets) * n_pmt == length(data)
 
-    t_geos = map(((p, t),) -> calc_tgeo(norm(p.position .- t.position) - t.radius, c_n), product(particles, targets))
-
-
     input = calc_flow_input(particles, targets, tf_vec)
 
     output::Matrix{eltype(input)} = model.embedding(input)
 
+    # The embedding for all the parameters is
+    # [(p_1, t_1, pmt_1), (p_1, t_1, pmt_2), ... (p_2, t_1, pmt_1), ... (p_1, t_end, pmt_1), ... (p_end, t_end, pmt_end)]
     flow_params = output[1:end-1, :]
-    log_expec_per_source = output[end, :] # one per source and pmt
+    log_expec_per_src_trg = output[end, :]
 
-    log_expec_per_source_rs = reshape(log_expec_per_source, length(targets) * n_pmt, length(particles))
-    log_expec = sum(log_expec_per_source_rs, dims=2)[:, 1]
-    rel_log_expec = log_expec_per_source_rs .- log_expec
+    log_expec_per_src_pmt_rs = reshape(
+        log_expec_per_src_trg,
+        n_pmt, length(particles), length(targets))
 
-    hits_per = length.(data)
-    poiss = poisson_logpmf.(hits_per, log_expec)
+    log_expec_per_pmt = LogExpFunctions.logsumexp(log_expec_per_src_pmt_rs, dims=2)
+    rel_log_expec = log_expec_per_src_pmt_rs .- log_expec_per_pmt
 
-    ix = LinearIndices((1:n_pmt*length(targets), eachindex(particles)))
-    ix2 = LinearIndices((1:length(targets), eachindex(particles)))
+    hits_per_target = length.(data)
+    # Flattening log_expec_per_pmt with [:] will let the first dimension be the inner one
+    poiss_llh = poisson_logpmf.(hits_per_target, log_expec_per_pmt[:])
+
+    data_ix = LinearIndices((1:n_pmt, eachindex(targets)))
+    ix = LinearIndices((1:n_pmt, eachindex(targets), eachindex(particles)))
 
     shape_llh_gen = (
-        length(data[i]) > 0 ?
-        LogExpFunctions.logsumexp(
-            rel_log_expec[i, j] +
-            sum(eval_transformed_normal_logpdf(
-                data[i] .- t_geos[ix2[div(i - 1, n_pmt)+1, j]] .- particles[j].time,
-                repeat(flow_params[:, ix[i, j]], 1, hits_per[i]),
-                model.range_min,
-                model.range_max))
-            for j in eachindex(particles)
-        ) :
-        0.0
-        for i in 1:n_pmt*length(targets)
-    )
-
-    return poiss, shape_llh_gen, log_expec
+        length(data[data_ix[pmt_ix, t_ix]]) > 0 ?
+        # Reduce over the particle dimension to create the mixture
+        sum(LogExpFunctions.logsumexp(
+            # Evaluate the flow for each time and each particle and stack result
+            reduce(
+                hcat,
+                # Mixture weights
+                rel_log_expec[pmt_ix, p_ix, t_ix] .+
+                # Returns vector of logl for each time in data
+                eval_transformed_normal_logpdf(
+                    data[data_ix[pmt_ix, t_ix]] .- calc_tgeo(particles[p_ix], targets[t_ix], c_n) .- particles[p_ix].time,
+                    flow_params[:, ix[pmt_ix, t_ix, p_ix]],
+                    model.range_min,
+                    model.range_max
+                )
+                for p_ix in eachindex(particles)
+            ),
+            dims=2
+        ))
+        : 0.0
+        for (pmt_ix, t_ix) in product(1:n_pmt, eachindex(targets)))
+    return poiss_llh, shape_llh_gen, log_expec_per_pmt
 end
 
 
