@@ -43,27 +43,6 @@ detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => tar
 medium = make_cascadia_medium_properties(0.99f0)
 
 
-compute(p, t) = vcat(repeat([p, t], 1, 5), permutedims(1:5))
-cap(particles, targets) = mapreduce(t -> compute(t[1], t[2]), hcat, product(particles, targets))
-
-out(inp) = [Tuple(sl) for sl in eachcol(inp)]
-
-particles = ["p1", "p2", "p3"]
-targets = ["t1", "t2", "t3", "t4"]
-
-out(cap(particles, targets))
-
-ix = LinearIndices((1:5, eachindex(particles), eachindex(targets)))
-res = reshape(out(cap(particles, targets)), 5, length(particles), length(targets))
-
-ix2 = LinearIndices(res)
-
-res[ix[2, 2, 2]]
-
-res[ix[2, 2, 4]]
-
-
-
 function create_mock_muon(energy, position, direction, time, mean_free_path, length, rng)
     losses = []
 
@@ -86,6 +65,8 @@ function create_mock_muon(energy, position, direction, time, mean_free_path, len
 
     return losses
 end
+
+
 
 begin
     pos = SA[-150., -5., -450]
@@ -172,15 +153,11 @@ begin
     targets_range = targets_hex[target_mask]
 
     data = sample_multi_particle_event(losses_filt, targets_range, model, tf_dict, c_n, rng)
+    
+    # @code_warntype SurrogateModels.evaluate_model(losses_filt, data, targets_range, model, tf_dict, c_n)
+    @code_warntype track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n)
     @profview llh = track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n)
-
-
-    logenergies = 3:0.1:5
-    llhs = [track_likelihood_fixed_losses(le, theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n) for le in logenergies]
-    scatter(logenergies, llhs)
-
 end
-
 
 
 

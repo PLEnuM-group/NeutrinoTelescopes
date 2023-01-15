@@ -455,7 +455,7 @@ function calc_flow_input(particle::Particle, target::PhotonTarget, tf_vec::Abstr
 
     n_pmt = get_pmt_count(target)
 
-    feature_matrix = repeat(
+    feature_matrix::Matrix{typeof(dist)} = repeat(
         [
             log(dist)
             log(particle_energy)
