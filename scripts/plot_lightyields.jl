@@ -36,13 +36,13 @@ frac_contrib = fractional_contrib_long(1E5, zs, medium, PEMinus)
 plot(zs, frac_contrib, linetype=:steppost, label="", ylabel="Fractional light yield")
 
 ftamm_norm = frank_tamm_norm((200., 800.), wl -> refractive_index(wl, medium))
-light_yield = cherenkov_track_length.(1E5, PEMinus)
+light_yield = cascade_cherenkov_track_length.(1E5, PEMinus)
 
 plot(zs, frac_contrib .* light_yield, linetype=:steppost, label="", ylabel="Light yield per segment")
 
 
 # Calculate Cherenkov track length as function of energy
-tlens = cherenkov_track_length.((10 .^ log_energies), PEMinus)
+tlens = cascade_cherenkov_track_length.((10 .^ log_energies), PEMinus)
 plot(log_energies, tlens, yscale=:log10, xlabel="Log10(E/GeV)", ylabel="Cherenkov track length")
 
 total_lys = frank_tamm_norm((200.0, 800.0), wl -> refractive_index(wl, medium)) * tlens
@@ -51,52 +51,29 @@ p = plot(log_energies, total_lys, yscale=:log10, ylabel="Number of photons", xla
 label="", dpi=150)
 savefig(p, joinpath(@__DIR__, "../figures/photons_per_energy.png"))
 
-nodes = 5:100
 
-norms = [frank_tamm_norm((200.0, 800.0), wl -> get_refractive_index(wl, medium), n) for n in nodes]
-plot(nodes, norms)
+# Calculate light yield for muons
 
-@trace cherenkov_track_length.((10 .^ log_energies), LightYield.EMinus)
+rel_additional_track_length.(refractive_index(800., medium), 1E4)
+
+
+plot(log_energies, rel_additional_track_length.(refractive_index(800., medium), 10 .^log_energies) .* frank_tamm(450., refractive_index(450., medium)) .* 1E9 .* 1E2 / 10)
+
+rel_additional_track_length.(refractive_index(800., medium), 10 .^log_energies)
+
+
+wl_range = (600., 700.0)
+total_lys = total_lightyield.(Ref(Track()), 10 .^log_energies, 1., Ref(medium), Ref(wl_range))
+
+total_lys = reduce(hcat, collect.(total_lys))
+
+plot(log_energies, total_lys[1, :])
+plot!(log_energies, total_lys[2, :])
+
+
 
 lambdas = 200:1.:800
 
-plot(lambdas, get_refractive_index.(lambdas, Ref(medium)))
-plot(lambdas, get_dispersion.(lambdas, Ref(medium)))
-
-
-hobo_diff = diff(get_refractive_index.(lambdas, Ref(medium)))
-plot!(lambdas[2:end], hobo_diff)
-
-
+plot(lambdas, refractive_index.(lambdas, Ref(medium)))
+plot(lambdas, dispersion.(lambdas, Ref(medium)))
 plot(group_velocity.(lambdas, Ref(medium)))
-
-angularDist_a = 0.39
-angularDist_b = 2.61
-
-angularDist_I = 1. - exp(-angularDist_b * 2^angularDist_a)
-
-genf = x -> max(1. - (-log(1. - x*angularDist_I)/angularDist_b)^(1/angularDist_a), -1.)
-
-
-n_vals = 100000
-
-cosvals = genf.(rand(n_vals))
-phi_vals = 2*π*rand(n_vals)
-
-rot_dir = sph_to_cart.(acos.(cosvals), phi_vals)
-
-ph_phi = 2*π*rand(n_vals)
-ph_theta = fill(deg2rad(42), n_vals)
-
-ph_dir = sph_to_cart.(ph_theta, ph_phi)
-
-
-rot_vecs = rodrigues_rotation.(fill(SA[0., 0., 1.], n_vals), rot_dir, ph_dir)
-
-[rv[3] for rv in rot_vecs]
-
-histogram(([(rv[3]) for rv in rot_vecs]), normalize=true)
-
-angls = -1:0.01:1
-
-plot!(angls, cherenkov_ang_dist.(angls, 1.35) / cherenkov_ang_dist_int(1.35))
