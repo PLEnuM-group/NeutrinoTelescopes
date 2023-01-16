@@ -5,9 +5,10 @@ export LongitudinalParameterisation
 export get_longitudinal_params
 export MediumPropertiesWater, MediumPropertiesIce
 export CherenkovTrackLengthParameters
-export longitudinal_profile, cherenkov_track_length, cherenkov_counts, fractional_contrib_long
+export longitudinal_profile, cascade_cherenkov_track_length, fractional_contrib_long
 export particle_to_lightsource, particle_to_elongated_lightsource, particle_to_elongated_lightsource!
 export total_lightyield
+export rel_additional_track_length
 
 export AngularEmissionProfile
 export PhotonSource, PointlikeIsotropicEmitter, ExtendedCherenkovEmitter, CherenkovEmitter, PointlikeCherenkovEmitter
@@ -334,58 +335,36 @@ end
 
 
 
-function cherenkov_track_length_dev(energy::Real, track_len_params::CherenkovTrackLengthParameters)
+function cascade_cherenkov_track_length_dev(energy::Real, track_len_params::CherenkovTrackLengthParameters)
     track_len_params.alpha_dev * energy^track_len_params.beta_dev
 end
-cherenkov_track_length_dev(energy::Real, ::Type{ptype}) where {ptype<:ParticleType} = cherenkov_track_length_dev(energy, get_track_length_params(ptype))
+cascade_cherenkov_track_length_dev(energy::Real, ::Type{ptype}) where {ptype<:ParticleType} = cascade_cherenkov_track_length_dev(energy, get_track_length_params(ptype))
 
 """
-    cherenkov_track_length(energy::Real, track_len_params::CherenkovTrackLengthParameters)
+    cascade_cherenkov_track_length(energy::Real, track_len_params::CherenkovTrackLengthParameters)
 
 Cherenkov track length for cascades.
 energy in GeV
 
 returns track length in m
 """
-function cherenkov_track_length(::Cascade, energy::Real, track_len_params::CherenkovTrackLengthParameters)
+function cascade_cherenkov_track_length(energy::Real, track_len_params::CherenkovTrackLengthParameters)
     track_len_params.alpha * energy^track_len_params.beta
 end
 
 
-function cherenkov_track_length(::Cascade, energy::Real, ::Type{ptype}) where {ptype<:ParticleType}
-    return cherenkov_track_length(Cascade(), energy, get_track_length_params(ptype))
+function cascade_cherenkov_track_length(energy::Real, ::Type{ptype}) where {ptype<:ParticleType}
+    return cascade_cherenkov_track_length(energy, get_track_length_params(ptype))
 end
 
-
-function cherenkov_track_length(::Track, energy::Real, ::Type{ptype})
-
-
-end
 
 """
-    cherenkov_track_length(energy::Real, ::Type{ptype}) where {ptype<:ParticleType}
+    rel_additional_track_length_params(ref_index)
 
-Cherenkov track length for particle type `ptype` at energy `energy` in GeV.
+Interpolate additional track length parameters, taken from
+https://arxiv.org/pdf/1206.5530.pdf using E_cut = 500MeV
 """
-function cherenkov_track_length(energy::Real, ::Type{ptype}) where {ptype<:ParticleType}
-    return cherenkov_track_length(particle_shape(ptype), energy, ptype)
-end
-
-function total_lightyield(::Cascade, particle, medium, wl_range)
-    total_contrib = (
-        frank_tamm_norm(wl_range, wl -> refractive_index(wl, medium)) *
-        cherenkov_track_length.(particle.energy, particle.type)
-    )
-    return total_contrib
-end
-
-"""
-    additional_track_length_params(ref_index)
-
-Get
-
-https://arxiv.org/pdf/1206.5530.pdf
-function additional_track_length_params(ref_index)
+function rel_additional_track_length_params(ref_index)
 
     xs = [1.30, 1.33, 1.36]
     λs = [0.1842, 0.1880, 0.1916]
@@ -394,40 +373,58 @@ function additional_track_length_params(ref_index)
     slope_λ = (λs[end] - λs[1]) / (xs[end] - xs[1])
     slope_κ = (κs[end] - κs[1]) / (xs[end] - xs[1])
 
+    @show slope_λ, λs[1], (ref_index-xs[1])
     λ = λs[1] + (ref_index-xs[1]) * slope_λ
     κ = κs[1] + (ref_index-xs[1]) * slope_κ
 
     return λ, κ
 end
 
+"""
+    rel_additional_track_length(ref_index)
+Calculate additional track length for muons.
+From https://arxiv.org/pdf/1206.5530.pdf
+"""
+function rel_additional_track_length(ref_index, energy)
+    λ, κ = rel_additional_track_length_params(ref_index)
+    return  λ + κ * log(energy)
+end
 
 
-function total_lightyield(::Track, particle, medium, wl_range)
+function total_lightyield(::Track, energy::Number, length::Number, medium, wl_range)
+    function integrand(wl)
+        ref_ix = refractive_index(wl, medium)
+        return frank_tamm(wl, ref_ix)*(1 + rel_additional_track_length(ref_ix, energy))
+    end
+    T = typeof(energy)
+    total_contrib = integrate_gauss_quad(integrand, wl_range[1], wl_range[2]) * T(1E9) * length
 
-    lmu = frank_tamm_norm(wl_range, wl -> refractive_index(wl, medium))
+    total_contrib_naive = frank_tamm_norm(wl_range, wl -> refractive_index(wl, medium)) * rel_additional_track_length(1.33, energy)  * length
+    return total_contrib, total_contrib_naive
+end
 
-    ladd = λ + κ * log(particle.energy)
 
+function total_lightyield(::Track, particle::Particle, medium, wl_range)
+    return total_lightyield(Track(), particle.energy, particle.length, medium, wl_range)
+end
+
+function total_lightyield(::Cascade, particle, medium, wl_range)
     total_contrib = (
         frank_tamm_norm(wl_range, wl -> refractive_index(wl, medium)) *
-        cherenkov_track_length.(particle.energy, particle.type)
+        cascade_cherenkov_track_length(particle.energy, particle.type)
     )
     return total_contrib
 end
 
 
-
 function total_lightyield(
-    particle::Particle{T},
+    particle::Particle{PT, DT, ET, TT, PType},
     medium::MediumProperties,
-    wl_range::Tuple{T,T}
-) where {T<:Real}
-    total_contrib = (
-        frank_tamm_norm(wl_range, wl -> refractive_index(wl, medium)) *
-        cherenkov_track_length.(particle.energy, particle.type)
-    )
-    total_contrib
+    wl_range
+) where {PT, DT, ET, TT, PType}
+    return total_lightyield(particle_shape(PType), particle, medium, wl_range)
 end
+
 
 
 
