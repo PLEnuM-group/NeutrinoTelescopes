@@ -20,6 +20,7 @@ using Optim
 
 using Base.Iterators
 using Formatting
+using BenchmarkTools
 
 
 models = Dict(
@@ -65,6 +66,48 @@ function create_mock_muon(energy, position, direction, time, mean_free_path, len
 
     return losses
 end
+
+begin
+    pos = SA[-150., -5., -450]
+    theta = 1.4
+    phi = 0.4
+    energy = 5E4
+    rng = MersenneTwister(31339)
+    dir = sph_to_cart(theta, phi)
+
+    losses = create_mock_muon(energy, pos, dir, 0., 30, 500, rng)
+    losses_filt = [p for p in losses if p.energy > 100]
+
+
+    @load models["4"] model hparams opt tf_dict
+    c_n = c_at_wl(800f0, medium)
+    target_mask = any(norm.([p.position for p in losses_filt] .- permutedims([t.position for t in targets_hex])) .<= 200, dims=1)[1, :]
+
+    targets_range = targets_hex[target_mask]
+
+    data = sample_multi_particle_event(losses_filt, targets_range, model, tf_dict, c_n, rng)
+
+    # @code_warntype SurrogateModels.evaluate_model(losses_filt, data, targets_range, model, tf_dict, c_n)
+    #@code_warntype track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n)
+    llh = track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n)
+    b1 = @benchmark track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n)
+
+    feat_buffer = zeros(9, 16*length(targets_range)*length(losses_filt))
+    llh2 = track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.;
+                                            losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n,
+                                            feat_buffer=feat_buffer)
+
+    b2 = @benchmark track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n,
+                                            feat_buffer=feat_buffer)
+    llh ≈ llh2
+
+end
+
+b1
+b2
+
+@profview track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n,
+feat_buffer=feat_buffer)
 
 
 
@@ -134,30 +177,7 @@ end
 
 
 
-begin
-    pos = SA[-150., -5., -450]
-    theta = 1.4
-    phi = 0.4
-    energy = 5E4
-    rng = MersenneTwister(31339)
-    dir = sph_to_cart(theta, phi)
 
-    losses = create_mock_muon(energy, pos, dir, 0., 30, 500, rng)
-    losses_filt = [p for p in losses if p.energy > 100]
-
-
-    @load models["4"] model hparams opt tf_dict
-    c_n = c_at_wl(800f0, medium)
-    target_mask = any(norm.([p.position for p in losses_filt] .- permutedims([t.position for t in targets_hex])) .<= 200, dims=1)[1, :]
-
-    targets_range = targets_hex[target_mask]
-
-    data = sample_multi_particle_event(losses_filt, targets_range, model, tf_dict, c_n, rng)
-    
-    # @code_warntype SurrogateModels.evaluate_model(losses_filt, data, targets_range, model, tf_dict, c_n)
-    @code_warntype track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n)
-    @profview llh = track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n)
-end
 
 
 

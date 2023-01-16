@@ -3,20 +3,36 @@ module Types
 using StaticArrays
 
 export ParticleType, PEPlus, PEMinus, PGamma
-export Particle
+export pdf_code, particle_shape
+export Track, Cascade
+export Particle, ParticleShape
 
 
 abstract type ParticleType end
 
-struct PEPlus <:ParticleType end
-struct PEMinus <:ParticleType end
-struct PGamma <:ParticleType end
+struct PEPlus <: ParticleType end
+struct PEMinus <: ParticleType end
+struct PGamma <: ParticleType end
+struct PMuPlus <: ParticleType end
+struct PMuMinus <: ParticleType end
+
+abstract type ParticleShape end
+struct Track <: ParticleShape end
+struct Cascade <: ParticleShape end
 
 pdg_code(::Type{PEPlus}) = -11
 pdg_code(::Type{PEMinus}) = 11
 pdg_code(::Type{PGamma}) = 22
+pdg_code(::Type{PMuMinus}) = 13
+pdg_code(::Type{PMuPlus}) = -13
 
-mutable struct Particle{PT, DT, TT, ET, PType <: ParticleType}
+particle_shape(::Type{<:PEPlus}) = Cascade()
+particle_shape(::Type{<:PEMinus}) = Cascade()
+particle_shape(::Type{<:PGamma}) = Cascade()
+particle_shape(::Type{<:PMuMinus}) = Track()
+particle_shape(::Type{<:PMuPlus}) = Track()
+
+mutable struct Particle{PT,DT,TT,ET,PType<:ParticleType}
     position::SVector{3,PT}
     direction::SVector{3,DT}
     time::TT
@@ -24,7 +40,10 @@ mutable struct Particle{PT, DT, TT, ET, PType <: ParticleType}
     type::Type{PType}
 end
 
-function Base.convert(::Type{Particle{T}}, x::Particle) where T
+particle_shape(::Particle{PT,DT,TT,ET,PType}) where {PT,DT,TT,ET,PType} = particle_shape(PType)
+
+
+function Base.convert(::Type{Particle{T}}, x::Particle) where {T}
     pos = T.(x.position)
     dir = T.(x.direction)
     energy = T(x.energy)

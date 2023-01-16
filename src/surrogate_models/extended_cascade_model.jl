@@ -488,6 +488,39 @@ function calc_flow_input(particles::AbstractVector{<:Particle}, targets::Abstrac
     return res
 end
 
+
+function calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec, output)
+
+    n_pmt = get_pmt_count(eltype(targets))
+
+    for (p_ix, t_ix) in product(eachindex(particles), eachindex(targets))
+        particle = particles[p_ix]
+        target = targets[t_ix]
+        rel_pos = particle.position .- target.position
+        dist = norm(rel_pos)
+        normed_rel_pos = rel_pos ./ dist
+
+        out_ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
+
+        for pmt_ix in 1:n_pmt
+
+            ix = out_ix[pmt_ix, p_ix, t_ix]
+
+            output[1, ix] = log(dist)
+            output[2, ix] = log(particle.energy)
+            output[3:5, ix] = particle.direction
+            output[6:8, ix] = normed_rel_pos
+            output[9, ix] = pmt_ix
+        end
+    end
+
+    feature_matrix = copy(output)
+
+    return apply_feature_transform(feature_matrix, tf_vec, n_pmt)
+end
+
+
+
 function poisson_logpmf(n, log_lambda)
     return n * log_lambda - exp(log_lambda) - loggamma(n + 1.0)
 end
@@ -585,11 +618,16 @@ function sample_cascade_event(energy, dir_theta, dir_phi, position, time; target
 end
 
 
-function evaluate_model(particles, data, targets, model, tf_vec, c_n)
+function evaluate_model(particles, data, targets, model, tf_vec, c_n; feat_buffer=nothing)
     n_pmt = get_pmt_count(eltype(targets))
     @assert length(targets) * n_pmt == length(data)
 
-    input = calc_flow_input(particles, targets, tf_vec)
+    if isnothing(feat_buffer)
+        input = calc_flow_input(particles, targets, tf_vec)
+    else
+        input = calc_flow_input(particles, targets, tf_vec, feat_buffer)
+    end
+
 
     output::Matrix{eltype(input)} = model.embedding(input)
 
@@ -638,10 +676,10 @@ function evaluate_model(particles, data, targets, model, tf_vec, c_n)
 end
 
 
-function multi_particle_likelihood(particles; data, targets, model, tf_vec, c_n)
+function multi_particle_likelihood(particles; data, targets, model, tf_vec, c_n, feat_buffer=nothing)
     n_pmt = get_pmt_count(eltype(targets))
     @assert length(targets) * n_pmt == length(data)
-    pois_llh, shape_llh, _ = evaluate_model(particles, data, targets, model, tf_vec, c_n)
+    pois_llh, shape_llh, _ = evaluate_model(particles, data, targets, model, tf_vec, c_n, feat_buffer=feat_buffer)
     return sum(pois_llh) + sum(shape_llh)
 end
 
@@ -653,7 +691,7 @@ function single_cascade_likelihood(logenergy, dir_theta, dir_phi, position, time
     return multi_particle_likelihood(particles, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n)
 end
 
-function track_likelihood_fixed_losses(logenergy, dir_theta, dir_phi, position, time; losses, muon_energy, data, targets, model, tf_vec, c_n)
+function track_likelihood_fixed_losses(logenergy, dir_theta, dir_phi, position, time; losses, muon_energy, data, targets, model, tf_vec, c_n, feat_buffer=nothing)
 
     energy = 10^logenergy
     dir = sph_to_cart(dir_theta, dir_phi)
@@ -666,7 +704,7 @@ function track_likelihood_fixed_losses(logenergy, dir_theta, dir_phi, position, 
 
     new_losses = Particle.(new_loss_positions, [dir], new_loss_times, new_loss_energies, [PEMinus])
 
-    return multi_particle_likelihood(new_losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n)
+    return multi_particle_likelihood(new_losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, feat_buffer=feat_buffer)
 
 end
 

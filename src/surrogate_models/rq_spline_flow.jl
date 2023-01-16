@@ -203,6 +203,13 @@ function constrain_spline_params(params, range_min, range_max, min_bin_size=1e-4
     knot_slopes = _normalize_knot_slopes(unnormalized_knot_slopes,
         min_knot_slope)
 
+    # Use identify outside of boundary
+
+    ones_a = ones_like(x_pos, pad_shape)
+    knot_slopes = vcat(ones_a, knot_slopes[2:end-1, :], ones_a)
+
+
+
     return x_pos, y_pos, knot_slopes
 
 end
