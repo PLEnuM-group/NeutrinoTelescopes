@@ -28,7 +28,7 @@ using PoissonRandom
 using Interpolations
 using PoissonRandom
 using JSON
-
+using ForwardDiff
 
 using ..Spectral
 using ..Medium
@@ -373,9 +373,8 @@ function rel_additional_track_length_params(ref_index)
     slope_λ = (λs[end] - λs[1]) / (xs[end] - xs[1])
     slope_κ = (κs[end] - κs[1]) / (xs[end] - xs[1])
 
-    @show slope_λ, λs[1], (ref_index-xs[1])
-    λ = λs[1] + (ref_index-xs[1]) * slope_λ
-    κ = κs[1] + (ref_index-xs[1]) * slope_κ
+    λ = λs[1] + (ref_index - xs[1]) * slope_λ
+    κ = κs[1] + (ref_index - xs[1]) * slope_κ
 
     return λ, κ
 end
@@ -387,20 +386,38 @@ From https://arxiv.org/pdf/1206.5530.pdf
 """
 function rel_additional_track_length(ref_index, energy)
     λ, κ = rel_additional_track_length_params(ref_index)
-    return  λ + κ * log(energy)
+    return λ + κ * log(energy)
 end
 
 
 function total_lightyield(::Track, energy::Number, length::Number, medium, wl_range)
+
+    # This is probably correct...
     function integrand(wl)
         ref_ix = refractive_index(wl, medium)
-        return frank_tamm(wl, ref_ix)*(1 + rel_additional_track_length(ref_ix, energy))
+        return frank_tamm(wl, ref_ix) * (1 + rel_additional_track_length(ref_ix, energy))
     end
     T = typeof(energy)
     total_contrib = integrate_gauss_quad(integrand, wl_range[1], wl_range[2]) * T(1E9) * length
 
-    total_contrib_naive = frank_tamm_norm(wl_range, wl -> refractive_index(wl, medium)) * rel_additional_track_length(1.33, energy)  * length
-    return total_contrib, total_contrib_naive
+    #=
+    function integrand2(wl)
+        lmu = frank_tamm_norm(wl_range, wl -> refractive_index(wl, medium))
+        ref_ix = refractive_index(wl, medium)
+
+        fadd(wl) = rel_additional_track_length(refractive_index(wl, medium), energy)
+        dfadd(wl) = ForwardDiff.derivative(fadd, wl)
+
+        return (
+            frank_tamm(wl, ref_ix) * (1 + rel_additional_track_length(ref_ix, energy)) * 1E9 +
+            lmu * dfadd(wl)
+        )
+    end
+
+    total_contrib_full = integrate_gauss_quad(integrand2, wl_range[1], wl_range[2]) * length
+    =#
+
+    return total_contrib
 end
 
 
@@ -418,17 +435,12 @@ end
 
 
 function total_lightyield(
-    particle::Particle{PT, DT, ET, TT, PType},
+    particle::Particle{PT,DT,ET,TT,LT,PType},
     medium::MediumProperties,
     wl_range
-) where {PT, DT, ET, TT, PType}
+) where {PT,DT,ET,TT,LT,PType}
     return total_lightyield(particle_shape(PType), particle, medium, wl_range)
 end
-
-
-
-
-
 
 
 abstract type PhotonSource{T} end
@@ -541,6 +553,7 @@ function ExtendedCherenkovEmitter(
     wl_range::Tuple{T,T};
     oversample=1.0
 ) where {T<:Real}
+
     long_param = LongitudinalParameterisation(particle.energy, medium, particle.type)
     photons = pois_rand(total_lightyield(particle, medium, wl_range) * oversample)
 
@@ -591,9 +604,9 @@ struct CherenkovTrackEmitter{T} <: CherenkovEmitter{T}
     photons::Int64
 end
 
-function CherenkovTrackEmitter(particle::Particle{T}, medium::MediumProperties, wl_range::Tuple{T,T}, length::T) where {T<:Real}
-    n_photons = frank_tamm_norm(wl_range, wl -> refractive_index(wl, medium)) * length
-    return CherenkovTrackEmitter(particle.position, partile.direction, particle.time, length, Int64(ceil(n_photons)))
+function CherenkovTrackEmitter(particle::Particle{T}, medium::MediumProperties, wl_range::Tuple{T,T}) where {T<:Real}
+    n_photons = pois_rand(total_lightyield(particle, medium, wl_range))
+    return CherenkovTrackEmitter(particle.position, particle.direction, particle.time, particle.length, n_photons)
 end
 
 

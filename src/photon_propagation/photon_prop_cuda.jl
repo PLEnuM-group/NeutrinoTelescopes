@@ -13,6 +13,7 @@ using Logging
 using PoissonRandom
 using Rotations
 using StructArrays
+using Cthulhu
 
 export cuda_propagate_photons!, initialize_photon_arrays, process_output
 export cuda_propagate_multi_target!, check_intersection
@@ -20,6 +21,7 @@ export cherenkov_ang_dist, cherenkov_ang_dist_int
 export make_hits_from_photons, propagate_photons, run_photon_prop
 export calc_time_residual!, calc_total_weight!, calc_tgeo, c_at_wl
 export PhotonPropSetup, PhotonHit
+export calc_time_residual_tracks!, calc_tgeo_tracks
 
 using ...Utils
 using ...Types
@@ -204,7 +206,8 @@ end
     pos::SVector{3,T} = source.position .+ pos_along .* source.direction
     time = source.time + pos_along / T(c_vac_m_ns)
 
-    ph_dir = cherenkov_angle(wl, medium)
+    #TODO: For tracks this parametrisation is probably suboptimal
+    ph_dir = sample_cherenkov_direction(source, medium, wl)
 
     PhotonState(pos, ph_dir, time, wl)
 end
@@ -799,6 +802,7 @@ function run_photon_prop_no_local_cache(
     err_code = CuVector(zeros(Int32, 1))
     targets = CuVector(targets)
 
+
     kernel = @cuda launch = false cuda_propagate_photons!(
         photon_hits, stack_idx, n_ph_sim, err_code, seed,
         sources[1], spectrum, targets, medium)
@@ -971,13 +975,54 @@ function c_at_wl(wl, medium)
 end
 
 calc_tgeo(distance, c_n::Number) = distance / c_n
-calc_tgeo(distance, medium::MediumProperties) = calc_tgeo(distance, c_at_wl(800.0f0, medium))
+calc_tgeo(distance, medium::MediumProperties) = calc_tgeo(distance, c_at_wl(800.0, medium))
 
 function calc_tgeo(particle::Particle, target::PhotonTarget, c_n_or_medium)
     return calc_tgeo(norm(particle.position .- target.position) - target.radius, c_n_or_medium)
 end
 
-function calc_time_residual!(df::AbstractDataFrame, setup::PhotonPropSetup)
+
+function closest_approach_distance(p0, dir, pos)
+    return norm(cross((pos .- p0), dir))
+end
+
+
+function calc_tgeo_tracks(p0, dir, pos, n_ph, n_grp)
+    c_vac = ustrip(u"m/ns", SpeedOfLightInVacuum)
+    dist = closest_approach_distance(p0, dir, pos)
+    dpos = pos .- p0
+    t_geo = 1 / c_vac * (dot(dir, dpos) + dist * (n_grp * n_ph - 1) / sqrt((n_ph^2 - 1)))
+    return t_geo
+end
+
+function calc_tgeo_tracks(p0, dir, pos, medium::MediumProperties)
+    c_vac = ustrip(u"m/ns", SpeedOfLightInVacuum)
+    wl = 800.0
+    n_ph = refractive_index(wl, medium)
+    n_grp = c_vac / group_velocity(wl, medium)
+
+    return calc_tgeo_tracks(p0, dir, pos, n_ph, n_grp)
+end
+
+function calc_time_residual_tracks!(df::AbstractDataFrame, setup::PhotonPropSetup)
+
+    targ_id_map = Dict([target.module_id => target for target in setup.targets])
+
+    t0 = setup.sources[1].time
+    for (key, subdf) in pairs(groupby(df, :module_id))
+        target = targ_id_map[key.module_id]
+        tgeo = calc_tgeo_tracks(
+            setup.sources[1].position,
+            setup.sources[1].direction,
+            target.position,
+            setup.medium)
+
+        subdf[!, :tres] = (subdf[:, :time] .- tgeo .- t0)
+    end
+end
+
+
+function calc_time_residual_cascades!(df::AbstractDataFrame, setup::PhotonPropSetup)
 
     targ_id_map = Dict([target.module_id => target for target in setup.targets])
 
@@ -989,6 +1034,16 @@ function calc_time_residual!(df::AbstractDataFrame, setup::PhotonPropSetup)
 
         subdf[!, :tres] = (subdf[:, :time] .- tgeo .- t0)
     end
+end
+
+
+function calc_time_residual!(df::AbstractDataFrame, setup::PhotonPropSetup)
+    if eltype(setup.sources) <: CherenkovTrackEmitter
+        return calc_time_residual_tracks!(df, setup)
+    else
+        return calc_time_residual_cascades!(df, setup)
+    end
+
 end
 
 end # module

@@ -49,18 +49,71 @@ function save_hdf!(
 end
 
 
+function make_setup(
+    mode, pos, dir, seed;
+    g=0.99f0)
+
+    medium = make_cascadia_medium_properties(g)
+    pmt_area = Float32((75e-3 / 2)^2 * π)
+    target_radius = 0.21f0
+    target = MultiPMTDetector(
+        @SVector[0.0f0, 0.0f0, 0.0f0],
+        target_radius,
+        pmt_area,
+        make_pom_pmt_coordinates(Float32),
+        UInt16(1)
+    )
+    wl_range = (300.0f0, 800.0f0)
+
+    spectrum = CherenkovSpectrum(wl_range, 30, medium)
+
+    if mode == :extended
+        particle = Particle(
+            pos,
+            dir,
+            0.0f0,
+            Float32(energy),
+            0.0f0
+            PEMinus
+        )
+        source = ExtendedCherenkovEmitter(particle, medium, wl_range)
+    elseif mode == :bare_infinite_track
+        ppos = pos .- 200 .* dir
+
+        particle = Particle(
+            ppos,
+            dir,
+            0.0f0,
+            Float32(energy),
+            400.0f0
+            PMuMinus
+        )
+        source = CherenkovTrackEmitter(particle, medium, wl_range)
+    else
+        particle = Particle(
+            pos,
+            dir,
+            0.0f0,
+            Float32(energy),
+            PEMinus)
+        source = PointlikeChernekovEmitter(particle, medium, wl_range)
+    end
+
+    setup = PhotonPropSetup(source, target, medium, spectrum, seed)
+    return setup
+
+end
+
+
 function run_sim(
     energy,
     distance,
     dir_costheta,
     dir_phi,
-    target,
-    spectrum,
-    medium,
     output_fname,
     seed,
     n_resample=100;
-    extended=true)
+    mode=:extended)
 
     sim_attrs = Dict(
         "energy" => energy,
@@ -70,26 +123,12 @@ function run_sim(
 
 
     direction::SVector{3,Float32} = sph_to_cart(acos(dir_costheta), dir_phi)
-
     ppos = @SVector[0.0f0, 0.0f0, distance]
-    particle = Particle(
-        ppos,
-        direction,
-        0.0f0,
-        Float32(energy),
-        PEMinus
-    )
 
-    if extended
-        source = ExtendedCherenkovEmitter(particle, medium, (300.0f0, 800.0f0))
-    else
-        source = PointlikeCherenkovEmitter(particle, medium, (300.0f0, 800.0f0))
-    end
-
-    oversample = 1.0
+    base_weight = 1.0
     photons = nothing
 
-    setup = PhotonPropSetup(source, target, medium, spectrum, seed)
+    setup = setup_sources(mode, ppos, direction, seed)
 
     while true
         prop_source = setup.sources[1]
@@ -106,22 +145,22 @@ function run_sim(
 
         setup.sources[1] = oversample_source(prop_source, 10)
         println(format("distance {:.2f} photons: {:d}", distance, setup.sources[1].photons))
-        oversample *= 10
+        base_weight /= 10.0
 
     end
 
     nph_sim = nrow(photons)
+
     if nph_sim > 1E6
         photons = photons[1:1000000, :]
-        oversample = 1E6 / nph_sim
+        base_weight *= nph_sim / 1E6
     end
 
-
     calc_time_residual!(photons, setup)
-
     transform!(photons, :position => (p -> reduce(hcat, p)') => [:pos_x, :pos_y, :pos_z])
     calc_total_weight!(photons, setup)
-    photons[!, :total_weight] ./= oversample
+    photons[!, :total_weight] .*= base_weight
+
     save_hdf!(
         output_fname,
         "photons",
@@ -184,29 +223,17 @@ function run_sims(parsed_args)
     #=
     parsed_args = Dict("n_sims"=>1, "n_skip"=>0)
     =#
-    medium = make_cascadia_medium_properties(0.99f0)
-    pmt_area = Float32((75e-3 / 2)^2 * π)
-    target_radius = 0.21f0
-    target = MultiPMTDetector(
-        @SVector[0.0f0, 0.0f0, 0.0f0],
-        target_radius,
-        pmt_area,
-        make_pom_pmt_coordinates(Float32),
-        UInt16(1)
-    )
-    spectrum = CherenkovSpectrum((300.0f0, 800.0f0), 30, medium)
-
 
     n_sims = parsed_args["n_sims"]
     n_skip = parsed_args["n_skip"]
-    extended = parsed_args["extended"]
+    mode = Symbol(parsed_args["mode"])
     n_resample = parsed_args["n_resample"]
     e_min = parsed_args["e_min"]
     e_max = parsed_args["e_max"]
     dist_min = parsed_args["dist_min"]
     dist_max = parsed_args["dist_max"]
 
-    if extended
+    if mode != :pointlike
         sobol = skip(
             SobolSeq(
                 [log10(e_min), log10(dist_min), -1, 0],
@@ -223,7 +250,7 @@ function run_sims(parsed_args)
             dir_costheta = pars[3]
             dir_phi = pars[4]
 
-            run_sim(energy, distance, dir_costheta, dir_phi, target, spectrum, medium, parsed_args["output"], i + n_skip, n_resample, extended=true)
+            run_sim(energy, distance, dir_costheta, dir_phi, parsed_args["output"], i + n_skip, n_resample, mode=mode)
         end
     else
         sobol = skip(
@@ -237,7 +264,7 @@ function run_sims(parsed_args)
             dir_costheta = pars[2]
             dir_phi = 0
 
-            run_sim(energy, distance, dir_costheta, dir_phi, target, spectrum, medium, parsed_args["output"], i + n_skip, n_resample, extended=false)
+            run_sim(energy, distance, dir_costheta, dir_phi, parsed_args["output"], i + n_skip, n_resample, mode=mode)
         end
     end
 end
@@ -264,9 +291,9 @@ s = ArgParseSettings()
     arg_type = Int
     required = false
     default = 100
-    "--extended"
-    help = "Simulate extended cascades"
-    action = :store_true
+    "--mode"
+    help = "Simulation Mode"
+    choices = ["extended", "bare_infinite_track", "pointlike"]
     "--e_min"
     help = "Minimum energy"
     arg_type = Float64

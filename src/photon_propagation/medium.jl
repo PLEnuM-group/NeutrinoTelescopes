@@ -76,9 +76,9 @@ struct WaterProperties{T<:Real} <: MediumProperties{T}
     radiation_length::T # g / cm^2
     density::T # kg/m^3
     mean_scattering_angle::T
-    quan_fry_params::Tuple{T, T, T, T}
+    quan_fry_params::Tuple{T,T,T,T}
 
-    WaterProperties(::T, ::T, ::T, ::T, ::T, ::T, ::T, ::T, ::Tuple{T, T, T, T}) where {T} = error("Use unitful constructor")
+    WaterProperties(::T, ::T, ::T, ::T, ::T, ::T, ::T, ::T, ::Tuple{T,T,T,T}) where {T} = error("Use unitful constructor")
 
     @doc """
             function WaterProperties(
@@ -233,14 +233,14 @@ end
 
 function refractive_index_fry(
     wavelength::Real,
-    quan_fry_params::Tuple{U, U, U, U}
+    quan_fry_params::Tuple{U,U,U,U}
 ) where {U<:Real}
 
     a01, a2, a3, a4 = quan_fry_params
     x = one(wavelength) / wavelength
     x2 = x * x
     # a01 + x*a2 + x^2 * a3 + x^3 * a4
-    return oftype(wavelength, fma(x, a2, a01) + fma(x2, a3, x2*x*a4))
+    return oftype(wavelength, fma(x, a2, a01) + fma(x2, a3, x2 * x * a4))
 end
 
 function refractive_index_fry(
@@ -286,15 +286,15 @@ function dispersion_fry(
     wavelength::T;
     salinity::Real,
     temperature::Real,
-    pressure::Real) where {T <: Real}
+    pressure::Real) where {T<:Real}
     dispersion_fry(wavelength, T.(_calc_quan_fry_params(salinity, temperature, pressure)))
 end
 
-function dispersion_fry(wavelength::T, quan_fry_params::Tuple{T, T, T, T}) where {T<:Real}
+function dispersion_fry(wavelength::T, quan_fry_params::NTuple{4,<:Number}) where {T<:Number}
     a2, a3, a4 = quan_fry_params
     x = one(T) / wavelength
 
-    return T(a2 + T(2)*x*a3 + T(3)*x^2*a4) * T(-1)/wavelength^2
+    return T(a2 + T(2) * x * a3 + T(3) * x^2 * a4) * T(-1) / wavelength^2
 end
 
 dispersion(wavelength::Real, medium::WaterProperties) = dispersion_fry(
@@ -307,7 +307,7 @@ dispersion(wavelength::Real, medium::WaterProperties) = dispersion_fry(
 Calculate the cherenkov angle (in rad) for `wavelength` and `medium`.
 """
 function cherenkov_angle(wavelength, medium::MediumProperties)
-    return acos(one(typeof(wavelength))/refractive_index(wavelength, medium))
+    return acos(one(typeof(wavelength)) / refractive_index(wavelength, medium))
 end
 
 function group_velocity(wavelength::T, medium::MediumProperties) where {T<:Real}

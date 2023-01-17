@@ -2,7 +2,7 @@ module Types
 
 using StaticArrays
 
-export ParticleType, PEPlus, PEMinus, PGamma
+export ParticleType, PEPlus, PEMinus, PGamma, PMuMinus, PMuPlus
 export pdf_code, particle_shape
 export Track, Cascade
 export Particle, ParticleShape
@@ -41,7 +41,7 @@ mutable struct Particle{PT,DT,TT,ET,LT,PType<:ParticleType}
     type::Type{PType}
 end
 
-particle_shape(::Particle{PT,DT,TT,ET,LT, PType}) where {PT,DT,TT,ET,LT, PType} = particle_shape(PType)
+particle_shape(::Particle{PT,DT,TT,ET,LT,PType}) where {PT,DT,TT,ET,LT,PType} = particle_shape(PType)
 
 
 function Base.convert(::Type{Particle{T}}, x::Particle) where {T}
