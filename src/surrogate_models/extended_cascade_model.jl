@@ -613,7 +613,7 @@ end
 function sample_cascade_event(energy, dir_theta, dir_phi, position, time; targets, model, tf_vec, c_n, rng=nothing)
 
     dir = sph_to_cart(dir_theta, dir_phi)
-    particle = Particle(position, dir, time, energy, PEMinus)
+    particle = Particle(position, dir, time, energy, 0., PEMinus)
     return sample_multi_particle_event([particle], targets, model, tf_vec, c_n, rng)
 end
 
@@ -629,7 +629,7 @@ function evaluate_model(particles, data, targets, model, tf_vec, c_n; feat_buffe
     end
 
 
-    output::Matrix{eltype(input)} = model.embedding(input)
+    output::Matrix{eltype(input)} = cpu(model.embedding(gpu(input)))
 
     # The embedding for all the parameters is
     # [(p_1, t_1, pmt_1), (p_1, t_1, pmt_2), ... (p_2, t_1, pmt_1), ... (p_1, t_end, pmt_1), ... (p_end, t_end, pmt_end)]
@@ -684,11 +684,11 @@ function multi_particle_likelihood(particles; data, targets, model, tf_vec, c_n,
 end
 
 
-function single_cascade_likelihood(logenergy, dir_theta, dir_phi, position, time; data, targets, model, tf_vec, c_n)
+function single_cascade_likelihood(logenergy, dir_theta, dir_phi, position, time; data, targets, model, tf_vec, c_n, feat_buffer=nothing)
     dir = sph_to_cart(dir_theta, dir_phi)
     energy = 10^logenergy
-    particles = [Particle(position, dir, time, energy, PEMinus)]
-    return multi_particle_likelihood(particles, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n)
+    particles = [Particle(position, dir, time, energy, 0., PEMinus)]
+    return multi_particle_likelihood(particles, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, feat_buffer=feat_buffer)
 end
 
 function track_likelihood_fixed_losses(logenergy, dir_theta, dir_phi, position, time; losses, muon_energy, data, targets, model, tf_vec, c_n, feat_buffer=nothing)
@@ -702,7 +702,7 @@ function track_likelihood_fixed_losses(logenergy, dir_theta, dir_phi, position, 
 
     new_loss_energies = [p.energy / muon_energy * energy for p in losses]
 
-    new_losses = Particle.(new_loss_positions, [dir], new_loss_times, new_loss_energies, [PEMinus])
+    new_losses = Particle.(new_loss_positions, [dir], new_loss_times, new_loss_energies, 0., [PEMinus])
 
     return multi_particle_likelihood(new_losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, feat_buffer=feat_buffer)
 

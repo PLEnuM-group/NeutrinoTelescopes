@@ -12,7 +12,6 @@ using DataFrames
 using Zygote
 
 using SpecialFunctions
-using Enzyme
 using StatsBase
 using Base.Iterators
 using Distributions
@@ -60,7 +59,7 @@ function create_mock_muon(energy, position, direction, time, mean_free_path, len
         pos = position .+ dist_travelled .* direction
         t = time + dist_travelled * 0.3
 
-        push!(losses, Particle(pos, direction, t, e_loss, PEMinus))
+        push!(losses, Particle(pos, direction, t, e_loss, 0., PEMinus))
 
     end
 
@@ -87,17 +86,18 @@ begin
 
     data = sample_multi_particle_event(losses_filt, targets_range, model, tf_dict, c_n, rng)
 
+    gpu_model = gpu(model)
     # @code_warntype SurrogateModels.evaluate_model(losses_filt, data, targets_range, model, tf_dict, c_n)
     #@code_warntype track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n)
-    llh = track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n)
-    b1 = @benchmark track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n)
+    llh = track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=gpu_model, tf_vec=tf_dict, c_n=c_n)
+    b1 = @benchmark track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=gpu_model, tf_vec=tf_dict, c_n=c_n)
 
     feat_buffer = zeros(9, 16*length(targets_range)*length(losses_filt))
     llh2 = track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.;
-                                            losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n,
+                                            losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=gpu_model, tf_vec=tf_dict, c_n=c_n,
                                             feat_buffer=feat_buffer)
 
-    b2 = @benchmark track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n,
+    b2 = @benchmark track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=gpu_model, tf_vec=tf_dict, c_n=c_n,
                                             feat_buffer=feat_buffer)
     llh ≈ llh2
 
@@ -106,7 +106,7 @@ end
 b1
 b2
 
-@profview track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=model, tf_vec=tf_dict, c_n=c_n,
+@profview track_likelihood_fixed_losses(log10(energy), theta, phi, pos, 0.; losses=losses_filt, muon_energy=energy, data=data, targets=targets_range, model=gpu(model), tf_vec=tf_dict, c_n=c_n,
 feat_buffer=feat_buffer)
 
 

@@ -81,7 +81,7 @@ fnames_casc = [
     joinpath(@__DIR__, "../data/photon_table_extended_5.hd5"),
     joinpath(@__DIR__, "../data/photon_table_extended_6.hd5")
 ]
-train_model(fnames_casc, "rq_spline_model_casc_l2_0", 10000)
+train_model(fnames_casc, "rq_spline_model_casc_l2_0", 7000)
 
 fnames_muon = [
     joinpath(@__DIR__, "../data/photon_table_bare_muon.hd5"),
