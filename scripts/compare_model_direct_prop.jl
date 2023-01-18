@@ -1,5 +1,5 @@
 using NeutrinoTelescopes
-using Plots
+using CairoMakie
 using Distributions
 using Random
 using BSON
@@ -7,32 +7,62 @@ using Flux
 using StaticArrays
 using DSP
 using DataFrames
+using Rotations
 
 using LinearAlgebra
 
 
-distance = 50f0
-n_pmts=16
-pmt_area=Float32((75e-3 / 2)^2*π)
+medium = make_cascadia_medium_properties(0.99f0)
+pmt_area = Float32((75e-3 / 2)^2 * π)
 target_radius = 0.21f0
-target = DetectionSphere(@SVector[0.0f0, 0.0f0, distance], target_radius, n_pmts, pmt_area)
+target = MultiPMTDetector(
+    @SVector[0.0f0, 0.0f0, 0.0f0],
+    target_radius,
+    pmt_area,
+    make_pom_pmt_coordinates(Float32),
+    UInt16(1)
+)
+wl_range = (300.0f0, 800.0f0)
+spectrum = CherenkovSpectrum(wl_range, 30, medium)
 
-targets = [target]
 
-zenith_angle = 10f0
-azimuth_angle = 10f0
+dir = SA[0f0, 1f0, 0f0]
+pos = SA[0f0, 0f0, 10f0]
+ppos = pos .- 200 .* dir
 
-pdir = sph_to_cart(deg2rad(zenith_angle), deg2rad(azimuth_angle))
+energy = 1E5
 
 particle = Particle(
-        @SVector[0.0f0, 0f0, 0.0f0],
-        pdir,
-        0f0,
-        Float32(1E5),
-        PEMinus
+    ppos,
+    dir,
+    0.0f0,
+    Float32(energy),
+    400.0f0,
+    PMuMinus
 )
+source = CherenkovTrackEmitter(particle, medium, wl_range)
 
-medium = make_cascadia_medium_properties(Float32)
+setup = PhotonPropSetup(source, target, medium, spectrum, 1)
+
+photons = propagate_photons(setup)
+calc_time_residual!(photons, setup)
+calc_total_weight!(photons, setup)
+orientation = RotMatrix3(I)
+hits = make_hits_from_photons(photons, setup, orientation)
+
+fig = Figure(resolution=(1500, 1000))
+ga = fig[1, 1] = GridLayout(4, 4)
+
+for i in 1:16
+    row, col = divrem(i - 1, 4)
+    mask = hits[:, :pmt_id] .== i
+    ax = Axis(ga[col+1, row+1], xlabel="Time Residual(ns)", ylabel="Photons / time", title="PMT $i",
+              )
+    hist!(ax, hits[mask, :tres], bins=-50:3:150, weights=hits[mask, :total_weight], color=:orange, normalization=:density,)
+end
+fig
+
+
 
 prop_source_ext = ExtendedCherenkovEmitter(particle, medium, (300f0, 800f0))
 prop_source_che = PointlikeCherenkovEmitter(particle, medium, (300f0, 800f0))

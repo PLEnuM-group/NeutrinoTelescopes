@@ -50,7 +50,7 @@ end
 
 
 function make_setup(
-    mode, pos, dir, seed;
+    mode, pos, dir, energy, seed;
     g=0.99f0)
 
     medium = make_cascadia_medium_properties(g)
@@ -73,7 +73,7 @@ function make_setup(
             dir,
             0.0f0,
             Float32(energy),
-            0.0f0
+            0.0f0,
             PEMinus
         )
         source = ExtendedCherenkovEmitter(particle, medium, wl_range)
@@ -85,7 +85,7 @@ function make_setup(
             dir,
             0.0f0,
             Float32(energy),
-            400.0f0
+            400.0f0,
             PMuMinus
         )
         source = CherenkovTrackEmitter(particle, medium, wl_range)
@@ -95,6 +95,7 @@ function make_setup(
             dir,
             0.0f0,
             Float32(energy),
+            0.0f0,
             PEMinus)
         source = PointlikeChernekovEmitter(particle, medium, wl_range)
     end
@@ -128,7 +129,7 @@ function run_sim(
     base_weight = 1.0
     photons = nothing
 
-    setup = setup_sources(mode, ppos, direction, seed)
+    setup = make_setup(mode, ppos, direction, energy, seed)
 
     while true
         prop_source = setup.sources[1]
@@ -141,7 +142,6 @@ function run_sim(
         if nrow(photons) > 100
             break
         end
-
 
         setup.sources[1] = oversample_source(prop_source, 10)
         println(format("distance {:.2f} photons: {:d}", distance, setup.sources[1].photons))
@@ -233,14 +233,12 @@ function run_sims(parsed_args)
     dist_min = parsed_args["dist_min"]
     dist_max = parsed_args["dist_max"]
 
-    if mode != :pointlike
+    if mode == :extended
         sobol = skip(
             SobolSeq(
                 [log10(e_min), log10(dist_min), -1, 0],
                 [log10(e_max), log10(dist_max), 1, 2 * π]),
             n_sims + n_skip)
-
-
 
         @progress "Photon sims" for i in 1:n_sims
 
@@ -249,6 +247,23 @@ function run_sims(parsed_args)
             distance = Float32(10^pars[2])
             dir_costheta = pars[3]
             dir_phi = pars[4]
+
+            run_sim(energy, distance, dir_costheta, dir_phi, parsed_args["output"], i + n_skip, n_resample, mode=mode)
+        end
+    elseif mode == :bare_infinite_track
+        sobol = skip(
+            SobolSeq(
+                [log10(dist_min), -1, 0],
+                [log10(dist_max), 1, 2 * π]),
+            n_sims + n_skip)
+
+        @progress "Photon sims" for i in 1:n_sims
+
+            pars = next!(sobol)
+            energy = 1E5
+            distance = Float32(10^pars[1])
+            dir_costheta = pars[2]
+            dir_phi = pars[3]
 
             run_sim(energy, distance, dir_costheta, dir_phi, parsed_args["output"], i + n_skip, n_resample, mode=mode)
         end
@@ -272,6 +287,9 @@ end
 global_logger(TerminalLogger(right_justify=120))
 
 s = ArgParseSettings()
+
+mode_choices = ["extended", "bare_infinite_track", "pointlike"]
+
 @add_arg_table s begin
     "--output"
     help = "Output filename"
@@ -292,8 +310,9 @@ s = ArgParseSettings()
     required = false
     default = 100
     "--mode"
-    help = "Simulation Mode"
-    choices = ["extended", "bare_infinite_track", "pointlike"]
+    help = "Simulation Mode;  must be one of " * join(mode_choices, ", ", " or ")
+    range_tester = (x->x in mode_choices)
+    default = "extended"
     "--e_min"
     help = "Minimum energy"
     arg_type = Float64
