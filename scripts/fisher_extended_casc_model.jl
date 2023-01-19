@@ -47,17 +47,17 @@ function create_mock_muon(energy, position, direction, time, mean_free_path, len
     losses = []
 
     step_dist = Exponential(mean_free_path)
-    eloss_logr_dist = Uniform(-5, 0)
+    eloss_logr_dist = Uniform(-6, -1)
 
     dist_travelled = 0
     while dist_travelled < length && energy > 1
-        step_size = rand(step_dist)
-        e_loss = energy * 10^rand(eloss_logr_dist)
+        step_size = rand(rng, step_dist)
+        e_loss = energy * 10^rand(rng, eloss_logr_dist)
 
         energy -= e_loss
         dist_travelled += step_size
         pos = position .+ dist_travelled .* direction
-        t = time + dist_travelled * 0.3
+        t = time + dist_travelled / c_vac_m_ns
 
         push!(losses, Particle(pos, direction, t, e_loss, 0., PEMinus))
 
@@ -65,6 +65,173 @@ function create_mock_muon(energy, position, direction, time, mean_free_path, len
 
     return losses
 end
+
+function plot_hits_on_module(data, particles_truth, particles_unfolded, model, target, medium)
+    fig = Figure(resolution=(1500, 1000))
+    ga = fig[1, 1] = GridLayout(4, 4)
+
+    t_geo = calc_tgeo_tracks(pos, dir, target.position, medium)
+    n_pmt = get_pmt_count(eltype(targets))
+    
+    for i in 1:n_pmt
+        row, col = divrem(i - 1, 4)
+        ax = Axis(ga[col+1, row+1], xlabel="Time Residual(ns)", ylabel="Photons / time", title="PMT $i",
+                  )
+        hist!(ax, data[i] .- t_geo, bins=-50:3:150, color=:orange)
+    end
+
+    times = -50:1:150
+    for particles in [particles_truth, particles_unfolded]
+    
+      
+        shape_lhs = []
+        local log_expec
+        for t in times
+            _, shape_lh, log_expec = SurrogateModels.evaluate_model(particles, Vector.(eachrow(repeat([t + t_geo], n_pmt))), [target], gpu(model), tf_dict, c_n)
+            push!(shape_lhs, collect(shape_lh))
+        end
+
+        shape_lh = reduce(hcat, shape_lhs)
+
+        for i in 1:n_pmt
+            row, col = divrem(i - 1, 4)
+            lines!(ga[col+1, row+1], times, exp.(shape_lh[i, :] .+ log_expec[i]))
+            
+        end
+    end
+
+    return fig
+end
+
+
+
+begin
+    c_n = c_at_wl(800f0, medium)
+    p0 = SA[8., -5., -450]
+    dir_theta = 0.7
+    dir_phi = 1.3
+    dir = sph_to_cart(dir_theta, dir_phi)
+    pos = p0 .- 300 .* dir 
+    energy = 1e5
+
+    theta_deg = rad2deg(dir_theta)
+    phi_deg = rad2deg(dir_phi)
+
+    rng = MersenneTwister(3)
+   
+    losses = create_mock_muon(energy, pos, dir, 0., 20, 600, rng)
+    losses_filt = [p for p in losses if p.energy > 100]
+
+    dist_along = 0:0.5:400
+
+    @load models["3"] model hparams opt tf_dict
+end
+
+
+begin
+    targets = targets_hex
+    target_mask = any(norm.([p.position for p in losses_filt] .- permutedims([t.position for t in targets])) .<= 100, dims=1)[1, :]
+
+    targets_range = targets[target_mask]
+    data = sample_multi_particle_event(losses_filt, targets_range, model, tf_dict, c_n, rng)
+
+end
+
+
+
+data_per_target = reshape(data, 16, Int(length(data)/16))
+nhits_per_module = sum(length.(data_per_target), dims=1)[:]
+
+losses_unfolded = unfold_energy_losses(pos, dir; data=data, targets=targets_range, model=model, tf_vec=tf_dict, dist_along)
+plot_hits_on_module(data_per_target[:, argmax(nhits_per_module)], losses_filt, losses_unfolded, model, targets_range[argmax(nhits_per_module)], medium)
+
+losses_unfolded
+losses_filt
+
+
+begin
+    particles = losses_filt
+    range = (theta_deg-10, theta_deg+10, phi_deg-10, phi_deg+10, 1)
+    axis_ranges = Dict(
+        "Tri" => (theta_deg-1, theta_deg+1, phi_deg-1, phi_deg+1, 0.05),
+        "Single" => (0, 180, -180, 180, 3),
+        "Line" => (theta_deg-10, theta_deg+10, phi_deg-15, phi_deg+15, 0.5),
+        "Hex" =>  (theta_deg-0.5, theta_deg+0.5, phi_deg-0.5, phi_deg+0.5, 0.05))
+
+    #=
+    axis_ranges = Dict(
+        "Tri" => range,
+        "Single" => range,
+        "Line" => range,
+        "Hex" =>  range)
+    =#
+
+    levels = map(sigma -> invlogcdf(Chisq(2), log(1-2*ccdf(Normal(), sigma))), [1, 2, 3])
+
+    fig = Figure()
+    ga = fig[1, 1] = GridLayout()
+
+    for (i, (dkey, targets)) in enumerate(detectors)
+
+        ranges = axis_ranges[dkey]
+        thetas = deg2rad.(ranges[1]:ranges[end]:ranges[2])
+        phis = deg2rad.(ranges[3]:ranges[end]:ranges[4])
+
+        target_mask = any(norm.([p.position for p in losses_filt] .- permutedims([t.position for t in targets])) .<= 100, dims=1)[1, :]
+
+        if !any(target_mask)
+            continue
+        end
+
+        targets_range = targets[target_mask]
+        data = sample_multi_particle_event(particles, targets_range, model, tf_dict, c_n, rng)
+        
+        #unfolded = unfold_energy_losses(pos, dir; data=data, model=model, tf_vec=tf_dict, targets=targets_range)
+
+        #feat_buffer = zeros(9, get_pmt_count(eltype(targets_range))*length(targets_range)*length(particles))
+        #llh2d = track_likelihood_fixed_losses.(log10(energy), thetas, permutedims(phis), Ref(pos); muon_energy=energy, losses=particles, data=data, targets=targets_range, model=gpu(model), tf_vec=tf_dict, c_n=c_n, feat_buffer=feat_buffer)
+        
+        feat_buffer = zeros(9, get_pmt_count(eltype(targets_range))*length(targets_range)*length(dist_along))
+        llh2d = track_likelihood_energy_unfolding.(thetas, permutedims(phis), Ref(pos); data=data, targets=targets_range, model=gpu(model), tf_vec=tf_dict, c_n=c_n, dist_along=dist_along)
+        
+        
+        rellh = maximum(llh2d) .- llh2d
+        row, col = divrem(i-1, 2)
+        ax = Axis(ga[row+1, col+1], title=dkey, xlabel="Zenith (deg)", ylabel="Azimuth (deg)", limits=ranges[1:4])
+        hm = heatmap!(ax, rad2deg.(thetas), rad2deg.(phis), rellh, colorrange=(0, 1000))
+        contour!(ax,  rad2deg.(thetas), rad2deg.(phis), rellh, levels=levels, color=:white)
+        scatter!(ax, theta_deg, phi_deg)
+    end
+    #Colorbar(fig[1, 2], hm)
+    fig
+end
+
+
+rng = MersenneTwister(5)
+losses = create_mock_muon(energy, pos, dir, 0., 30, 500, rng)
+losses_filt = [p for p in losses if p.energy > 100]
+
+target_mask = any(norm.([p.position for p in losses_filt] .- permutedims([t.position for t in targets_hex])) .<= 100, dims=1)[1, :]
+targets_range = targets_hex[target_mask]
+
+data = sample_multi_particle_event(losses_filt, targets_range, model, tf_dict, c_n, rng)
+
+unfolded = unfold_energy_losses(pos, dir; data=data, model=model, tf_vec=tf_dict, targets=targets_range)
+
+
+fig = Figure()
+ax  = Axis(fig[1, 1], yscale=log10)
+
+
+dist_along = [norm(p.position .- pos) for p in lvec]
+mask = escales[:] .> 0
+scatter!(ax, dist_along[mask], escales[:][mask] .*energy)
+dist_along = [norm(p.position .- pos) for p in losses_filt]
+scatter!(ax, dist_along, [p.energy for p in losses_filt])
+fig
+
+
+
 
 begin
     pos = SA[-150., -5., -450]

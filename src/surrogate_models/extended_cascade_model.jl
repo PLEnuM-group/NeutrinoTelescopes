@@ -18,6 +18,7 @@ using BSON: @save
 using Base.Iterators
 using PoissonRandom
 using LogExpFunctions
+using NonNegLeastSquares
 
 using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow
 using ...Types
@@ -25,7 +26,8 @@ using ...Utils
 using ...PhotonPropagation.Detection
 using ...PhotonPropagation.PhotonPropagationCuda
 
-export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_likelihood
+export get_log_amplitudes, unfold_energy_losses
+export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_likelihood, track_likelihood_energy_unfolding
 export sample_cascade_event, evaluate_model, sample_multi_particle_event
 export create_pmt_table, preproc_labels, read_pmt_hits, calc_flow_input, fit_trafo_pipeline, log_likelihood_with_poisson
 export train_time_expectation_model, train_model!, RQNormFlowHParams, setup_time_expectation_model, setup_dataloaders
@@ -559,7 +561,7 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
     log_expec_per_source = output[end, :]
     expec_per_source = exp.(log_expec_per_source) .* oversample
 
-    n_hits_per_source = pois_rand.(expec_per_source)
+    n_hits_per_source = pois_rand.(rng, expec_per_source)
     n_hits_per_source_rs = reshape(
         n_hits_per_source,
         n_pmt,
@@ -618,6 +620,26 @@ function sample_cascade_event(energy, dir_theta, dir_phi, position, time; target
 end
 
 
+function get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=nothing)
+    n_pmt = get_pmt_count(eltype(targets))
+
+    if isnothing(feat_buffer)
+        input = calc_flow_input(particles, targets, tf_vec)
+    else
+        input = calc_flow_input(particles, targets, tf_vec, feat_buffer)
+    end
+    output::Matrix{eltype(input)} = cpu(model.embedding(gpu(input)))
+    log_expec_per_src_trg = output[end, :]
+
+    log_expec_per_src_pmt_rs = reshape(
+        log_expec_per_src_trg,
+        n_pmt, length(particles), length(targets))
+
+    log_expec_per_pmt = LogExpFunctions.logsumexp(log_expec_per_src_pmt_rs, dims=2)
+
+    return log_expec_per_pmt, log_expec_per_src_pmt_rs
+end
+
 function evaluate_model(particles, data, targets, model, tf_vec, c_n; feat_buffer=nothing)
     n_pmt = get_pmt_count(eltype(targets))
     @assert length(targets) * n_pmt == length(data)
@@ -648,7 +670,7 @@ function evaluate_model(particles, data, targets, model, tf_vec, c_n; feat_buffe
     poiss_llh = poisson_logpmf.(hits_per_target, log_expec_per_pmt[:])
 
     data_ix = LinearIndices((1:n_pmt, eachindex(targets)))
-    ix = LinearIndices((1:n_pmt, eachindex(targets), eachindex(particles)))
+    ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
 
     shape_llh_gen = (
         length(data[data_ix[pmt_ix, t_ix]]) > 0 ?
@@ -662,7 +684,7 @@ function evaluate_model(particles, data, targets, model, tf_vec, c_n; feat_buffe
                 # Returns vector of logl for each time in data
                 eval_transformed_normal_logpdf(
                     data[data_ix[pmt_ix, t_ix]] .- calc_tgeo(particles[p_ix], targets[t_ix], c_n) .- particles[p_ix].time,
-                    flow_params[:, ix[pmt_ix, t_ix, p_ix]],
+                    flow_params[:, ix[pmt_ix, p_ix, t_ix]],
                     model.range_min,
                     model.range_max
                 )
@@ -691,21 +713,68 @@ function single_cascade_likelihood(logenergy, dir_theta, dir_phi, position, time
     return multi_particle_likelihood(particles, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, feat_buffer=feat_buffer)
 end
 
-function track_likelihood_fixed_losses(logenergy, dir_theta, dir_phi, position, time; losses, muon_energy, data, targets, model, tf_vec, c_n, feat_buffer=nothing)
+function track_likelihood_fixed_losses(logenergy, dir_theta, dir_phi, position; losses, muon_energy, data, targets, model, tf_vec, c_n, feat_buffer=nothing)
 
     energy = 10^logenergy
     dir = sph_to_cart(dir_theta, dir_phi)
     dist_along = norm.([p.position .- position for p in losses])
 
-    new_loss_positions = [position .+ d .* dir for d in dist_along]
-    new_loss_times = time .+ dist_along .* 0.3
 
+    new_loss_positions = [position .+ d .* dir for d in dist_along]
     new_loss_energies = [p.energy / muon_energy * energy for p in losses]
 
-    new_losses = Particle.(new_loss_positions, [dir], new_loss_times, new_loss_energies, 0., [PEMinus])
+    times = [p.time for p in losses]
+
+    new_losses = Particle.(new_loss_positions, [dir], times, new_loss_energies, 0., [PEMinus])
 
     return multi_particle_likelihood(new_losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, feat_buffer=feat_buffer)
+end
 
+
+
+
+
+function build_loss_vector(position, direction, energy, dist_along)
+    loss_positions = [position .+ direction .* d for d in dist_along]
+    loss_times = dist_along ./ c_vac_m_ns
+   
+    new_losses = Particle.(loss_positions, [direction], loss_times, energy, 0., [PEMinus])
+
+    return new_losses
+end
+
+function unfold_energy_losses(position, direction; data, targets, model, tf_vec, dist_along)
+    e_base = 5E4
+    lvec = build_loss_vector(position, direction, e_base, dist_along)
+
+    feat_buffer = zeros(9, get_pmt_count(eltype(targets))*length(targets)*length(lvec))
+    _, log_amp_per_src_pmt = get_log_amplitudes(lvec, targets, gpu(model), tf_vec; feat_buffer=feat_buffer)
+
+    hits_per_pmt = length.(data)
+    hit_mask = hits_per_pmt .> 10
+    hits_per_pmt_masked = hits_per_pmt[hit_mask]
+    perm = permutedims(log_amp_per_src_pmt, (1, 3, 2))
+    source_exp = exp.(reshape(perm, prod(size(perm)[1:2]), size(perm)[3]))[hit_mask, :]
+    escales = nonneg_lsq(source_exp, Float64.(hits_per_pmt_masked), alg=:nnls)[:]
+
+    non_zero = escales .> 0
+    lvec_masked = lvec[non_zero]
+
+    for (l, escale) in zip(lvec_masked, escales[non_zero])
+        l.energy = escale * e_base
+    end
+    return lvec_masked
+end
+
+
+function track_likelihood_energy_unfolding(dir_theta, dir_phi, position; dist_along, data, targets, model, tf_vec, c_n)
+
+    dir = sph_to_cart(dir_theta, dir_phi)
+    losses = unfold_energy_losses(position, dir;  data=data, targets=targets, model=model, tf_vec=tf_vec, dist_along=dist_along)
+    if length(losses) == 0
+        return -Inf64
+    end
+    return multi_particle_likelihood(losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n)
 end
 
 

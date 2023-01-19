@@ -22,6 +22,7 @@ export make_hits_from_photons, propagate_photons, run_photon_prop
 export calc_time_residual!, calc_total_weight!, calc_tgeo, c_at_wl
 export PhotonPropSetup, PhotonHit
 export calc_time_residual_tracks!, calc_tgeo_tracks
+export c_vac_m_ns
 
 using ...Utils
 using ...Types
