@@ -79,7 +79,8 @@ fnames_casc = [
     joinpath(@__DIR__, "../data/photon_table_extended_3.hd5"),
     joinpath(@__DIR__, "../data/photon_table_extended_4.hd5"),
     joinpath(@__DIR__, "../data/photon_table_extended_5.hd5"),
-    joinpath(@__DIR__, "../data/photon_table_extended_6.hd5")
+    joinpath(@__DIR__, "../data/photon_table_extended_6.hd5"),
+    joinpath(@__DIR__, "../data/photon_table_extended_lowE.hd5")
 ]
 train_model(fnames_casc, "rq_spline_model_casc_l2_0", 7000)
 

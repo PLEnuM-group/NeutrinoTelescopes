@@ -20,6 +20,10 @@ using Optim
 using Base.Iterators
 using Formatting
 using BenchmarkTools
+using PyCall
+
+pp = pyimport("proposal")
+pp.InterpolationSettings.tables_path = joinpath(@__DIR__,"../assets/proposal_tables")
 
 
 models = Dict(
@@ -41,6 +45,56 @@ targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
 
 detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => targets_three_l, "Hex" => targets_hex)
 medium = make_cascadia_medium_properties(0.99f0)
+
+function loss_to_particle(loss)
+    energy = loss.energy / 1E3
+    pos = SA[loss.position.x / 100, loss.position.y / 100, loss.position.z / 100] 
+    dir = SA[loss.direction.x, loss.direction.y, loss.direction.z]
+    time = loss.time * 1E9
+
+    return Particle(pos, dir, time, energy, 0., PEMinus)
+end
+
+
+function propagate_muon(particle)
+
+    position = particle.position
+    direction = particle.direction
+    length = particle.length
+    time = particle.time
+
+    if particle.type == PMuMinus
+        particle = pp.particle.MuMinusDef()
+    elseif particle.type == PMuPlus
+        particle = pp.particle.MuPlusDef()
+    else
+        error("Type $(particle.type) not supported")
+    end
+    propagator = pp.Propagator(particle, joinpath(@__DIR__,"../assets/proposal_config.json"))
+
+    initial_state = pp.particle.ParticleState()
+    initial_state.energy = energy*1E3
+    initial_state.position = pp.Cartesian3D(position[1]*100, position[2]*100, position[3]*100)
+    initial_state.direction = pp.Cartesian3D(direction[1], direction[2], direction[3])
+    initial_state.time = time / 1E9
+    secondaries = propagator.propagate(initial_state, max_distance=length*100)
+    stochastic_losses = secondaries.stochastic_losses()
+    loss_to_particle.(stochastic_losses)
+
+end
+
+
+
+pos = SA[-150., -5., -450]
+theta = 1.4
+phi = 0.4
+energy = 5E4
+dir = sph_to_cart(theta, phi)
+
+muon = Particle(pos, dir, 0., energy, 400., PMuMinus)
+propagate_muon(muon)
+
+
 
 
 function create_mock_muon(energy, position, direction, time, mean_free_path, length, rng)
