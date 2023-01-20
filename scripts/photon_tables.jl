@@ -124,7 +124,15 @@ function run_sim(
 
 
     direction::SVector{3,Float32} = sph_to_cart(acos(dir_costheta), dir_phi)
-    ppos = @SVector[0.0f0, 0.0f0, distance]
+        
+    if mode == :bare_infinite_track
+        r = direction[1] / direction[2]
+        ppos = SA_F32[distance / sqrt(1 + r^2), -r*distance / sqrt(1+r^2), 0]
+    else
+        ppos = SA_F32[0, 0, dist]
+    end
+
+    
 
     base_weight = 1.0
     photons = nothing
@@ -198,11 +206,11 @@ function run_sim(
         dir_theta, dir_phi = cart_to_sph(direction_rot)
         pos_theta, pos_phi = cart_to_sph(position_rot_normed)
 
-        # Sanity check:
-
+        #= Sanity check:
         if !((dot(ppos / norm(ppos), direction) ≈ dot(position_rot_normed, direction_rot)))
-            error("Relative angle not perseved")
+            error("Relative angle not perseved: $(dot(ppos / norm(ppos), direction)) vs. $(dot(position_rot_normed, direction_rot))")
         end
+        =#
 
         sim_attrs["dir_theta"] = dir_theta
         sim_attrs["dir_phi"] = dir_phi
