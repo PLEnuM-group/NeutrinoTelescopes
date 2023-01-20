@@ -129,7 +129,7 @@ function run_sim(
         r = direction[1] / direction[2]
         ppos = SA_F32[distance / sqrt(1 + r^2), -r*distance / sqrt(1+r^2), 0]
     else
-        ppos = SA_F32[0, 0, dist]
+        ppos = SA_F32[0, 0, distance]
     end
 
     
