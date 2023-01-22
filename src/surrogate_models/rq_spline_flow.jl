@@ -80,8 +80,9 @@ using CUDA
 using Distributions
 using NNlib
 using ...Utils
-
+using SpecialFunctions
 export constrain_spline_params, rqs_univariate, inv_rqs_univariate, eval_transformed_normal_logpdf
+export integral_norm_flow
 export sample_flow
 
 @inline function my_where(X, A, B)
@@ -449,6 +450,26 @@ function eval_transformed_normal_logpdf(
         repeat(params, 1, length(y)),
         range_min,
         range_max)
+end
+
+
+normal_cdf(x, mu, sigma) = 0.5 * (1 + erf((x -mu) / (sigma * sqrt(2))))
+
+function integral_norm_flow(params::AbstractMatrix, lower, upper, range_min, range_max)
+
+    #params = repeat(params, 1, 2)
+    spline_params, shift, scale = _split_params(params)
+    x_pos, y_pos, knot_slopes = constrain_spline_params(spline_params, range_min, range_max)
+
+    
+    x_lower, _ = inv_rqs_univariate(x_pos, y_pos, knot_slopes, lower)
+    x_upper, _ = inv_rqs_univariate(x_pos, y_pos, knot_slopes, upper)
+
+    cdf_lower = normal_cdf.(x_lower, shift, scale)
+    cdf_upper = normal_cdf.(x_upper, shift, scale)
+
+
+    return cdf_upper .- cdf_lower
 end
 
 

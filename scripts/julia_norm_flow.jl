@@ -16,7 +16,7 @@ using Flux
 using Plots
 using BSON: @save, @load
 
-function train_model(files, model_name, batch_size)
+function train_models(files, model_name, batch_size)
     rng = MersenneTwister(31338)
 
     for model_num in 1:5
@@ -74,14 +74,52 @@ function train_model(files, model_name, batch_size)
     @save model_path model hparams opt tf_dict
 end
 
+
+function train_one_model(files, model_name; hyperparams...)
+    rng = MersenneTwister(31338)
+    nsel_frac = 0.2
+    tres, nhits, cond_labels, tf_dict = read_pmt_hits(files, nsel_frac, rng)
+
+
+    chk_path = joinpath(@__DIR__, "../data/$(model_name)_FULL")
+
+    model, model_loss, best_test_loss, best_test_epoch, hparams, opt, time_elapsed = train_time_expectation_model(
+        (tres=tres, label=cond_labels, nhits=nhits),
+        true,
+        true,
+        chk_path;
+        hyperparams...)
+    return best_test_loss, best_test_epoch, hparams
+end
+
+
 fnames_casc = [
     joinpath(@__DIR__, "../data/photon_table_extended_2.hd5"),
     joinpath(@__DIR__, "../data/photon_table_extended_3.hd5"),
     joinpath(@__DIR__, "../data/photon_table_extended_4.hd5"),
     joinpath(@__DIR__, "../data/photon_table_extended_5.hd5"),
     joinpath(@__DIR__, "../data/photon_table_extended_6.hd5"),
-    joinpath(@__DIR__, "../data/photon_table_extended_lowE.hd5")
+    joinpath(@__DIR__, "../data/photon_table_lowE_1.hd5")
 ]
+
+
+hyperparams = Dict(
+    :K => 12,
+    :epochs => 50,
+    :lr => 0.001,
+    :mlp_layer_size => 768,
+    :mlp_layers => 2,
+    :dropout => 0,
+    :non_linearity => :relu,
+    :batch_size => 20000,
+    :seed => 1,
+    :l2_norm_alpha => 0
+)
+
+
+train_one_model(fnames_casc, "exp_1"; hyperparams...)
+
+
 train_model(fnames_casc, "rq_spline_model_casc_l2_0", 7000)
 
 fnames_muon = [

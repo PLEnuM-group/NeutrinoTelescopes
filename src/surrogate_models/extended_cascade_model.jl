@@ -26,7 +26,7 @@ using ...Utils
 using ...PhotonPropagation.Detection
 using ...PhotonPropagation.PhotonPropagationCuda
 
-export get_log_amplitudes, unfold_energy_losses
+export get_log_amplitudes, unfold_energy_losses, t_first_likelihood
 export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_likelihood, track_likelihood_energy_unfolding
 export sample_cascade_event, evaluate_model, sample_multi_particle_event
 export create_pmt_table, preproc_labels, read_pmt_hits, calc_flow_input, fit_trafo_pipeline, log_likelihood_with_poisson
@@ -226,9 +226,9 @@ function train_time_expectation_model(data, use_gpu=true, use_early_stopping=tru
     train_loader, test_loader = setup_dataloaders(data, hparams)
 
     device = use_gpu ? gpu : cpu
-    model, final_test_loss = train_model!(opt, train_loader, test_loader, model, log_likelihood_with_poisson, hparams, lg, device, use_early_stopping, checkpoint_path)
+    model, final_test_loss, best_test_loss, best_test_epoch, time_elapsed = train_model!(opt, train_loader, test_loader, model, log_likelihood_with_poisson, hparams, lg, device, use_early_stopping, checkpoint_path)
 
-    return model, final_test_loss, hparams, opt
+    return model, final_test_loss, best_test_loss, best_test_epoch, hparams, opt, time_elapsed
 end
 
 
@@ -265,7 +265,9 @@ function train_model!(opt, train, test, model, loss_function, hparams, logger, d
     local total_test_loss
 
     best_test = Inf
+    best_test_epoch = 0
 
+    t = time()
     @progress for epoch in 1:hparams.epochs
 
         Flux.trainmode!(model)
@@ -307,12 +309,13 @@ function train_model!(opt, train, test, model, loss_function, hparams, logger, d
         if !isnothing(checkpoint_path) && epoch > 5 && total_test_loss < best_test
             @save checkpoint_path * "_BEST.bson" model
             best_test = total_test_loss
+            best_test_epoch = epoch
         end
 
         done!(stopper, total_test_loss) && break
 
     end
-    return model, total_test_loss
+    return model, total_test_loss, best_test, best_test_epoch, time() - t
 end
 
 
@@ -619,7 +622,16 @@ function sample_cascade_event(energy, dir_theta, dir_phi, position, time; target
     return sample_multi_particle_event([particle], targets, model, tf_vec, c_n, rng)
 end
 
+"""
+    get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=nothing)
 
+Evaluate `model` for `particles` and ´targets`
+
+Returns:
+    -log_expec_per_pmt: Log of expected photons per pmt. Shape: [n_pmt, 1, n_targets]
+    -log_expec_per_src_pmt_rs: Log of expected photons per pmt and per particle. Shape [n_pmt, n_particles, n_targets]
+    -flow_params: Flattened input parameters to the normalizing flow
+"""
 function get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=nothing)
     n_pmt = get_pmt_count(eltype(targets))
 
@@ -629,32 +641,7 @@ function get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=nothi
         input = calc_flow_input(particles, targets, tf_vec, feat_buffer)
     end
     output::Matrix{eltype(input)} = cpu(model.embedding(gpu(input)))
-    log_expec_per_src_trg = output[end, :]
-
-    log_expec_per_src_pmt_rs = reshape(
-        log_expec_per_src_trg,
-        n_pmt, length(particles), length(targets))
-
-    log_expec_per_pmt = LogExpFunctions.logsumexp(log_expec_per_src_pmt_rs, dims=2)
-
-    return log_expec_per_pmt, log_expec_per_src_pmt_rs
-end
-
-function evaluate_model(particles, data, targets, model, tf_vec, c_n; feat_buffer=nothing)
-    n_pmt = get_pmt_count(eltype(targets))
-    @assert length(targets) * n_pmt == length(data)
-
-    if isnothing(feat_buffer)
-        input = calc_flow_input(particles, targets, tf_vec)
-    else
-        input = calc_flow_input(particles, targets, tf_vec, feat_buffer)
-    end
-
-
-    output::Matrix{eltype(input)} = cpu(model.embedding(gpu(input)))
-
-    # The embedding for all the parameters is
-    # [(p_1, t_1, pmt_1), (p_1, t_1, pmt_2), ... (p_2, t_1, pmt_1), ... (p_1, t_end, pmt_1), ... (p_end, t_end, pmt_end)]
+    
     flow_params = output[1:end-1, :]
     log_expec_per_src_trg = output[end, :]
 
@@ -663,12 +650,14 @@ function evaluate_model(particles, data, targets, model, tf_vec, c_n; feat_buffe
         n_pmt, length(particles), length(targets))
 
     log_expec_per_pmt = LogExpFunctions.logsumexp(log_expec_per_src_pmt_rs, dims=2)
-    rel_log_expec = log_expec_per_src_pmt_rs .- log_expec_per_pmt
 
-    hits_per_target = length.(data)
-    # Flattening log_expec_per_pmt with [:] will let the first dimension be the inner one
-    poiss_llh = poisson_logpmf.(hits_per_target, log_expec_per_pmt[:])
+    return log_expec_per_pmt, log_expec_per_src_pmt_rs, flow_params
+end
 
+
+function shape_llh_generator(data; particles, targets, flow_params, rel_log_expec, model, c_n)
+    
+    n_pmt = get_pmt_count(eltype(targets))
     data_ix = LinearIndices((1:n_pmt, eachindex(targets)))
     ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
 
@@ -694,15 +683,34 @@ function evaluate_model(particles, data, targets, model, tf_vec, c_n; feat_buffe
         ))
         : 0.0
         for (pmt_ix, t_ix) in product(1:n_pmt, eachindex(targets)))
+    return shape_llh_gen
+end
+
+
+function evaluate_model(particles, data, targets, model, tf_vec, c_n; feat_buffer=nothing)
+    
+    log_expec_per_pmt, log_expec_per_src_pmt_rs, flow_params = get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=feat_buffer)
+    
+    rel_log_expec = log_expec_per_src_pmt_rs .- log_expec_per_pmt
+
+    hits_per_target = length.(data)
+    # Flattening log_expec_per_pmt with [:] will let the first dimension be the inner one
+    poiss_llh = poisson_logpmf.(hits_per_target, log_expec_per_pmt[:])
+
+    shape_llh_gen = shape_llh_generator(data; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model, c_n=c_n)
     return poiss_llh, shape_llh_gen, log_expec_per_pmt
 end
 
 
-function multi_particle_likelihood(particles; data, targets, model, tf_vec, c_n, feat_buffer=nothing)
+function multi_particle_likelihood(particles; data, targets, model, tf_vec, c_n, feat_buffer=nothing, amp_only=false)
     n_pmt = get_pmt_count(eltype(targets))
     @assert length(targets) * n_pmt == length(data)
     pois_llh, shape_llh, _ = evaluate_model(particles, data, targets, model, tf_vec, c_n, feat_buffer=feat_buffer)
-    return sum(pois_llh) + sum(shape_llh)
+    if amp_only
+        return sum(pois_llh)
+    else
+        return sum(pois_llh) + sum(shape_llh)
+    end
 end
 
 
@@ -713,7 +721,9 @@ function single_cascade_likelihood(logenergy, dir_theta, dir_phi, position, time
     return multi_particle_likelihood(particles, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, feat_buffer=feat_buffer)
 end
 
-function track_likelihood_fixed_losses(logenergy, dir_theta, dir_phi, position; losses, muon_energy, data, targets, model, tf_vec, c_n, feat_buffer=nothing)
+function track_likelihood_fixed_losses(
+    logenergy, dir_theta, dir_phi, position;
+    losses, muon_energy, data, targets, model, tf_vec, c_n, feat_buffer=nothing, amp_only=false)
 
     energy = 10^logenergy
     dir = sph_to_cart(dir_theta, dir_phi)
@@ -727,35 +737,70 @@ function track_likelihood_fixed_losses(logenergy, dir_theta, dir_phi, position; 
 
     new_losses = Particle.(new_loss_positions, [dir], times, new_loss_energies, 0., [PEMinus])
 
-    return multi_particle_likelihood(new_losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, feat_buffer=feat_buffer)
+    return multi_particle_likelihood(
+        new_losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, feat_buffer=feat_buffer, amp_only=amp_only)
+end
+
+
+function t_first_likelihood(particles ;data, targets, model, tf_vec, c_n, feat_buffer=nothing)
+
+    log_expec_per_pmt, log_expec_per_src_pmt_rs, flow_params = get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=feat_buffer)
+    rel_log_expec = log_expec_per_src_pmt_rs .- log_expec_per_pmt
+    
+    # data masking
+    t_first = [length(d) > 0: minimum(d) ? -inf]
+    
+    
+    llh_tfirst = shape_llh_generator(t_first; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model, c_n=c_n)
+    
+    upper = t_first .+ 200.
+
+    p_later = integral_norm_flow(flow_params, t_first, upper, model.range_min, model.range_max)
+
+    llh = llh_tfirst .+ (exp.(log_expec_per_pmt) .-1) .* log((1 .- p_later))
+
+    return sum(llh)
 end
 
 
 
 
+function build_loss_vector(position, direction, energy, time, spacing, length)
 
-function build_loss_vector(position, direction, energy, dist_along)
+    dist_along = (-length/2):spacing:(length/2)
+
     loss_positions = [position .+ direction .* d for d in dist_along]
-    loss_times = dist_along ./ c_vac_m_ns
+    loss_times = time .+ dist_along ./ c_vac_m_ns
    
     new_losses = Particle.(loss_positions, [direction], loss_times, energy, 0., [PEMinus])
 
     return new_losses
 end
 
-function unfold_energy_losses(position, direction; data, targets, model, tf_vec, dist_along)
+function unfold_energy_losses(position, direction, time; data, targets, model, tf_vec, spacing, plength=500.)
     e_base = 5E4
-    lvec = build_loss_vector(position, direction, e_base, dist_along)
+    lvec = build_loss_vector(position, direction, e_base, time, spacing, plength)
 
-    feat_buffer = zeros(9, get_pmt_count(eltype(targets))*length(targets)*length(lvec))
+    n_pmt =  get_pmt_count(eltype(targets))
+    feat_buffer = zeros(9, n_pmt*length(targets)*length(lvec))
     _, log_amp_per_src_pmt = get_log_amplitudes(lvec, targets, gpu(model), tf_vec; feat_buffer=feat_buffer)
+    log_amp_per_src_module = LogExpFunctions.logsumexp(log_amp_per_src_pmt, dims=1)[1, :, :]
 
+    data_rs = reshape(data, n_pmt, Int(length(data) / n_pmt))
     hits_per_pmt = length.(data)
-    hit_mask = hits_per_pmt .> 10
+    hits_per_module = sum(length.(data_rs), dims=1)[:]
+
+    #=
+    hit_mask = hits_per_pmt .>= 1
     hits_per_pmt_masked = hits_per_pmt[hit_mask]
     perm = permutedims(log_amp_per_src_pmt, (1, 3, 2))
     source_exp = exp.(reshape(perm, prod(size(perm)[1:2]), size(perm)[3]))[hit_mask, :]
     escales = nonneg_lsq(source_exp, Float64.(hits_per_pmt_masked), alg=:nnls)[:]
+    =#
+
+    source_exp = permutedims(exp.(log_amp_per_src_module))
+    escales = nonneg_lsq(source_exp, Float64.(hits_per_module), alg=:nnls)[:]
+
 
     non_zero = escales .> 0
     lvec_masked = lvec[non_zero]
@@ -767,14 +812,14 @@ function unfold_energy_losses(position, direction; data, targets, model, tf_vec,
 end
 
 
-function track_likelihood_energy_unfolding(dir_theta, dir_phi, position; dist_along, data, targets, model, tf_vec, c_n)
+function track_likelihood_energy_unfolding(dir_theta, dir_phi, position, time; spacing, data, targets, model, tf_vec, c_n, amp_only=false)
 
     dir = sph_to_cart(dir_theta, dir_phi)
-    losses = unfold_energy_losses(position, dir;  data=data, targets=targets, model=model, tf_vec=tf_vec, dist_along=dist_along)
+    losses = unfold_energy_losses(position, dir, time; data=data, targets=targets, model=model, tf_vec=tf_vec, spacing=spacing)
     if length(losses) == 0
         return -Inf64
     end
-    return multi_particle_likelihood(losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n)
+    return multi_particle_likelihood(losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, amp_only=amp_only)
 end
 
 

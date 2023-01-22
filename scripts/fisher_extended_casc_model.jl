@@ -16,7 +16,7 @@ using StatsBase
 using Base.Iterators
 using Distributions
 using Optim
-
+using QuadGK
 using Base.Iterators
 using Formatting
 using BenchmarkTools
@@ -77,23 +77,10 @@ function propagate_muon(particle)
     initial_state.position = pp.Cartesian3D(position[1]*100, position[2]*100, position[3]*100)
     initial_state.direction = pp.Cartesian3D(direction[1], direction[2], direction[3])
     initial_state.time = time / 1E9
-    secondaries = propagator.propagate(initial_state, max_distance=length*100)
-    stochastic_losses = secondaries.stochastic_losses()
+    final_state =  propagator.propagate(initial_state, max_distance=length*100)
+    stochastic_losses = final_state.stochastic_losses()
     loss_to_particle.(stochastic_losses)
-
 end
-
-
-
-pos = SA[-150., -5., -450]
-theta = 1.4
-phi = 0.4
-energy = 5E4
-dir = sph_to_cart(theta, phi)
-
-muon = Particle(pos, dir, 0., energy, 400., PMuMinus)
-propagate_muon(muon)
-
 
 
 
@@ -120,7 +107,7 @@ function create_mock_muon(energy, position, direction, time, mean_free_path, len
     return losses
 end
 
-function plot_hits_on_module(data, particles_truth, particles_unfolded, model, target, medium)
+function plot_hits_on_module(data, pos, dir, particles_truth, particles_unfolded, model, target, medium)
     fig = Figure(resolution=(1500, 1000))
     ga = fig[1, 1] = GridLayout(4, 4)
 
@@ -159,28 +146,32 @@ end
 
 
 
+
+
+
 begin
     c_n = c_at_wl(800f0, medium)
     p0 = SA[8., -5., -450]
     dir_theta = 0.7
     dir_phi = 1.3
     dir = sph_to_cart(dir_theta, dir_phi)
-    pos = p0 .- 300 .* dir 
-    energy = 1e5
+    t0 = 0.
+    backtrack = 300
+    pos_shifted = p0 .- backtrack .* dir 
+    time_shifted = t0 - backtrack / c_vac_m_ns
+    energy = 4e5
 
     theta_deg = rad2deg(dir_theta)
     phi_deg = rad2deg(dir_phi)
 
     rng = MersenneTwister(3)
    
-    losses = create_mock_muon(energy, pos, dir, 0., 20, 600, rng)
+    muon = Particle(pos_shifted, dir, time_shifted, energy, backtrack*2., PMuMinus)
+    losses = propagate_muon(muon)
     losses_filt = [p for p in losses if p.energy > 100]
-
-    dist_along = 0:0.5:400
 
     @load models["3"] model hparams opt tf_dict
 end
-
 
 begin
     targets = targets_hex
@@ -192,33 +183,42 @@ begin
 end
 
 
-
 data_per_target = reshape(data, 16, Int(length(data)/16))
 nhits_per_module = sum(length.(data_per_target), dims=1)[:]
+losses_unfolded = unfold_energy_losses(p0, dir, t0; data=data, targets=targets_range, model=model, tf_vec=tf_dict, spacing=1., plength=2*backtrack)
 
-losses_unfolded = unfold_energy_losses(pos, dir; data=data, targets=targets_range, model=model, tf_vec=tf_dict, dist_along)
-plot_hits_on_module(data_per_target[:, argmax(nhits_per_module)], losses_filt, losses_unfolded, model, targets_range[argmax(nhits_per_module)], medium)
 
-losses_unfolded
-losses_filt
+fig = Figure()
+ax = Axis(fig[1, 1], yscale=log10, limits=(-1000, 1000, 1E2, 1E5))
+
+hist!(ax, [l.time for l in losses_filt], weights=[l.energy for l in losses_filt], bins=-1000:300:1000, fillto = 1E2)
+hist!(ax, [l.time for l in losses_unfolded], weights=[l.energy for l in losses_unfolded], bins=-1000:300:1000, fillto = 1E2)
+fig
+
+plot_hits_on_module(data_per_target[:, argmax(nhits_per_module)], p0, dir, losses_filt, losses_unfolded, model, targets_range[argmax(nhits_per_module)], medium)
+
+feat_buffer = zeros(9, get_pmt_count(eltype(targets_range))*length(targets_range)*length(losses_filt))
+t_first_likelihood(losses_filt; data=data, targets=targets_range, model=gpu(model), tf_vec=tf_dict, c_n=c_n, feat_buffer=nothing)
+
+
+
 
 
 begin
     particles = losses_filt
-    range = (theta_deg-10, theta_deg+10, phi_deg-10, phi_deg+10, 1)
+    range = (theta_deg-20, theta_deg+20, phi_deg-20, phi_deg+20, 1)
     axis_ranges = Dict(
         "Tri" => (theta_deg-1, theta_deg+1, phi_deg-1, phi_deg+1, 0.05),
         "Single" => (0, 180, -180, 180, 3),
         "Line" => (theta_deg-10, theta_deg+10, phi_deg-15, phi_deg+15, 0.5),
         "Hex" =>  (theta_deg-0.5, theta_deg+0.5, phi_deg-0.5, phi_deg+0.5, 0.05))
 
-    #=
+
     axis_ranges = Dict(
         "Tri" => range,
         "Single" => range,
         "Line" => range,
         "Hex" =>  range)
-    =#
 
     levels = map(sigma -> invlogcdf(Chisq(2), log(1-2*ccdf(Normal(), sigma))), [1, 2, 3])
 
@@ -246,15 +246,17 @@ begin
         #llh2d = track_likelihood_fixed_losses.(log10(energy), thetas, permutedims(phis), Ref(pos); muon_energy=energy, losses=particles, data=data, targets=targets_range, model=gpu(model), tf_vec=tf_dict, c_n=c_n, feat_buffer=feat_buffer)
         
         feat_buffer = zeros(9, get_pmt_count(eltype(targets_range))*length(targets_range)*length(dist_along))
-        llh2d = track_likelihood_energy_unfolding.(thetas, permutedims(phis), Ref(pos); data=data, targets=targets_range, model=gpu(model), tf_vec=tf_dict, c_n=c_n, dist_along=dist_along)
+        llh2d = track_likelihood_energy_unfolding.(
+            thetas, permutedims(phis), Ref(p0), t0; data=data, targets=targets_range, model=gpu(model),
+            tf_vec=tf_dict, c_n=c_n, spacing=0.5, amp_only=true)
         
         
         rellh = maximum(llh2d) .- llh2d
         row, col = divrem(i-1, 2)
         ax = Axis(ga[row+1, col+1], title=dkey, xlabel="Zenith (deg)", ylabel="Azimuth (deg)", limits=ranges[1:4])
-        hm = heatmap!(ax, rad2deg.(thetas), rad2deg.(phis), rellh, colorrange=(0, 1000))
-        contour!(ax,  rad2deg.(thetas), rad2deg.(phis), rellh, levels=levels, color=:white)
-        scatter!(ax, theta_deg, phi_deg)
+        hm = CairoMakie.heatmap!(ax, rad2deg.(thetas), rad2deg.(phis), rellh, colorrange=(0, 200))
+        CairoMakie.contour!(ax,  rad2deg.(thetas), rad2deg.(phis), rellh, levels=levels, color=:white)
+        CairoMakie.scatter!(ax, theta_deg, phi_deg)
     end
     #Colorbar(fig[1, 2], hm)
     fig
