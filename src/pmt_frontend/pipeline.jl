@@ -12,11 +12,12 @@ using StatsBase
 using Random
 using Interpolations
 using Roots
+using PhysicsTools
 
 using ..SPETemplates
 using ..PulseTemplates
 using ..Waveforms
-using ...Utils
+
 
 
 export resample_simulation

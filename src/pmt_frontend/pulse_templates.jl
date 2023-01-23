@@ -7,10 +7,11 @@ using DSP
 using Interpolations
 using Base.Iterators
 using DataFrames
+using PhysicsTools
 import Base:@kwdef
 
 using ..SPETemplates
-using ...Utils
+
 
 export PulseTemplate, PDFPulseTemplate, GumbelPulse, InterpolatedPulse
 export make_pulse_dist, evaluate_pulse_template, make_filtered_pulse

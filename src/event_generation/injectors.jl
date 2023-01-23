@@ -3,10 +3,10 @@ module Injectors
 using Random
 using StaticArrays
 using Distributions
+using PhysicsTools
 import Base.rand
 
-using ...Types
-using ...Utils
+
 
 
 export sample_volume, inject

@@ -1,8 +1,8 @@
 module Detectors
 using StaticArrays
 
-using ...PhotonPropagation.Detection
-using ...Utils
+using PhotonPropagation
+using PhysicsTools
 export make_pom_pmt_coordinates, make_pone_module, make_detector_line, make_hex_detector
 
 function make_pom_pmt_coordinates(T::Type)

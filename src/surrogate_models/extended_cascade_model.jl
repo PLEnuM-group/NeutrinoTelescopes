@@ -19,12 +19,10 @@ using Base.Iterators
 using PoissonRandom
 using LogExpFunctions
 using NonNegLeastSquares
+using PhysicsTools
+using PhotonPropagation
 
 using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow
-using ...Types
-using ...Utils
-using ...PhotonPropagation.Detection
-using ...PhotonPropagation.PhotonPropagationCuda
 
 export get_log_amplitudes, unfold_energy_losses, t_first_likelihood
 export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_likelihood, track_likelihood_energy_unfolding

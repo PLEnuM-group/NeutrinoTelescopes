@@ -79,7 +79,7 @@ module RQSplineFlow
 using CUDA
 using Distributions
 using NNlib
-using ...Utils
+using PhysicsTools
 using SpecialFunctions
 export constrain_spline_params, rqs_univariate, inv_rqs_univariate, eval_transformed_normal_logpdf
 export integral_norm_flow
