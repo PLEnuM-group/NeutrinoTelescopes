@@ -641,7 +641,7 @@ function get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=nothi
         input = calc_flow_input(particles, targets, tf_vec, feat_buffer)
     end
     output::Matrix{eltype(input)} = cpu(model.embedding(gpu(input)))
-    
+
     flow_params = output[1:end-1, :]
     log_expec_per_src_trg = output[end, :]
 
@@ -656,7 +656,7 @@ end
 
 
 function shape_llh_generator(data; particles, targets, flow_params, rel_log_expec, model, c_n)
-    
+
     n_pmt = get_pmt_count(eltype(targets))
     data_ix = LinearIndices((1:n_pmt, eachindex(targets)))
     ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
@@ -688,9 +688,9 @@ end
 
 
 function evaluate_model(particles, data, targets, model, tf_vec, c_n; feat_buffer=nothing)
-    
+
     log_expec_per_pmt, log_expec_per_src_pmt_rs, flow_params = get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=feat_buffer)
-    
+
     rel_log_expec = log_expec_per_src_pmt_rs .- log_expec_per_pmt
 
     hits_per_target = length.(data)
@@ -746,13 +746,13 @@ function t_first_likelihood(particles ;data, targets, model, tf_vec, c_n, feat_b
 
     log_expec_per_pmt, log_expec_per_src_pmt_rs, flow_params = get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=feat_buffer)
     rel_log_expec = log_expec_per_src_pmt_rs .- log_expec_per_pmt
-    
+
     # data masking
-    t_first = [length(d) > 0: minimum(d) ? -inf]
-    
-    
+    t_first = [length(d) > 0 ? minimum(d) : -inf]
+
+
     llh_tfirst = shape_llh_generator(t_first; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model, c_n=c_n)
-    
+
     upper = t_first .+ 200.
 
     p_later = integral_norm_flow(flow_params, t_first, upper, model.range_min, model.range_max)
@@ -771,7 +771,7 @@ function build_loss_vector(position, direction, energy, time, spacing, length)
 
     loss_positions = [position .+ direction .* d for d in dist_along]
     loss_times = time .+ dist_along ./ c_vac_m_ns
-   
+
     new_losses = Particle.(loss_positions, [direction], loss_times, energy, 0., [PEMinus])
 
     return new_losses

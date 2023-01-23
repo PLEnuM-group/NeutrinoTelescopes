@@ -29,6 +29,7 @@ function make_pom_pmt_coordinates(T::Type)
     @views for col in eachcol(coords)
         cart = sph_to_cart(col[1], col[2])
         col[:] .= cart_to_sph((R * cart)...)
+        @show (R * cart)
     end
 
     return SMatrix{2,16}(coords)
@@ -52,33 +53,33 @@ end
 function make_detector_line(position, n_modules, vert_spacing, module_id_start=1, mod_constructor=make_pone_module)
 
     line = [
-        mod_constructor(SVector{3}(position .- (i-1).*[0, 0, vert_spacing]), i+module_id_start)
+        mod_constructor(SVector{3}(position .- (i - 1) .* [0, 0, vert_spacing]), i + module_id_start)
         for i in 1:n_modules
     ]
     return line
 end
-    
+
 function make_hex_detector(n_side, dist, n_per_line, vert_spacing; z_start=0, mod_constructor=make_pone_module, truncate=0)
 
     modules = []
     line_id = 1
 
-    for irow in 0:(n_side - truncate-1)
+    for irow in 0:(n_side-truncate-1)
         i_this_row = 2 * (n_side - 1) - irow
         x_pos = LinRange(
             -(i_this_row - 1) / 2 * dist,
-             (i_this_row - 1) / 2 * dist,
-             i_this_row
+            (i_this_row - 1) / 2 * dist,
+            i_this_row
         )
 
         y_pos = irow * dist * sqrt(3) / 2
-        
+
         for x in x_pos
             mod = make_detector_line(
                 [x, y_pos, z_start],
                 n_per_line,
                 vert_spacing,
-                (line_id-1)*n_per_line+1,
+                (line_id - 1) * n_per_line + 1,
                 mod_constructor)
             push!(modules, mod)
             line_id += 1
@@ -87,8 +88,8 @@ function make_hex_detector(n_side, dist, n_per_line, vert_spacing; z_start=0, mo
         if irow != 0
             x_pos = LinRange(
                 -(i_this_row - 1) / 2 * dist,
-                 (i_this_row - 1) / 2 * dist,
-                 i_this_row
+                (i_this_row - 1) / 2 * dist,
+                i_this_row
             )
             y_pos = -irow * dist * sqrt(3) / 2
 
@@ -97,9 +98,9 @@ function make_hex_detector(n_side, dist, n_per_line, vert_spacing; z_start=0, mo
                     [x, y_pos, z_start],
                     n_per_line,
                     vert_spacing,
-                    (line_id-1)*n_per_line+1,
+                    (line_id - 1) * n_per_line + 1,
                     mod_constructor)
-                    push!(modules, mod)
+                push!(modules, mod)
                 line_id += 1
 
             end
