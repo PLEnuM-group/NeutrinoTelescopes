@@ -1,4 +1,3 @@
-/Manifest.toml
 *.pt
 /.CondaPkg
 /tensorboard_logs
