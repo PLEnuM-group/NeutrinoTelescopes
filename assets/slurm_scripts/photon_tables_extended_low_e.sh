@@ -2,7 +2,7 @@
 #SBATCH -N 1
 #SBATCH --job-name=photon_tables
 #SBATCH --ntasks=1
-#SBATCH --time=4:00:00
+#SBATCH --time=8:00:00
 #SBATCH --partition=lrz-v100x2,lrz-dgx-a100-80x8,lrz-dgx-1-p100x8
 #SBATCH --gres=gpu:1
 #SBATCH -o extended_low_e.out
