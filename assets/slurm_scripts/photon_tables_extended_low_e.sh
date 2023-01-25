@@ -5,8 +5,8 @@
 #SBATCH --time=4:00:00
 #SBATCH --partition=lrz-v100x2,lrz-dgx-a100-80x8,lrz-dgx-1-p100x8
 #SBATCH --gres=gpu:1
-#SBATCH -o extended.out
-#SBATCH -e extended.err
+#SBATCH -o extended_low_e.out
+#SBATCH -e extended_low_e.err
 
 n_sims=500
 n_skip=$((SLURM_ARRAY_TASK_ID * n_sims))
