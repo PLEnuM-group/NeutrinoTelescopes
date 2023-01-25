@@ -2,13 +2,13 @@
 #SBATCH -N 1
 #SBATCH --job-name=photon_tables
 #SBATCH --ntasks=1
-#SBATCH --time=1:00:00
+#SBATCH --time=4:00:00
 #SBATCH --partition=lrz-v100x2,lrz-dgx-a100-80x8,lrz-dgx-1-p100x8
 #SBATCH --gres=gpu:1
-#SBATCH -o test.out
-#SBATCH -e test.err
+#SBATCH -o extended.out
+#SBATCH -e extended.err
 
-n_sims=50
+n_sims=500
 n_skip=$((SLURM_ARRAY_TASK_ID * n_sims))
 n_resample=20
 
