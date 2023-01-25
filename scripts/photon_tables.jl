@@ -12,6 +12,8 @@ using TerminalLoggers
 using Logging: global_logger
 using Sobol
 using ArgParse
+using PhysicsTools
+using PhotonPropagation
 
 function save_hdf!(
     fname::AbstractString,

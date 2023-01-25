@@ -5,6 +5,8 @@ using PhysicalConstants.CODATA2018
 using PhotonPropagation
 using PhysicsTools
 using Unitful
+using LinearAlgebra
+
 
 const c_vac_m_ns = ustrip(u"m/ns", SpeedOfLightInVacuum)
 

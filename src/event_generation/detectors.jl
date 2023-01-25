@@ -29,7 +29,6 @@ function make_pom_pmt_coordinates(T::Type)
     @views for col in eachcol(coords)
         cart = sph_to_cart(col[1], col[2])
         col[:] .= cart_to_sph((R * cart)...)
-        @show (R * cart)
     end
 
     return SMatrix{2,16}(coords)
