@@ -21,6 +21,7 @@ using LogExpFunctions
 using NonNegLeastSquares
 using PhysicsTools
 using PhotonPropagation
+using ParameterSchedulers
 
 using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow
 
@@ -167,11 +168,14 @@ Base.@kwdef struct RQNormFlowHParams
     mlp_layers::Int64 = 2
     mlp_layer_size::Int64 = 512
     lr::Float64 = 0.001
+    lr_min::Float64 = 1E-5
     epochs::Int64 = 50
     dropout::Float64 = 0.1
     non_linearity::Symbol = :relu
     seed::Int64 = 31338
     l2_norm_alpha = 0.0
+    adam_beta_1 = 0.9
+    adam_beta_2 = 0.999
 end
 
 function setup_time_expectation_model(hparams::RQNormFlowHParams)
@@ -205,31 +209,6 @@ function setup_dataloaders(data, hparams::RQNormFlowHParams)
     return train_loader, test_loader
 end
 
-
-function train_time_expectation_model(data, use_gpu=true, use_early_stopping=true, checkpoint_path=nothing; hyperparams...)
-
-    hparams = RQNormFlowHParams(; hyperparams...)
-
-    model = setup_time_expectation_model(hparams)
-
-    if hparams.l2_norm_alpha > 0
-        opt = Optimiser(WeightDecay(hparams.l2_norm_alpha), Adam(hparams.lr))
-    else
-        opt = Adam(hparams.lr)
-    end
-
-    logdir = joinpath(@__DIR__, "../../tensorboard_logs/RQNormFlow")
-    lg = TBLogger(logdir)
-
-    train_loader, test_loader = setup_dataloaders(data, hparams)
-
-    device = use_gpu ? gpu : cpu
-    model, final_test_loss, best_test_loss, best_test_epoch, time_elapsed = train_model!(opt, train_loader, test_loader, model, log_likelihood_with_poisson, hparams, lg, device, use_early_stopping, checkpoint_path)
-
-    return model, final_test_loss, best_test_loss, best_test_epoch, hparams, opt, time_elapsed
-end
-
-
 # Function to get dictionary of model parameters
 function fill_param_dict!(dict, m, prefix)
     if m isa Chain
@@ -249,7 +228,56 @@ end
 
 sqnorm(x) = sum(abs2, x)
 
-function train_model!(opt, train, test, model, loss_function, hparams, logger, device, use_early_stopping, checkpoint_path=nothing)
+function train_time_expectation_model(data, use_gpu=true, use_early_stopping=true, checkpoint_path=nothing, model_name="RQNormFlow"; hyperparams...)
+
+    hparams = RQNormFlowHParams(; hyperparams...)
+    model = setup_time_expectation_model(hparams)
+
+    opt = Adam(hparams.lr, (hparams.adam_beta_1, hparams.adam_beta_2))
+
+    if hparams.l2_norm_alpha > 0
+        opt = Optimiser(WeightDecay(hparams.l2_norm_alpha), opt)
+    end
+
+    schedule = CosAnneal(λ0 = hparams.lr_min, λ1 = hparams.lr, period = hparams.epochs)
+
+    logdir = joinpath(@__DIR__, "../../tensorboard_logs/$model_name")
+    lg = TBLogger(logdir)
+
+    train_loader, test_loader = setup_dataloaders(data, hparams)
+
+    device = use_gpu ? gpu : cpu
+    model, final_test_loss, best_test_loss, best_test_epoch, time_elapsed = train_model!(
+        optimizer=opt,
+        schedule=schedule,
+        train_loader=train_loader,
+        test_loader=test_loader,
+        model=model,
+        loss_function=log_likelihood_with_poisson,
+        hparams=hparams,
+        logger=lg,
+        device=device,
+        use_early_stopping=use_early_stopping,
+        checkpoint_path=checkpoint_path)
+
+    return model, final_test_loss, best_test_loss, best_test_epoch, hparams, opt, time_elapsed
+end
+
+
+function train_model!(;
+    optimizer,
+    schedule,
+    train_loader,
+    test_loader,
+    model,
+    loss_function,
+    hparams,
+    logger,
+    device,
+    use_early_stopping,
+    checkpoint_path=nothing)
+
+
     model = model |> device
     pars = Flux.params(model)
 
@@ -267,11 +295,12 @@ function train_model!(opt, train, test, model, loss_function, hparams, logger, d
 
     t = time()
     @progress for epoch in 1:hparams.epochs
-
         Flux.trainmode!(model)
 
+        optimizer.eta = schedule(epoch)
+
         total_train_loss = 0.0
-        for d in train
+        for d in train_loader
             d = d |> device
             gs = gradient(pars) do
                 loss = loss_function(d, model)
@@ -279,27 +308,26 @@ function train_model!(opt, train, test, model, loss_function, hparams, logger, d
                 return loss
             end
             total_train_loss += loss
-            Flux.update!(opt, pars, gs)
+            Flux.update!(optimizer, pars, gs)
         end
 
-
-        total_train_loss /= length(train)
+        total_train_loss /= length(train_loader)
 
         Flux.testmode!(model)
         total_test_loss = 0
-        for d in test
+        for d in test_loader
             d = d |> device
             total_test_loss += loss_function(d, model)
         end
-        total_test_loss /= length(test)
+        total_test_loss /= length(test_loader)
 
-        param_dict = Dict{String,Any}()
-        fill_param_dict!(param_dict, model, "")
-
+        #param_dict = Dict{String,Any}()
+        #fill_param_dict!(param_dict, model, "")
 
         with_logger(logger) do
             @info "loss" train = total_train_loss test = total_test_loss
-            @info "model" params = param_dict log_step_increment = 0
+            @info "hparams" lr = optimizer.eta log_step_increment = 0
+            #@info "model" params = param_dict log_step_increment = 0
 
         end
         println("Epoch: $epoch, Train: $total_train_loss Test: $total_test_loss")
