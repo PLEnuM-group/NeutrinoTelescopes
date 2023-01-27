@@ -22,6 +22,7 @@ using NonNegLeastSquares
 using PhysicsTools
 using PhotonPropagation
 using ParameterSchedulers
+using ParameterSchedulers: Scheduler
 
 using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow
 
@@ -29,7 +30,8 @@ export get_log_amplitudes, unfold_energy_losses, t_first_likelihood
 export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_likelihood, track_likelihood_energy_unfolding
 export sample_cascade_event, evaluate_model, sample_multi_particle_event
 export create_pmt_table, preproc_labels, read_pmt_hits, calc_flow_input, fit_trafo_pipeline, log_likelihood_with_poisson
-export train_time_expectation_model, train_model!, RQNormFlowHParams, setup_time_expectation_model, setup_dataloaders
+export train_time_expectation_model, train_model!, RQNormFlowHParams
+export setup_optimizer, setup_time_expectation_model, setup_dataloaders
 export Normalizer
 
 
@@ -191,10 +193,9 @@ function setup_time_expectation_model(hparams::RQNormFlowHParams)
     return model
 end
 
-function setup_dataloaders(data, hparams::RQNormFlowHParams)
-    train_data, test_data = splitobs(data, at=0.7)
-    rng = Random.MersenneTwister(hparams.seed)
+function setup_dataloaders(train_data, test_data, hparams::RQNormFlowHParams)
 
+    rng = Random.MersenneTwister(hparams.seed)
     train_loader = DataLoader(
         train_data,
         batchsize=hparams.batch_size,
@@ -208,6 +209,13 @@ function setup_dataloaders(data, hparams::RQNormFlowHParams)
 
     return train_loader, test_loader
 end
+
+function setup_dataloaders(data, hparams::RQNormFlowHParams)
+    train_data, test_data = splitobs(data, at=0.7)
+    return setup_dataloaders(train_data, test_data, hparams)
+end
+
+
 
 # Function to get dictionary of model parameters
 function fill_param_dict!(dict, m, prefix)
@@ -228,28 +236,32 @@ end
 
 sqnorm(x) = sum(abs2, x)
 
+
+function setup_optimizer(hparams)
+
+    opt = Adam(hparams.lr, (hparams.adam_beta_1, hparams.adam_beta_2))
+    if hparams.l2_norm_alpha > 0
+        opt = Optimiser(WeightDecay(hparams.l2_norm_alpha), opt)
+    end
+    schedule = CosAnneal(λ0 = hparams.lr_min, λ1 = hparams.lr, period = hparams.epochs)
+    return Scheduler(schedule, opt)
+end
+
 function train_time_expectation_model(data, use_gpu=true, use_early_stopping=true, checkpoint_path=nothing, model_name="RQNormFlow"; hyperparams...)
 
     hparams = RQNormFlowHParams(; hyperparams...)
     model = setup_time_expectation_model(hparams)
 
-    opt = Adam(hparams.lr, (hparams.adam_beta_1, hparams.adam_beta_2))
-
-    if hparams.l2_norm_alpha > 0
-        opt = Optimiser(WeightDecay(hparams.l2_norm_alpha), opt)
-    end
-
-    schedule = CosAnneal(λ0 = hparams.lr_min, λ1 = hparams.lr, period = hparams.epochs)
-
     logdir = joinpath(@__DIR__, "../../tensorboard_logs/$model_name")
     lg = TBLogger(logdir)
+
+    opt = setup_optimizer(hparams)    
 
     train_loader, test_loader = setup_dataloaders(data, hparams)
 
     device = use_gpu ? gpu : cpu
     model, final_test_loss, best_test_loss, best_test_epoch, time_elapsed = train_model!(
         optimizer=opt,
-        schedule=schedule,
         train_loader=train_loader,
         test_loader=test_loader,
         model=model,
@@ -266,7 +278,6 @@ end
 
 function train_model!(;
     optimizer,
-    schedule,
     train_loader,
     test_loader,
     model,
@@ -297,8 +308,6 @@ function train_model!(;
     @progress for epoch in 1:hparams.epochs
         Flux.trainmode!(model)
 
-        optimizer.eta = schedule(epoch)
-
         total_train_loss = 0.0
         for d in train_loader
             d = d |> device
@@ -326,7 +335,7 @@ function train_model!(;
 
         with_logger(logger) do
             @info "loss" train = total_train_loss test = total_test_loss
-            @info "hparams" lr = optimizer.eta log_step_increment = 0
+            @info "hparams" lr = optimizer.optim.eta log_step_increment = 0
             #@info "model" params = param_dict log_step_increment = 0
 
         end

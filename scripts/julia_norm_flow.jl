@@ -18,6 +18,7 @@ using Plots
 using BSON: @save, @load
 using Parquet
 using Combinatorics
+using TensorBoardLogger
 
 function train_models(files, model_name, batch_size)
     rng = MersenneTwister(31338)
@@ -94,6 +95,41 @@ function train_one_model(data, model_name; hyperparams...)
     return model_loss, best_test_loss, best_test_epoch, hparams, time_elapsed
 end
 
+function kfold_model(data, model_name, tf_vec, k=5; hyperparams...)
+    hparams = RQNormFlowHParams(; hyperparams...)
+   
+    logdir = joinpath(@__DIR__, "../../tensorboard_logs/$model_name")
+    lg = TBLogger(logdir)
+
+    opt = setup_optimizer(hparams)    
+
+    for (model_num, (train_data, val_data)) in enumerate(kfolds(data; k=k))
+
+        model = setup_time_expectation_model(hparams)
+        chk_path = joinpath(@__DIR__, "../data/$(model_name)_$(model_num)")
+
+        train_loader, test_loader = setup_dataloaders(train_data, val_data, hparams)
+
+        device = gpu
+        model, final_test_loss, best_test_loss, best_test_epoch, time_elapsed = train_model!(
+            optimizer=opt,
+            train_loader=train_loader,
+            test_loader=test_loader,
+            model=model,
+            loss_function=log_likelihood_with_poisson,
+            hparams=hparams,
+            logger=lg,
+            device=device,
+            use_early_stopping=true,
+            checkpoint_path=chk_path)    
+
+        model_path = joinpath(@__DIR__, "../data/$(model_name)_$(model_num)_FNL.bson")
+        model = cpu(model)
+        @save model_path model hparams opt tf_vec
+    end
+end
+
+
 
 fnames_casc = glob("photon_table_extended_*", joinpath(@__DIR__, "../data/"))
 
@@ -101,16 +137,15 @@ rng = MersenneTwister(31338)
 nsel_frac = 0.9
 tres, nhits, cond_labels, tf_dict = read_pmt_hits(fnames_casc, nsel_frac, rng)
 length(tres)
-data = (tres=gpu(tres), label=gpu(cond_labels), nhits=gpu(nhits))
+data = (tres=tres, label=cond_labels, nhits=nhits)
 
-
-hyperparams_default = Dict(
+hyerparams_default = Dict(
         :K => 12,
-        :epochs => 50,
-        :lr => 0.001,
-        :mlp_layer_size => 768,
+        :epochs => 70,
+        :lr => 0.007,
+        :mlp_layer_size => 512,
         :mlp_layers => 2,
-        :dropout => 0,
+        :dropout => 0.1,
         :non_linearity => :relu,
         :batch_size => 30000,
         :seed => 1,
@@ -118,6 +153,16 @@ hyperparams_default = Dict(
         :adam_beta_1 => 0.9,
         :adam_beta_2 => 0.999
 )
+
+kfold_model(data, "full_kfold", tf_dict; hyperparams_default...)
+
+
+
+
+train_one_model(data, "full", hyperparams_default...)
+
+
+
 
 
 iterators = Dict(
