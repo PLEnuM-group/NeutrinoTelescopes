@@ -1706,8 +1706,8 @@ uuid = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
 version = "2.5.3"
 
 [[deps.PhotonPropagation]]
-deps = ["Adapt", "CSV", "CUDA", "DataFrames", "Distributions", "Interpolations", "JSON", "LinearAlgebra", "Logging", "Parquet", "PhysicalConstants", "PhysicsTools", "PoissonRandom", "Random", "Reexport", "Rotations", "SpecialFunctions", "StaticArrays", "StatsBase", "StructArrays", "Unitful"]
-git-tree-sha1 = "7cfabcafa132ac71a083cbd8f67ceacc2ee1b5e6"
+deps = ["Adapt", "CSV", "CUDA", "DataFrames", "Distributions", "Interpolations", "JSON", "LinearAlgebra", "Logging", "Parquet", "PhysicalConstants", "PhysicsTools", "PoissonRandom", "Random", "Reexport", "Revise", "Rotations", "SpecialFunctions", "StaticArrays", "StatsBase", "StructArrays", "Unitful"]
+git-tree-sha1 = "6d8c2499b82cf4954d252d308f33f131bfbd5041"
 repo-rev = "main"
 repo-url = "https://github.com/PLEnuM-group/PhotonPropagation.jl.git"
 uuid = "28d5a9e5-7176-4325-9f36-6543c975d45b"
