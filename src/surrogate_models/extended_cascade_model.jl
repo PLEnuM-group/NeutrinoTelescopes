@@ -25,6 +25,7 @@ using ParameterSchedulers
 using ParameterSchedulers: Scheduler
 
 using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow
+using ...Processing
 
 export get_log_amplitudes, unfold_energy_losses, t_first_likelihood
 export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_likelihood, track_likelihood_energy_unfolding
@@ -237,13 +238,13 @@ end
 sqnorm(x) = sum(abs2, x)
 
 
-function setup_optimizer(hparams)
+function setup_optimizer(hparams, n_batches)
 
     opt = Adam(hparams.lr, (hparams.adam_beta_1, hparams.adam_beta_2))
     if hparams.l2_norm_alpha > 0
         opt = Optimiser(WeightDecay(hparams.l2_norm_alpha), opt)
     end
-    schedule = CosAnneal(λ0 = hparams.lr_min, λ1 = hparams.lr, period = hparams.epochs)
+    schedule = Interpolator(CosAnneal(λ0 = hparams.lr_min, λ1 = hparams.lr, period = hparams.epochs), n_batches)
     return Scheduler(schedule, opt)
 end
 
@@ -255,9 +256,9 @@ function train_time_expectation_model(data, use_gpu=true, use_early_stopping=tru
     logdir = joinpath(@__DIR__, "../../tensorboard_logs/$model_name")
     lg = TBLogger(logdir)
 
-    opt = setup_optimizer(hparams)    
-
     train_loader, test_loader = setup_dataloaders(data, hparams)
+
+    opt = setup_optimizer(hparams, length(train_loader))   
 
     device = use_gpu ? gpu : cpu
     model, final_test_loss, best_test_loss, best_test_epoch, time_elapsed = train_model!(
@@ -287,6 +288,8 @@ function train_model!(;
     device,
     use_early_stopping,
     checkpoint_path=nothing)
+
+
 
 
     model = model |> device
