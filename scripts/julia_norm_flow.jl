@@ -99,17 +99,14 @@ function kfold_model(data, model_name, tf_vec, k=5; hyperparams...)
     hparams = RQNormFlowHParams(; hyperparams...)
    
     logdir = joinpath(@__DIR__, "../../tensorboard_logs/$model_name")
-    lg = TBLogger(logdir)
-
-    opt = setup_optimizer(hparams)    
-
+   
     for (model_num, (train_data, val_data)) in enumerate(kfolds(data; k=k))
-
+        lg = TBLogger(logdir)
         model = setup_time_expectation_model(hparams)
         chk_path = joinpath(@__DIR__, "../data/$(model_name)_$(model_num)")
 
         train_loader, test_loader = setup_dataloaders(train_data, val_data, hparams)
-
+        opt = setup_optimizer(hparams, length(train_loader))   
         device = gpu
         model, final_test_loss, best_test_loss, best_test_epoch, time_elapsed = train_model!(
             optimizer=opt,
@@ -120,7 +117,7 @@ function kfold_model(data, model_name, tf_vec, k=5; hyperparams...)
             hparams=hparams,
             logger=lg,
             device=device,
-            use_early_stopping=true,
+            use_early_stopping=false,
             checkpoint_path=chk_path)    
 
         model_path = joinpath(@__DIR__, "../data/$(model_name)_$(model_num)_FNL.bson")
@@ -139,11 +136,11 @@ tres, nhits, cond_labels, tf_dict = read_pmt_hits(fnames_casc, nsel_frac, rng)
 length(tres)
 data = (tres=tres, label=cond_labels, nhits=nhits)
 
-hyerparams_default = Dict(
+hyperparams_default = Dict(
         :K => 12,
-        :epochs => 70,
+        :epochs => 100,
         :lr => 0.007,
-        :mlp_layer_size => 512,
+        :mlp_layer_size => 768,
         :mlp_layers => 2,
         :dropout => 0.1,
         :non_linearity => :relu,

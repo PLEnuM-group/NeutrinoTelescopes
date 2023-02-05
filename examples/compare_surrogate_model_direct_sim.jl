@@ -49,8 +49,10 @@ particles = [
 ]
 hits = mc_expectation(particles, targets_single, 1);
 
+compare_mc_model(particles, targets_single, models, medium, hits)
 
 
+energy = 3E4
 rng = MersenneTwister(31338)
 particles = [
     Particle(SA[-23.0, -1.0, -450], dir, -10.0, 5.0, 0.0, PEMinus),
@@ -59,5 +61,5 @@ particles = [
     Particle(pos .+ dir .* 10, dir, 25, energy, 0.0, PEMinus)
 ]
 
-
 hits = mc_expectation(particles, targets_single, 1);
+compare_mc_model(particles, targets_single, models, medium, hits)

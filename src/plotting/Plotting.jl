@@ -9,6 +9,8 @@ using CUDA
 using Random
 using StaticArrays
 using BSON: @load
+using LinearAlgebra
+using ...Processing
 
 export compare_mc_model
 
