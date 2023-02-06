@@ -37,14 +37,15 @@ export Normalizer
 
 
 abstract type ArrivalTimeSurrogate end
+abstract type RQSplineModel <: ArrivalTimeSurrogate end
 
 """
-    RQNormFlow(K::Integer,
-                      range_min::Number,
-                      range_max::Number,
-                      hidden_structure::AbstractVector{<:Integer};
-                      dropout::Real=0.3,
-                      non_linearity=relu)
+NNRQNormFlow(
+    embedding::Chain
+    K::Integer,
+    range_min::Number,
+    range_max::Number,
+    )
 
 1-D rq-spline normalizing flow with expected counts prediction.
 
@@ -52,87 +53,96 @@ The rq-spline requires 3 * K + 1 parameters, where `K` is the number of knots. T
 parametrized by an embedding (MLP).
 
 # Arguments
-- K: Number of knots
-- range_min:: Lower bound of the spline transformation
-- range_max:: Upper bound of the spline transformation
-- hidden_structure:  Number of nodes per MLP layer
-- dropout: Dropout value (between 0 and 1) used in training (default=0.3)
-- non_linearity: Non-linearity used in MLP (default=relu)
-- add_log_expec: Also predict log-expectation
-- split_final=false: Split the final layer into one for predicting the spline params and one for the log_expec
+- embedding: Flux model
+- range_min: Lower bound of the spline transformation
+- range_max: Upper bound of the spline transformation
 """
-struct RQNormFlow <: ArrivalTimeSurrogate
+struct NNRQNormFlow <: RQSplineModel
     embedding::Chain
     K::Integer
     range_min::Float64
     range_max::Float64
-    has_log_expec::Bool
 end
 
 # Make embedding parameters trainable
-Flux.@functor RQNormFlow (embedding,)
+Flux.@functor NNRQNormFlow (embedding,)
 
-function RQNormFlow(K::Integer,
-    range_min::Number,
-    range_max::Number,
-    hidden_structure::AbstractVector{<:Integer};
-    dropout=0.3,
+
+function create_mlp_embedding(;
+    hidden_structure::AbstractVector{<:Integer},
+    n_out,
+    dropout=0,
     non_linearity=relu,
-    add_log_expec=false,
-    split_final=false
-)
-
+    split_final=false)
     model = []
     push!(model, Dense(24 => hidden_structure[1], non_linearity))
     push!(model, Dropout(dropout))
-    for ix in 2:length(hidden_structure[2:end])
-        push!(model, Dense(hidden_structure[ix-1] => hidden_structure[ix], non_linearity))
+
+    hs_h = @view hidden_structure[2:end]
+    hs_l = @view hidden_structure[1:end-1]
+
+    for (l, h) in zip(hs_l, hs_h)
+        push!(model, Dense(l => h, non_linearity))
         push!(model, Dropout(dropout))
     end
 
-    # 3 K + 1 for spline, 1 for shift, 1 for scale, 1 for log-expectation
-    n_spline_params = 3 * K + 1
-    n_flow_params = n_spline_params + 2
-
-
-    if add_log_expec && split_final
+    if split_final
         final = Parallel(vcat,
-            Dense(hidden_structure[end] => n_flow_params),
+            Dense(hidden_structure[end] => n_out - 1),
             Dense(hidden_structure[end] => 1)
         )
-    elseif add_log_expec && !split_final
-        #zero_init(out, in) = vcat(zeros(out-3, in), zeros(1, in), ones(1, in), fill(1/in, 1, in))
-        final = Dense(hidden_structure[end] => n_flow_params + 1)
     else
-        final = Dense(hidden_structure[end] => n_flow_params)
+        #zero_init(out, in) = vcat(zeros(out-3, in), zeros(1, in), ones(1, in), fill(1/in, 1, in))
+        final = Dense(hidden_structure[end] => n_out)
     end
     push!(model, final)
+    return Chain(model...)
+end
 
-    return RQNormFlow(Chain(model...), K, range_min, range_max, add_log_expec)
+function create_resnet_embedding(;
+    hidden_structure::AbstractVector{<:Integer},
+    n_out,
+    non_linearity=relu,
+    dropout=0
+)
+
+    if !all(hidden_structure[1] .== hidden_structure)
+        error("For resnet, all hidden layers have to be of same width")
+    end
+
+    layer_width = hidden_structure[1]
+
+    model = []
+    push!(model, Dense(24 => layer_width, non_linearity))
+    push!(model, Dropout(dropout))
+
+    for _ in 2:length(hidden_structure)
+        layer = Dense(layer_width => layer_width, non_linearity)
+        drp = Dropout(dropout)
+        layer = Chain(layer, drp)
+        push!(model, SkipConnection(layer, +))
+    end
+    push!(model, Dense(layer_width => n_out))
+
+    return Chain(model...)
+
 end
 
 """
-    (m::RQNormFlow)(x, cond)
+    (m::RQSplineModel)(x, cond)
 
 Evaluate normalizing flow at values `x` with conditional values `cond`.
 
 Returns logpdf and log-expectation
 """
-function (m::RQNormFlow)(x, cond, pred_log_expec=false)
+function (m::RQSplineModel)(x, cond)
     params = m.embedding(Float64.(cond))
 
-    @assert !pred_log_expec || (pred_log_expec && m.has_log_expec) "Requested to return log expectation, but model doesn't provide.
-    "
-    if pred_log_expec
-        spline_params = params[1:end-1, :]
-        logpdf_eval = eval_transformed_normal_logpdf(x, spline_params, m.range_min, m.range_max)
-        log_expec = params[end, :]
+    spline_params = @view params[1:end-1, :]
+    logpdf_eval = eval_transformed_normal_logpdf(x, spline_params, m.range_min, m.range_max)
+    log_expec = @view params[end, :]
+    return logpdf_eval, log_expec
 
-        return logpdf_eval, log_expec
-    else
-        logpdf_eval = eval_transformed_normal_logpdf(x, params, m.range_min, m.range_max)
-        return logpdf_eval
-    end
 end
 
 
@@ -141,7 +151,7 @@ end
 
 Evaluate model and return sum of logpdfs of normalizing flow and poisson
 """
-function log_likelihood_with_poisson(x::NamedTuple, model::RQNormFlow)
+function log_likelihood_with_poisson(x::NamedTuple, model::ArrivalTimeSurrogate)
     logpdf_eval, log_expec = model(x[:tres], x[:label], true)
 
     # poisson: log(exp(-lambda) * lambda^k)
@@ -159,7 +169,7 @@ end
 
 Evaluate model and return sum of logpdfs of normalizing flow and poisson
 """
-function log_likelihood(x::NamedTuple, model::RQNormFlow)
+function log_likelihood(x::NamedTuple, model::ArrivalTimeSurrogate)
     logpdf_eval = model(x[:tres], x[:label], false)
     return -sum(logpdf_eval) / length(x[:tres])
 end
@@ -179,6 +189,7 @@ Base.@kwdef struct RQNormFlowHParams
     l2_norm_alpha = 0.0
     adam_beta_1 = 0.9
     adam_beta_2 = 0.999
+    resnet = false
 end
 
 function setup_time_expectation_model(hparams::RQNormFlowHParams)
@@ -186,6 +197,8 @@ function setup_time_expectation_model(hparams::RQNormFlowHParams)
 
     non_lins = Dict(:relu => relu, :tanh => tanh)
     non_lin = non_lins[hparams.non_linearity]
+
+    embedding = create_mlp_embedding()
 
     model = RQNormFlow(
         hparams.K, -20.0, 100.0, hidden_structure, dropout=hparams.dropout, non_linearity=non_lin,
@@ -244,7 +257,7 @@ function setup_optimizer(hparams, n_batches)
     if hparams.l2_norm_alpha > 0
         opt = Optimiser(WeightDecay(hparams.l2_norm_alpha), opt)
     end
-    schedule = Interpolator(CosAnneal(λ0 = hparams.lr_min, λ1 = hparams.lr, period = hparams.epochs), n_batches)
+    schedule = Interpolator(CosAnneal(λ0=hparams.lr_min, λ1=hparams.lr, period=hparams.epochs), n_batches)
     return Scheduler(schedule, opt)
 end
 
@@ -258,7 +271,7 @@ function train_time_expectation_model(data, use_gpu=true, use_early_stopping=tru
 
     train_loader, test_loader = setup_dataloaders(data, hparams)
 
-    opt = setup_optimizer(hparams, length(train_loader))   
+    opt = setup_optimizer(hparams, length(train_loader))
 
     device = use_gpu ? gpu : cpu
     model, final_test_loss, best_test_loss, best_test_epoch, time_elapsed = train_model!(
@@ -598,8 +611,8 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
     # The embedding for all the parameters is
     # [(p_1, t_1, pmt_1), (p_1, t_1, pmt_2), ... (p_2, t_1, pmt_1), ... (p_1, t_end, pmt_1), ... (p_end, t_end, pmt_end)]
 
-    flow_params = output[1:end-1, :]
-    log_expec_per_source = output[end, :]
+    flow_params = @view output[1:end-1, :]
+    log_expec_per_source = @view output[end, :]
     expec_per_source = exp.(log_expec_per_source) .* oversample
 
     n_hits_per_source = pois_rand.(rng, expec_per_source)
@@ -627,7 +640,7 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
     for (pmt_ix, t_ix) in product(1:n_pmt, eachindex(targets))
         target = targets[t_ix]
 
-        n_hits_this_target = sum(n_hits_per_source_rs[pmt_ix, :, t_ix])
+        @views n_hits_this_target = sum(n_hits_per_source_rs[pmt_ix, :, t_ix])
 
         if n_hits_this_target == 0
             data[data_index[pmt_ix, t_ix]] = []
@@ -635,7 +648,7 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
         end
 
         data_this_target = Vector{Float64}(undef, n_hits_this_target)
-        data_selectors = create_non_uniform_ranges(n_hits_per_source_rs[pmt_ix, :, t_ix])
+        @views data_selectors = create_non_uniform_ranges(n_hits_per_source_rs[pmt_ix, :, t_ix])
 
         for p_ix in eachindex(particles)
             particle = particles[p_ix]
@@ -656,7 +669,7 @@ end
 function sample_cascade_event(energy, dir_theta, dir_phi, position, time; targets, model, tf_vec, c_n, rng=nothing)
 
     dir = sph_to_cart(dir_theta, dir_phi)
-    particle = Particle(position, dir, time, energy, 0., PEMinus)
+    particle = Particle(position, dir, time, energy, 0.0, PEMinus)
     return sample_multi_particle_event([particle], targets, model, tf_vec, c_n, rng)
 end
 
@@ -680,8 +693,8 @@ function get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=nothi
     end
     output::Matrix{eltype(input)} = cpu(model.embedding(gpu(input)))
 
-    flow_params = output[1:end-1, :]
-    log_expec_per_src_trg = output[end, :]
+    flow_params = @view output[1:end-1, :]
+    log_expec_per_src_trg = @view output[end, :]
 
     log_expec_per_src_pmt_rs = reshape(
         log_expec_per_src_trg,
@@ -699,7 +712,7 @@ function shape_llh_generator(data; particles, targets, flow_params, rel_log_expe
     data_ix = LinearIndices((1:n_pmt, eachindex(targets)))
     ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
 
-    shape_llh_gen = (
+    @views shape_llh_gen = (
         length(data[data_ix[pmt_ix, t_ix]]) > 0 ?
         # Reduce over the particle dimension to create the mixture
         sum(LogExpFunctions.logsumexp(
@@ -755,7 +768,7 @@ end
 function single_cascade_likelihood(logenergy, dir_theta, dir_phi, position, time; data, targets, model, tf_vec, c_n, feat_buffer=nothing)
     dir = sph_to_cart(dir_theta, dir_phi)
     energy = 10^logenergy
-    particles = [Particle(position, dir, time, energy, 0., PEMinus)]
+    particles = [Particle(position, dir, time, energy, 0.0, PEMinus)]
     return multi_particle_likelihood(particles, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, feat_buffer=feat_buffer)
 end
 
@@ -773,14 +786,14 @@ function track_likelihood_fixed_losses(
 
     times = [p.time for p in losses]
 
-    new_losses = Particle.(new_loss_positions, [dir], times, new_loss_energies, 0., [PEMinus])
+    new_losses = Particle.(new_loss_positions, [dir], times, new_loss_energies, 0.0, [PEMinus])
 
     return multi_particle_likelihood(
         new_losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, feat_buffer=feat_buffer, amp_only=amp_only)
 end
 
 
-function t_first_likelihood(particles ;data, targets, model, tf_vec, c_n, feat_buffer=nothing)
+function t_first_likelihood(particles; data, targets, model, tf_vec, c_n, feat_buffer=nothing)
 
     log_expec_per_pmt, log_expec_per_src_pmt_rs, flow_params = get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=feat_buffer)
     rel_log_expec = log_expec_per_src_pmt_rs .- log_expec_per_pmt
@@ -791,11 +804,11 @@ function t_first_likelihood(particles ;data, targets, model, tf_vec, c_n, feat_b
 
     llh_tfirst = shape_llh_generator(t_first; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model, c_n=c_n)
 
-    upper = t_first .+ 200.
+    upper = t_first .+ 200.0
 
     p_later = integral_norm_flow(flow_params, t_first, upper, model.range_min, model.range_max)
 
-    llh = llh_tfirst .+ (exp.(log_expec_per_pmt) .-1) .* log((1 .- p_later))
+    llh = llh_tfirst .+ (exp.(log_expec_per_pmt) .- 1) .* log((1 .- p_later))
 
     return sum(llh)
 end
@@ -810,17 +823,17 @@ function build_loss_vector(position, direction, energy, time, spacing, length)
     loss_positions = [position .+ direction .* d for d in dist_along]
     loss_times = time .+ dist_along ./ c_vac_m_ns
 
-    new_losses = Particle.(loss_positions, [direction], loss_times, energy, 0., [PEMinus])
+    new_losses = Particle.(loss_positions, [direction], loss_times, energy, 0.0, [PEMinus])
 
     return new_losses
 end
 
-function unfold_energy_losses(position, direction, time; data, targets, model, tf_vec, spacing, plength=500.)
+function unfold_energy_losses(position, direction, time; data, targets, model, tf_vec, spacing, plength=500.0)
     e_base = 5E4
     lvec = build_loss_vector(position, direction, e_base, time, spacing, plength)
 
-    n_pmt =  get_pmt_count(eltype(targets))
-    feat_buffer = zeros(9, n_pmt*length(targets)*length(lvec))
+    n_pmt = get_pmt_count(eltype(targets))
+    feat_buffer = zeros(9, n_pmt * length(targets) * length(lvec))
     _, log_amp_per_src_pmt = get_log_amplitudes(lvec, targets, gpu(model), tf_vec; feat_buffer=feat_buffer)
     log_amp_per_src_module = LogExpFunctions.logsumexp(log_amp_per_src_pmt, dims=1)[1, :, :]
 
