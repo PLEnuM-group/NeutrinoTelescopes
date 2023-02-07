@@ -4,7 +4,6 @@ using DataFrames
 using CairoMakie
 using Base.Iterators
 using CUDA
-using BenchmarkTools
 using Random
 using StaticArrays
 using CairoMakie
@@ -117,12 +116,12 @@ function kfold_model(data, model_name, tf_vec, k=5; hyperparams...)
             hparams=hparams,
             logger=lg,
             device=device,
-            use_early_stopping=false,
+            use_early_stopping=true,
             checkpoint_path=chk_path)    
 
         model_path = joinpath(@__DIR__, "../data/$(model_name)_$(model_num)_FNL.bson")
         model = cpu(model)
-        @save model_path model hparams opt tf_vec
+        @save model_path model hparams tf_vec
     end
 end
 
@@ -139,7 +138,7 @@ data = (tres=tres, label=cond_labels, nhits=nhits)
 hyperparams_default = Dict(
         :K => 12,
         :epochs => 100,
-        :lr => 0.007,
+        :lr => 0.005,
         :mlp_layer_size => 768,
         :mlp_layers => 2,
         :dropout => 0.1,
@@ -148,7 +147,8 @@ hyperparams_default = Dict(
         :seed => 1,
         :l2_norm_alpha => 0,
         :adam_beta_1 => 0.9,
-        :adam_beta_2 => 0.999
+        :adam_beta_2 => 0.999,
+        :resnet => false
 )
 
 kfold_model(data, "full_kfold", tf_dict; hyperparams_default...)

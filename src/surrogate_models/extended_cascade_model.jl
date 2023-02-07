@@ -78,8 +78,8 @@ function create_mlp_embedding(;
     push!(model, Dense(24 => hidden_structure[1], non_linearity))
     push!(model, Dropout(dropout))
 
-    hs_h = @view hidden_structure[2:end]
-    hs_l = @view hidden_structure[1:end-1]
+    hs_h = hidden_structure[2:end]
+    hs_l = hidden_structure[1:end-1]
 
     for (l, h) in zip(hs_l, hs_h)
         push!(model, Dense(l => h, non_linearity))
@@ -138,9 +138,9 @@ Returns logpdf and log-expectation
 function (m::RQSplineModel)(x, cond)
     params = m.embedding(Float64.(cond))
 
-    spline_params = @view params[1:end-1, :]
+    spline_params = params[1:end-1, :]
     logpdf_eval = eval_transformed_normal_logpdf(x, spline_params, m.range_min, m.range_max)
-    log_expec = @view params[end, :]
+    log_expec = params[end, :]
     return logpdf_eval, log_expec
 
 end
@@ -152,7 +152,7 @@ end
 Evaluate model and return sum of logpdfs of normalizing flow and poisson
 """
 function log_likelihood_with_poisson(x::NamedTuple, model::ArrivalTimeSurrogate)
-    logpdf_eval, log_expec = model(x[:tres], x[:label], true)
+    logpdf_eval, log_expec = model(x[:tres], x[:label])
 
     # poisson: log(exp(-lambda) * lambda^k)
     poiss_f = x[:nhits] .* log_expec .- exp.(log_expec) .- loggamma.(x[:nhits] .+ 1.0)
@@ -198,12 +198,18 @@ function setup_time_expectation_model(hparams::RQNormFlowHParams)
     non_lins = Dict(:relu => relu, :tanh => tanh)
     non_lin = non_lins[hparams.non_linearity]
 
-    embedding = create_mlp_embedding()
+    # 3 K + 1 for spline, 1 for shift, 1 for scale, 1 for log-expectation
+    n_spline_params = 3 * hparams.K + 1
+    n_out = n_spline_params + 3
 
-    model = RQNormFlow(
-        hparams.K, -20.0, 100.0, hidden_structure, dropout=hparams.dropout, non_linearity=non_lin,
-        add_log_expec=true
-    )
+    embedding = create_mlp_embedding(
+        hidden_structure=hidden_structure,
+        n_out=n_out,
+        dropout=hparams.dropout,
+        non_linearity=non_lin,
+        split_final=false)
+
+    model = NNRQNormFlow(embedding, hparams.K, -20.0, 100.0)
     return model
 end
 
@@ -301,8 +307,6 @@ function train_model!(;
     device,
     use_early_stopping,
     checkpoint_path=nothing)
-
-
 
 
     model = model |> device
@@ -611,8 +615,8 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
     # The embedding for all the parameters is
     # [(p_1, t_1, pmt_1), (p_1, t_1, pmt_2), ... (p_2, t_1, pmt_1), ... (p_1, t_end, pmt_1), ... (p_end, t_end, pmt_end)]
 
-    flow_params = @view output[1:end-1, :]
-    log_expec_per_source = @view output[end, :]
+    flow_params = output[1:end-1, :]
+    log_expec_per_source = output[end, :]
     expec_per_source = exp.(log_expec_per_source) .* oversample
 
     n_hits_per_source = pois_rand.(rng, expec_per_source)
@@ -640,7 +644,7 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
     for (pmt_ix, t_ix) in product(1:n_pmt, eachindex(targets))
         target = targets[t_ix]
 
-        @views n_hits_this_target = sum(n_hits_per_source_rs[pmt_ix, :, t_ix])
+        n_hits_this_target = sum(n_hits_per_source_rs[pmt_ix, :, t_ix])
 
         if n_hits_this_target == 0
             data[data_index[pmt_ix, t_ix]] = []
@@ -648,7 +652,7 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
         end
 
         data_this_target = Vector{Float64}(undef, n_hits_this_target)
-        @views data_selectors = create_non_uniform_ranges(n_hits_per_source_rs[pmt_ix, :, t_ix])
+        data_selectors = create_non_uniform_ranges(n_hits_per_source_rs[pmt_ix, :, t_ix])
 
         for p_ix in eachindex(particles)
             particle = particles[p_ix]
@@ -693,8 +697,8 @@ function get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=nothi
     end
     output::Matrix{eltype(input)} = cpu(model.embedding(gpu(input)))
 
-    flow_params = @view output[1:end-1, :]
-    log_expec_per_src_trg = @view output[end, :]
+    flow_params = output[1:end-1, :]
+    log_expec_per_src_trg = output[end, :]
 
     log_expec_per_src_pmt_rs = reshape(
         log_expec_per_src_trg,
@@ -712,7 +716,7 @@ function shape_llh_generator(data; particles, targets, flow_params, rel_log_expe
     data_ix = LinearIndices((1:n_pmt, eachindex(targets)))
     ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
 
-    @views shape_llh_gen = (
+    shape_llh_gen = (
         length(data[data_ix[pmt_ix, t_ix]]) > 0 ?
         # Reduce over the particle dimension to create the mixture
         sum(LogExpFunctions.logsumexp(

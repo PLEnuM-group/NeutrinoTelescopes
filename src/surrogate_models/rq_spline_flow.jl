@@ -391,19 +391,21 @@ function inv_rqs_univariate(x_pos::AbstractMatrix, y_pos::AbstractMatrix, knot_s
         knot_slopes_bin[1] .* sq_1mz) .+ 2.0 .* log.(denominator)
 
     # If y is outside the spline range, we default to a linear transformation.
-    x = my_where(below_range, (y .- y_pos[1, :]) ./ knot_slopes[1, :] .+ x_pos[1, :], x)
-    x = my_where(above_range, (y .- y_pos[end, :]) ./ knot_slopes[end, :] .+ x_pos[end, :], x)
-    logdet = my_where(below_range, .-log.(knot_slopes[1, :]), logdet)
-    logdet = my_where(above_range, .-log.(knot_slopes[end, :]), logdet)
+   x = my_where(below_range, (y .- y_pos[1, :]) ./ knot_slopes[1, :] .+ x_pos[1, :], x)
+   x = my_where(above_range, (y .- y_pos[end, :]) ./ knot_slopes[end, :] .+ x_pos[end, :], x)
+   logdet = my_where(below_range, .-log.(knot_slopes[1, :]), logdet)
+   logdet = my_where(above_range, .-log.(knot_slopes[end, :]), logdet)
     return x, logdet
 end
 
 
 function _split_params(params)
 
+
     spline_params = params[1:end-2, :]
     shift = params[end-1, :]
     scale = sigmoid.(params[end, :]) .* 100
+
     return spline_params, shift, scale
 end
 
