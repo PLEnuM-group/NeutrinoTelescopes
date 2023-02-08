@@ -27,6 +27,7 @@ using ParameterSchedulers: Scheduler
 using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow
 using ...Processing
 
+export kfold_train_model
 export get_log_amplitudes, unfold_energy_losses, t_first_likelihood
 export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_likelihood, track_likelihood_energy_unfolding
 export sample_cascade_event, evaluate_model, sample_multi_particle_event
@@ -875,6 +876,37 @@ function track_likelihood_energy_unfolding(dir_theta, dir_phi, position, time; s
         return -Inf64
     end
     return multi_particle_likelihood(losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, amp_only=amp_only)
+end
+
+function kfold_train_model(data, model_name, tf_vec, k=5; hyperparams...)
+    hparams = RQNormFlowHParams(; hyperparams...)
+
+    logdir = joinpath(@__DIR__, "../../tensorboard_logs/$model_name")
+
+    for (model_num, (train_data, val_data)) in enumerate(kfolds(data; k=k))
+        lg = TBLogger(logdir)
+        model = setup_time_expectation_model(hparams)
+        chk_path = joinpath(@__DIR__, "../data/$(model_name)_$(model_num)")
+
+        train_loader, test_loader = setup_dataloaders(train_data, val_data, hparams)
+        opt = setup_optimizer(hparams, length(train_loader))
+        device = gpu
+        model, final_test_loss, best_test_loss, best_test_epoch, time_elapsed = train_model!(
+            optimizer=opt,
+            train_loader=train_loader,
+            test_loader=test_loader,
+            model=model,
+            loss_function=log_likelihood_with_poisson,
+            hparams=hparams,
+            logger=lg,
+            device=device,
+            use_early_stopping=true,
+            checkpoint_path=chk_path)
+
+        model_path = joinpath(@__DIR__, "../data/$(model_name)_$(model_num)_FNL.bson")
+        model = cpu(model)
+        @save model_path model hparams tf_vec
+    end
 end
 
 

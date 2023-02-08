@@ -4,6 +4,7 @@ using DataFrames
 using CairoMakie
 using Base.Iterators
 using CUDA
+using BenchmarkTools
 using Random
 using StaticArrays
 using CairoMakie
@@ -94,37 +95,6 @@ function train_one_model(data, model_name; hyperparams...)
     return model_loss, best_test_loss, best_test_epoch, hparams, time_elapsed
 end
 
-function kfold_model(data, model_name, tf_vec, k=5; hyperparams...)
-    hparams = RQNormFlowHParams(; hyperparams...)
-   
-    logdir = joinpath(@__DIR__, "../../tensorboard_logs/$model_name")
-   
-    for (model_num, (train_data, val_data)) in enumerate(kfolds(data; k=k))
-        lg = TBLogger(logdir)
-        model = setup_time_expectation_model(hparams)
-        chk_path = joinpath(@__DIR__, "../data/$(model_name)_$(model_num)")
-
-        train_loader, test_loader = setup_dataloaders(train_data, val_data, hparams)
-        opt = setup_optimizer(hparams, length(train_loader))   
-        device = gpu
-        model, final_test_loss, best_test_loss, best_test_epoch, time_elapsed = train_model!(
-            optimizer=opt,
-            train_loader=train_loader,
-            test_loader=test_loader,
-            model=model,
-            loss_function=log_likelihood_with_poisson,
-            hparams=hparams,
-            logger=lg,
-            device=device,
-            use_early_stopping=true,
-            checkpoint_path=chk_path)    
-
-        model_path = joinpath(@__DIR__, "../data/$(model_name)_$(model_num)_FNL.bson")
-        model = cpu(model)
-        @save model_path model hparams tf_vec
-    end
-end
-
 
 
 fnames_casc = glob("photon_table_extended_*", joinpath(@__DIR__, "../data/"))
@@ -136,22 +106,21 @@ length(tres)
 data = (tres=tres, label=cond_labels, nhits=nhits)
 
 hyperparams_default = Dict(
-        :K => 12,
-        :epochs => 100,
-        :lr => 0.005,
-        :mlp_layer_size => 768,
-        :mlp_layers => 2,
-        :dropout => 0.1,
-        :non_linearity => :relu,
-        :batch_size => 30000,
-        :seed => 1,
-        :l2_norm_alpha => 0,
-        :adam_beta_1 => 0.9,
-        :adam_beta_2 => 0.999,
-        :resnet => false
+    :K => 12,
+    :epochs => 100,
+    :lr => 0.007,
+    :mlp_layer_size => 768,
+    :mlp_layers => 2,
+    :dropout => 0.1,
+    :non_linearity => :relu,
+    :batch_size => 30000,
+    :seed => 1,
+    :l2_norm_alpha => 0,
+    :adam_beta_1 => 0.9,
+    :adam_beta_2 => 0.999
 )
 
-kfold_model(data, "full_kfold", tf_dict; hyperparams_default...)
+kfold_train_model(data, "full_kfold", tf_dict; hyperparams_default...)
 
 
 
@@ -203,24 +172,24 @@ function plot_experiment(iterators, results)
         mask = isfinite.(results[:, :best_test_loss])
 
         CairoMakie.scatter!(ax, results[mask, key], results[mask, :best_test_loss], color=results[mask, :lr])
-        CairoMakie.ylims!(ax, low=2.7, high = 3.2)
+        CairoMakie.ylims!(ax, low=2.7, high=3.2)
 
     end
 
     fig2 = Figure()
     combs = combinations(collect(keys(iterators)), 2)
-    
+
     @show first(combs)
 
     for (i, (key1, key2)) in enumerate(combs)
-    
-        row, cols = divrem(i-1, 3)
+
+        row, cols = divrem(i - 1, 3)
         ax = Axis(fig2[row+1, cols+1], xlabel=String(key1), ylabel=String(key2))
 
         mask = isfinite.(results[:, :best_test_loss])
 
         CairoMakie.scatter!(ax, results[mask, key1], results[mask, key2], color=log10.(results[mask, :best_test_loss]))
-    
+
     end
 
 
@@ -257,18 +226,18 @@ fig1, fig2 = plot_experiment(iterators, results)
 fig1
 
 hyperparams_default = Dict(
-        :K => 12,
-        :epochs => 50,
-        :lr => 0.001,
-        :mlp_layer_size => 512,
-        :mlp_layers => 2,
-        :dropout => 0,
-        :non_linearity => :relu,
-        :batch_size => 30000,
-        :seed => 1,
-        :l2_norm_alpha => 0,
-        :adam_beta_1 => 0.9,
-        :adam_beta_2 => 0.999
+    :K => 12,
+    :epochs => 50,
+    :lr => 0.001,
+    :mlp_layer_size => 512,
+    :mlp_layers => 2,
+    :dropout => 0,
+    :non_linearity => :relu,
+    :batch_size => 30000,
+    :seed => 1,
+    :l2_norm_alpha => 0,
+    :adam_beta_1 => 0.9,
+    :adam_beta_2 => 0.999
 )
 
 
@@ -283,25 +252,25 @@ fig1, fig2 = plot_experiment(iterators, results)
 fig1
 
 hyperparams_default = Dict(
-        :K => 12,
-        :epochs => 70,
-        :lr => 0.007,
-        :mlp_layer_size => 512,
-        :mlp_layers => 2,
-        :dropout => 0.1,
-        :non_linearity => :relu,
-        :batch_size => 30000,
-        :seed => 1,
-        :l2_norm_alpha => 0,
-        :adam_beta_1 => 0.9,
-        :adam_beta_2 => 0.999
+    :K => 12,
+    :epochs => 70,
+    :lr => 0.007,
+    :mlp_layer_size => 512,
+    :mlp_layers => 2,
+    :dropout => 0.1,
+    :non_linearity => :relu,
+    :batch_size => 30000,
+    :seed => 1,
+    :l2_norm_alpha => 0,
+    :adam_beta_1 => 0.9,
+    :adam_beta_2 => 0.999
 )
 
 
 iterators = Dict(
     :K => [13, 15, 17],
     :lr => [0.005, 0.007, 0.01],
-    :epochs=> [ 70, 100]
+    :epochs => [70, 100]
 )
 results = run_experiment(iterators)
 fig1, fig2 = plot_experiment(iterators, results)
@@ -315,18 +284,18 @@ begin
 
 
 
-fig
+    fig
 end
 
 begin
-fig = Figure()
-ax = Axis(fig[1,1])
-CairoMakie.scatter!(ax, all_results_df[:, :K], all_results_df[:, :mlp_layer_size], color=log10.(all_results_df[:, :final_loss]))
-ax = Axis(fig[1,2])
-CairoMakie.scatter!(ax, all_results_df[:, :K], all_results_df[:, :lr], color=all_results_df[:, :final_loss])
-x = Axis(fig[1,3])
-CairoMakie.scatter!(ax, all_results_df[:, :mlp_layer_size], all_results_df[:, :lr], color=all_results_df[:, :final_loss])
-fig
+    fig = Figure()
+    ax = Axis(fig[1, 1])
+    CairoMakie.scatter!(ax, all_results_df[:, :K], all_results_df[:, :mlp_layer_size], color=log10.(all_results_df[:, :final_loss]))
+    ax = Axis(fig[1, 2])
+    CairoMakie.scatter!(ax, all_results_df[:, :K], all_results_df[:, :lr], color=all_results_df[:, :final_loss])
+    x = Axis(fig[1, 3])
+    CairoMakie.scatter!(ax, all_results_df[:, :mlp_layer_size], all_results_df[:, :lr], color=all_results_df[:, :final_loss])
+    fig
 end
 
 

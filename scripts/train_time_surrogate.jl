@@ -7,61 +7,43 @@ using CUDA
 using BenchmarkTools
 using Random
 using TensorBoardLogger
+using Glob
 
-using StatsBase
-using Hyperopt
 using Flux
-using Plots
 using BSON: @save, @load
+using ArgParse
 
 
-fnames = [
-    joinpath(@__DIR__, "../data/photon_table_extended_2.hd5"),
-    joinpath(@__DIR__, "../data/photon_table_extended_3.hd5"),
-    joinpath(@__DIR__, "../data/photon_table_extended_4.hd5"),
-    joinpath(@__DIR__, "../data/photon_table_extended_5.hd5"),
-    joinpath(@__DIR__, "../data/photon_table_extended_6.hd5")
-]
+s = ArgParseSettings()
+@add_arg_table s begin
+    "-i"
+    help = "Input files"
+    nargs = '+'
+    action => :store_arg
+end
+parsed_args = parse_args(ARGS, s; as_symbols=true)
 
+fnames_casc = parsed_args[:i]
+@show fnames_casc
 
 rng = MersenneTwister(31338)
-nsel_frac = 0.3
-tres, nhits, cond_labels, tf_dict = read_pmt_hits(fnames, nsel_frac, rng)
+nsel_frac = 0.9
+tres, nhits, cond_labels, tf_dict = read_pmt_hits(fnames_casc, nsel_frac, rng)
+data = (tres=tres, label=cond_labels, nhits=nhits)
 
+hyperparams_default = Dict(
+    :K => 12,
+    :epochs => 100,
+    :lr => 0.007,
+    :mlp_layer_size => 768,
+    :mlp_layers => 2,
+    :dropout => 0.1,
+    :non_linearity => :relu,
+    :batch_size => 30000,
+    :seed => 1,
+    :l2_norm_alpha => 0,
+    :adam_beta_1 => 0.9,
+    :adam_beta_2 => 0.999
+)
 
-nit = 100
-
-
-
-hob = @hyperopt for i = nit,
-    sampler = CLHSampler(dims=[Continuous(), Categorical(4), Continuous(), Categorical(11), Categorical(4)]),
-    lr = 10 .^ LinRange(-4, -2, nit),
-    mlp_layer_size = [256, 512, 768, 1024],
-    dropout = LinRange(0, 0.5, nit),
-    K = 5:15,
-    batch_size = [512, 1024, 2048, 4096]
-
-    model, model_loss, hparams, opt = train_time_expectation_model(
-        (tres=tres, label=cond_labels, nhits=nhits),
-        true,
-        true,
-        K=Int(K),
-        epochs=100,
-        lr=lr,
-        mlp_layer_size=mlp_layer_size,
-        mlp_layers=2,
-        dropout=dropout,
-        non_linearity=:relu,
-        batch_size=batch_size,
-        seed=1,)
-
-    model = cpu(model)
-    model_path = joinpath(@__DIR__, "../assets/rq_spline_model_K$(K)_LR$(lr)_MLP_$(mlp_layer_size)_DRP_$(dropout)_BS_$(batch_size).bson")
-    @save model_path model hparams opt tf_dict
-    model_loss
-end
-
-@show hob
-
-ho_path = joinpath(@__DIR__, "../assets/hyperopt.bson")
-@save ho_path hob.history hob.results
+kfold_train_model(data, "full_kfold", tf_dict; hyperparams_default...)
