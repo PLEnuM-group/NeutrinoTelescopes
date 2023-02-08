@@ -20,11 +20,14 @@ s = ArgParseSettings()
     help = "Input files"
     nargs = '+'
     action => :store_arg
+    "-o"
+    help = "Output path"
+    required = true
 end
 parsed_args = parse_args(ARGS, s; as_symbols=true)
 
 fnames_casc = parsed_args[:i]
-@show fnames_casc
+outpath = parsed_args[:o]
 
 rng = MersenneTwister(31338)
 nsel_frac = 0.9
@@ -46,4 +49,4 @@ hyperparams_default = Dict(
     :adam_beta_2 => 0.999
 )
 
-kfold_train_model(data, "full_kfold", tf_dict; hyperparams_default...)
+kfold_train_model(data, outpath, "full_kfold", tf_dict; hyperparams_default...)

@@ -878,7 +878,7 @@ function track_likelihood_energy_unfolding(dir_theta, dir_phi, position, time; s
     return multi_particle_likelihood(losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, amp_only=amp_only)
 end
 
-function kfold_train_model(data, model_name, tf_vec, k=5; hyperparams...)
+function kfold_train_model(data, outpath, model_name, tf_vec, k=5; hyperparams...)
     hparams = RQNormFlowHParams(; hyperparams...)
 
     logdir = joinpath(@__DIR__, "../../tensorboard_logs/$model_name")
@@ -886,7 +886,7 @@ function kfold_train_model(data, model_name, tf_vec, k=5; hyperparams...)
     for (model_num, (train_data, val_data)) in enumerate(kfolds(data; k=k))
         lg = TBLogger(logdir)
         model = setup_time_expectation_model(hparams)
-        chk_path = joinpath(@__DIR__, "../data/$(model_name)_$(model_num)")
+        chk_path = joinpath(outpath, "$(model_name)_$(model_num)")
 
         train_loader, test_loader = setup_dataloaders(train_data, val_data, hparams)
         opt = setup_optimizer(hparams, length(train_loader))
@@ -903,7 +903,7 @@ function kfold_train_model(data, model_name, tf_vec, k=5; hyperparams...)
             use_early_stopping=true,
             checkpoint_path=chk_path)
 
-        model_path = joinpath(@__DIR__, "../data/$(model_name)_$(model_num)_FNL.bson")
+        model_path = joinpath(outpath, "$(model_name)_$(model_num)_FNL.bson")
         model = cpu(model)
         @save model_path model hparams tf_vec
     end
