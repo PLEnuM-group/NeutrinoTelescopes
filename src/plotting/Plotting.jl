@@ -32,7 +32,7 @@ function compare_mc_model(
         mask = hits[:, :pmt_id] .== i
         ax = Axis(ga[col+1, row+1], xlabel="Time Residual(ns)", ylabel="Photons / time", title="PMT $i",
         )
-        hist!(ax, hits[mask, :tres], bins=-50:3:150, weights=hits[mask, :total_weight], color=:orange, normalization=:density,)
+        hist!(ax, hits[mask, :tres], bins=-20:3:100, weights=hits[mask, :total_weight], color=:orange, normalization=:density,)
     end
 
     n_pmt = get_pmt_count(eltype(targets))
@@ -51,9 +51,9 @@ function compare_mc_model(
     end
     =#
 
-    times = -50:1:150
+    times = -20:1:100
     for (mname, model_path) in models
-        @load model_path model hparams opt tf_vec
+        @load model_path model hparams tf_vec
         input = calc_flow_input(particles, targets, tf_vec)
 
 
