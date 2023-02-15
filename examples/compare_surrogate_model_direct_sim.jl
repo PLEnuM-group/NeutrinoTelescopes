@@ -14,11 +14,11 @@ using PhotonPropagation
 
 # Setup
 models = Dict(
-    "1" => joinpath(@__DIR__, "../assets/full_kfold_1_FNL.bson"),
-    "2" => joinpath(@__DIR__, "../assets/full_kfold_2_FNL.bson"),
-    "3" => joinpath(@__DIR__, "../assets/full_kfold_3_FNL.bson"),
-    "4" => joinpath(@__DIR__, "../assets/full_kfold_4_FNL.bson"),
-    "5" => joinpath(@__DIR__, "../assets/full_kfold_5_FNL.bson"),
+    "1" => joinpath(@__DIR__, "../data/full_kfold_1_FNL.bson"),
+    "2" => joinpath(@__DIR__, "../data/full_kfold_2_FNL.bson"),
+    "3" => joinpath(@__DIR__, "../data/full_kfold_3_FNL.bson"),
+    "4" => joinpath(@__DIR__, "../data/full_kfold_4_FNL.bson"),
+    "5" => joinpath(@__DIR__, "../data/full_kfold_5_FNL.bson"),
     #"FULL" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_FULL_FNL.bson")
 )
 
@@ -38,6 +38,18 @@ pos = SA[-25.0, 5.0, -460]
 dir_theta = 0.7
 dir_phi = 1.3
 dir = sph_to_cart(dir_theta, dir_phi)
+
+
+@load models["4"] model hparams tf_vec
+particles = [
+    Particle(pos, dir, 0, 1E5, 0.0, PEMinus)]
+
+log10_ampl = (get_log_amplitudes(particles, targets_hex, gpu(model), tf_vec; feat_buffer=nothing)[1][:] .+ log(1E4)) ./ log(10)
+
+hist(log10_ampl,  
+    axis=(; xlabel="Log10(Number of Photons / PMT)",  title="1E9 GeV EM Cascade "))
+
+
 
 
 particles = [

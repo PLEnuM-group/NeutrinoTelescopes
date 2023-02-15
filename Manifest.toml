@@ -2,7 +2,7 @@
 
 julia_version = "1.9.0-beta3"
 manifest_format = "2.0"
-project_hash = "e3b677fbf32734c43566907808c2a3e569cbc189"
+project_hash = "5c249019f90bfa8f969df5f50c3bcacd4819be39"
 
 [[deps.AbstractFFTs]]
 deps = ["ChainRulesCore", "LinearAlgebra"]
@@ -108,6 +108,11 @@ version = "2.0.2"
 
 [[deps.Artifacts]]
 uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
+
+[[deps.Assets]]
+git-tree-sha1 = "880e22caa7b96784979c44d9633a225acd4f057b"
+uuid = "4a03a35a-a24b-4d57-b425-13a263c27574"
+version = "0.1.0"
 
 [[deps.Automa]]
 deps = ["Printf", "ScanByte", "TranscodingStreams"]

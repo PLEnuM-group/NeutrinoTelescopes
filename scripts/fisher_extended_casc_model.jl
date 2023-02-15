@@ -1,4 +1,6 @@
 using NeutrinoTelescopes
+using PhotonPropagation
+using PhysicsTools
 using Flux
 using CUDA
 using Random
@@ -19,19 +21,16 @@ using Optim
 using QuadGK
 using Base.Iterators
 using Formatting
-using BenchmarkTools
-using PyCall
 
-pp = pyimport("proposal")
-pp.InterpolationSettings.tables_path = joinpath(@__DIR__,"../assets/proposal_tables")
+
 
 
 models = Dict(
-    "1" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_1_FNL.bson"),
-    "2" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_2_FNL.bson"),
-    "3" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_3_FNL.bson"),
-    "4" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_4_FNL.bson"),
-    "5" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_5_FNL.bson"),
+    "1" => joinpath(@__DIR__, "../data/full_kfold_1_FNL.bson"),
+    "2" => joinpath(@__DIR__, "../data/full_kfold_2_FNL.bson"),
+    "3" => joinpath(@__DIR__, "../data/full_kfold_3_FNL.bson"),
+    "4" => joinpath(@__DIR__, "../data/full_kfold_4_FNL.bson"),
+    "5" => joinpath(@__DIR__, "../data/full_kfold_5_FNL.bson"),
     #"FULL" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_FULL_FNL.bson")
 )
 
@@ -46,103 +45,105 @@ targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
 detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => targets_three_l, "Hex" => targets_hex)
 medium = make_cascadia_medium_properties(0.99f0)
 
-function loss_to_particle(loss)
-    energy = loss.energy / 1E3
-    pos = SA[loss.position.x / 100, loss.position.y / 100, loss.position.z / 100] 
-    dir = SA[loss.direction.x, loss.direction.y, loss.direction.z]
-    time = loss.time * 1E9
 
-    return Particle(pos, dir, time, energy, 0., PEMinus)
-end
+function calc_fisher(logenergy, dir_theta, dir_phi, n, targets, model, tf_vec, c_n; use_grad=false, rng=nothing)
+    gpu_model = gpu(model)
+    matrices = []
+    for _ in 1:n
 
-
-function propagate_muon(particle)
-
-    position = particle.position
-    direction = particle.direction
-    length = particle.length
-    time = particle.time
-
-    if particle.type == PMuMinus
-        particle = pp.particle.MuMinusDef()
-    elseif particle.type == PMuPlus
-        particle = pp.particle.MuPlusDef()
-    else
-        error("Type $(particle.type) not supported")
-    end
-    propagator = pp.Propagator(particle, joinpath(@__DIR__,"../assets/proposal_config.json"))
-
-    initial_state = pp.particle.ParticleState()
-    initial_state.energy = energy*1E3
-    initial_state.position = pp.Cartesian3D(position[1]*100, position[2]*100, position[3]*100)
-    initial_state.direction = pp.Cartesian3D(direction[1], direction[2], direction[3])
-    initial_state.time = time / 1E9
-    final_state =  propagator.propagate(initial_state, max_distance=length*100)
-    stochastic_losses = final_state.stochastic_losses()
-    loss_to_particle.(stochastic_losses)
-end
+        pos_theta = acos(rand(rng, Uniform(-1, 1)))
+        pos_phi = rand(rng, Uniform(0, 2*pi))
+        r = sqrt(rand(rng, Uniform(5^2, 50^2)))
+        pos = r .* sph_to_cart(pos_theta, pos_phi)
 
 
+        # select relevant targets
 
-function create_mock_muon(energy, position, direction, time, mean_free_path, length, rng)
-    losses = []
-
-    step_dist = Exponential(mean_free_path)
-    eloss_logr_dist = Uniform(-6, -1)
-
-    dist_travelled = 0
-    while dist_travelled < length && energy > 1
-        step_size = rand(rng, step_dist)
-        e_loss = energy * 10^rand(rng, eloss_logr_dist)
-
-        energy -= e_loss
-        dist_travelled += step_size
-        pos = position .+ dist_travelled .* direction
-        t = time + dist_travelled / c_vac_m_ns
-
-        push!(losses, Particle(pos, direction, t, e_loss, 0., PEMinus))
-
-    end
-
-    return losses
-end
-
-function plot_hits_on_module(data, pos, dir, particles_truth, particles_unfolded, model, target, medium)
-    fig = Figure(resolution=(1500, 1000))
-    ga = fig[1, 1] = GridLayout(4, 4)
-
-    t_geo = calc_tgeo_tracks(pos, dir, target.position, medium)
-    n_pmt = get_pmt_count(eltype(targets))
-    
-    for i in 1:n_pmt
-        row, col = divrem(i - 1, 4)
-        ax = Axis(ga[col+1, row+1], xlabel="Time Residual(ns)", ylabel="Photons / time", title="PMT $i",
-                  )
-        hist!(ax, data[i] .- t_geo, bins=-50:3:150, color=:orange)
-    end
-
-    times = -50:1:150
-    for particles in [particles_truth, particles_unfolded]
-    
-      
-        shape_lhs = []
-        local log_expec
-        for t in times
-            _, shape_lh, log_expec = SurrogateModels.evaluate_model(particles, Vector.(eachrow(repeat([t + t_geo], n_pmt))), [target], gpu(model), tf_dict, c_n)
-            push!(shape_lhs, collect(shape_lh))
+        targets_range = [t for t in targets if norm(t.position .- pos) < 200]
+        if length(targets_range) == 0
+            continue
         end
 
-        shape_lh = reduce(hcat, shape_lhs)
+        for __ in 1:100
+            samples = sample_cascade_event(10^logenergy, dir_theta, dir_phi, pos, 0.; targets=targets_range, model=model, tf_vec=tf_vec, rng=rng, c_n=c_n)
+            if use_grad
+                logl_grad = collect(Zygote.gradient(
+                    (logenergy, dir_theta, dir_phi) -> single_cascade_likelihood(logenergy, dir_theta, dir_phi, pos, 0, data=samples, targets=targets_range, model=gpu_model, tf_vec=tf_vec, c_n=c_n),
+                    logenergy, dir_theta, dir_phi))
 
-        for i in 1:n_pmt
-            row, col = divrem(i - 1, 4)
-            lines!(ga[col+1, row+1], times, exp.(shape_lh[i, :] .+ log_expec[i]))
-            
+                push!(matrices, logl_grad .* logl_grad')
+            else
+                logl_hessian =  Zygote.hessian(
+                    x -> single_cascade_likelihood(x[1], x[2], x[3], pos, 0., data=samples, targets=targets_range, model=gpu_model, tf_vec=tf_vec, c_n=c_n),
+                    [logenergy, dir_theta, dir_phi])
+                push!(matrices, .-logl_hessian)
+            end
         end
     end
 
-    return fig
+    return mean(matrices)
 end
+
+targets = targets_single
+@load models["4"] model hparams tf_vec
+c_n = c_at_wl(800.0f0, medium)
+rng = MersenneTwister(31338)
+f1 = calc_fisher(4, 0.1, 0.2, 1, targets_line, model, tf_vec, c_n; use_grad=false, rng=rng)
+rng = MersenneTwister(31338)
+f2 = calc_fisher(4, 0.1, 0.2, 1, targets_line, model, tf_vec, c_n; use_grad=true, rng=rng)
+
+inv(f1)
+inv(f2)
+
+logenergies = 2:0.5:5
+
+model_res = Dict()
+for (mname, model_path) in models
+    @load model_path model hparams opt tf_dict
+    Flux.testmode!(model)
+
+    sds= [calc_fisher(e, 0.1, 0.2, 50, model, use_grad=true) for e in logenergies]
+    cov = inv.(sds)
+
+    sampled_sds = []
+    for c in cov
+
+        cov_za = c[2:3, 2:3]
+        dist = MvNormal([0.1, 0.2], 0.5 * (cov_za + cov_za'))
+        rdirs = rand(dist, 10000)
+
+        dangles = rad2deg.(acos.(dot.(sph_to_cart.(rdirs[1, :], rdirs[2, :]), Ref(sph_to_cart(0.1, 0.2)))))
+        push!(sampled_sds, std(dangles))
+    end
+
+    model_res[mname] = sampled_sds
+end
+
+fig = Figure()
+ax = Axis(fig[1, 1])
+for (mname, res) in model_res
+    CairoMakie.scatter!(ax, logenergies, Vector{Float64}(res))
+end
+
+fig
+
+
+zazres =  (reduce(hcat, [sqrt.(v) for v in diag.(inv.(sds))])[2:3, :])
+
+zazi_dist = MvNormal()
+
+
+
+
+
+
+
+rad2deg.(acos.(dot.(sph_to_cart.(v[2, :], v[3, :]), Ref(sph_to_cart(0.1, 0.2))))
+
+
+CairoMakie.scatter(logenergies, reduce(hcat, [sqrt.(v) for v in diag.(inv.(sds))])[1, :], axis=(yscale=log10, ))
+
+CairoMakie.scatter(logenergies, rad2deg.(reduce(hcat, [sqrt.(v) for v in diag.(inv.(sds))])[2, :]))
 
 
 
@@ -629,100 +630,6 @@ Zygote.gradient( x -> likelihood(x[1], x[2], x[3], pos, samples, [target], tf_di
 hist(rad2deg.(acos.(dot.(sph_to_cart.(min_vals[2, :], min_vals[3, :]), Ref(sph_to_cart(0.1, 0.2))))))
 
 
-
-function calc_fisher(logenergy, dir_theta, dir_phi, n, targets, model; use_grad=false, rng=nothing)
-
-    matrices = []
-    for _ in 1:n
-
-        pos_theta = acos(rand(rng, Uniform(-1, 1)))
-        pos_phi = rand(rng, Uniform(0, 2*pi))
-        r = sqrt(rand(rng, Uniform(5^2, 50^2)))
-        pos = r .* sph_to_cart(pos_theta, pos_phi)
-
-
-        # select relevant targets
-
-        targets_range = [t for t in targets if norm(t.position .- pos) < 200]
-
-        for __ in 1:100
-            samples = sample_event(10^logenergy, dir_theta, dir_phi, pos, targets_range, model, tf_dict; rng=rng)
-            if use_grad
-                logl_grad = collect(Zygote.gradient(
-                    (logenergy, dir_theta, dir_phi) -> likelihood(logenergy, dir_theta, dir_phi, pos, samples, targets_range, model, tf_dict),
-                    logenergy, dir_theta, dir_phi))
-
-                push!(matrices, logl_grad .* logl_grad')
-            else
-                logl_hessian =  Zygote.hessian(
-                    x -> likelihood(x[1], x[2], x[3], pos, samples, targets_range, model, tf_dict),
-                    [logenergy, dir_theta, dir_phi])
-                push!(matrices, .-logl_hessian)
-            end
-        end
-    end
-
-    return mean(matrices)
-end
-
-
-rng = MersenneTwister(31338)
-f1 = calc_fisher(4, 0.1, 0.2, 1, targets, model; use_grad=false, rng=rng)
-rng = MersenneTwister(31338)
-f2 = calc_fisher(4, 0.1, 0.2, 1, targets, model; use_grad=true, rng=rng)
-
-inv(f1)
-inv(f2)
-
-logenergies = 2:0.5:5
-
-model_res = Dict()
-for (mname, model_path) in models
-    @load model_path model hparams opt tf_dict
-    Flux.testmode!(model)
-
-    sds= [calc_fisher(e, 0.1, 0.2, 50, model, use_grad=true) for e in logenergies]
-    cov = inv.(sds)
-
-    sampled_sds = []
-    for c in cov
-
-        cov_za = c[2:3, 2:3]
-        dist = MvNormal([0.1, 0.2], 0.5 * (cov_za + cov_za'))
-        rdirs = rand(dist, 10000)
-
-        dangles = rad2deg.(acos.(dot.(sph_to_cart.(rdirs[1, :], rdirs[2, :]), Ref(sph_to_cart(0.1, 0.2)))))
-        push!(sampled_sds, std(dangles))
-    end
-
-    model_res[mname] = sampled_sds
-end
-
-fig = Figure()
-ax = Axis(fig[1, 1])
-for (mname, res) in model_res
-    CairoMakie.scatter!(ax, logenergies, Vector{Float64}(res))
-end
-
-fig
-
-
-zazres =  (reduce(hcat, [sqrt.(v) for v in diag.(inv.(sds))])[2:3, :])
-
-zazi_dist = MvNormal()
-
-
-
-
-
-
-
-rad2deg.(acos.(dot.(sph_to_cart.(v[2, :], v[3, :]), Ref(sph_to_cart(0.1, 0.2))))
-
-
-CairoMakie.scatter(logenergies, reduce(hcat, [sqrt.(v) for v in diag.(inv.(sds))])[1, :], axis=(yscale=log10, ))
-
-CairoMakie.scatter(logenergies, rad2deg.(reduce(hcat, [sqrt.(v) for v in diag.(inv.(sds))])[2, :]))
 
 
 logl_grad = Zygote.gradient(

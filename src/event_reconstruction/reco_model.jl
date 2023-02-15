@@ -1,8 +1,13 @@
 
+using Optim 
+using StaticArrays
 
 export ModelParam, Model
 export make_event_fit_model
 export make_obj_func_cascade, make_obj_func_track
+export set_inactive!, set_active!
+export minimize_model
+using ...SurrogateModels
 
 mutable struct ModelParam{T<:Number,LB<:Number,UB<:Number}
     name::String

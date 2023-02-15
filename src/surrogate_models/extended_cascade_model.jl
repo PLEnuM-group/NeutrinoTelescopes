@@ -503,7 +503,7 @@ pmt index.
 The resulting feature matrix is then transformed column by column using the transformations
 included in `tf_vec`.
 """
-function calc_flow_input(particle::Particle, target::PhotonTarget, tf_vec::AbstractVector)
+function calc_flow_input(particle::P, target::PhotonTarget, tf_vec::AbstractVector) where {PT, DT, TT, ET, LT, PType, P <: Particle{PT, DT, TT, ET, LT, PType}}
 
     particle_pos = particle.position
     particle_dir = particle.direction
@@ -516,7 +516,8 @@ function calc_flow_input(particle::Particle, target::PhotonTarget, tf_vec::Abstr
 
     n_pmt = get_pmt_count(target)
 
-    feature_matrix::Matrix{typeof(dist)} = repeat(
+    T = promote_type(PT, DT, TT, ET, LT, typeof(dist))
+    feature_matrix::Matrix{T} = repeat(
         [
             log(dist)
             log(particle_energy)
@@ -670,7 +671,10 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
 end
 
 
-
+"""
+    sample_cascade_event(energy, dir_theta, dir_phi, position, time; targets, model, tf_vec, c_n, rng=nothing)
+Sample photon times at `targets` for a cascade.
+"""
 function sample_cascade_event(energy, dir_theta, dir_phi, position, time; targets, model, tf_vec, c_n, rng=nothing)
 
     dir = sph_to_cart(dir_theta, dir_phi)
