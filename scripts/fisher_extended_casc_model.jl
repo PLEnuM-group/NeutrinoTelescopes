@@ -46,9 +46,43 @@ detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => tar
 medium = make_cascadia_medium_properties(0.99f0)
 
 
-function calc_fisher(logenergy, dir_theta, dir_phi, n, targets, model, tf_vec, c_n; use_grad=false, rng=nothing)
+
+function calc_fisher_matrix(particle; targets, model, tf_vec, c_n, use_grad=false, rng=nothing)
+    pos = particle.position
+    targets_range = [t for t in targets if norm(t.position .- pos) < 200]
+    if length(targets_range) == 0
+        return zeros(3, 3)
+    end
+    dir_theta, dir_phi = cart_to_sph(particle.direction)
+    logenergy = log10(particle.energy)
+
     gpu_model = gpu(model)
+
     matrices = []
+    for __ in 1:100
+        samples = sample_cascade_event(10^logenergy, dir_theta, dir_phi, pos, 0.; targets=targets_range, model=model, tf_vec=tf_vec, rng=rng, c_n=c_n)
+        if use_grad
+            logl_grad = collect(Zygote.gradient(
+                (logenergy, dir_theta, dir_phi) -> single_cascade_likelihood(logenergy, dir_theta, dir_phi, pos, 0, data=samples, targets=targets_range, model=gpu_model, tf_vec=tf_vec, c_n=c_n),
+                logenergy, dir_theta, dir_phi))
+
+            push!(matrices, logl_grad .* logl_grad')
+        else
+            logl_hessian =  Zygote.hessian(
+                x -> single_cascade_likelihood(x[1], x[2], x[3], pos, 0., data=samples, targets=targets_range, model=gpu_model, tf_vec=tf_vec, c_n=c_n),
+                [logenergy, dir_theta, dir_phi])
+            push!(matrices, .-logl_hessian)
+        end
+    end
+
+    return mean(matrices)
+
+end
+
+
+function calc_fisher(logenergy, dir_theta, dir_phi, n, targets, model, tf_vec, c_n; use_grad=false, rng=nothing)
+    matrices = []
+    dir = sph_to_cart(dir_theta, dir_phi)
     for _ in 1:n
 
         pos_theta = acos(rand(rng, Uniform(-1, 1)))
@@ -56,29 +90,9 @@ function calc_fisher(logenergy, dir_theta, dir_phi, n, targets, model, tf_vec, c
         r = sqrt(rand(rng, Uniform(5^2, 50^2)))
         pos = r .* sph_to_cart(pos_theta, pos_phi)
 
+        p = Particle(pos, dir, 0., 10^logenergy, 0., PEMinus)
 
-        # select relevant targets
-
-        targets_range = [t for t in targets if norm(t.position .- pos) < 200]
-        if length(targets_range) == 0
-            continue
-        end
-
-        for __ in 1:100
-            samples = sample_cascade_event(10^logenergy, dir_theta, dir_phi, pos, 0.; targets=targets_range, model=model, tf_vec=tf_vec, rng=rng, c_n=c_n)
-            if use_grad
-                logl_grad = collect(Zygote.gradient(
-                    (logenergy, dir_theta, dir_phi) -> single_cascade_likelihood(logenergy, dir_theta, dir_phi, pos, 0, data=samples, targets=targets_range, model=gpu_model, tf_vec=tf_vec, c_n=c_n),
-                    logenergy, dir_theta, dir_phi))
-
-                push!(matrices, logl_grad .* logl_grad')
-            else
-                logl_hessian =  Zygote.hessian(
-                    x -> single_cascade_likelihood(x[1], x[2], x[3], pos, 0., data=samples, targets=targets_range, model=gpu_model, tf_vec=tf_vec, c_n=c_n),
-                    [logenergy, dir_theta, dir_phi])
-                push!(matrices, .-logl_hessian)
-            end
-        end
+        push!(matrices, calc_fisher_matrix(p, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, use_grad=use_grad, rng=rng))
     end
 
     return mean(matrices)
@@ -88,7 +102,18 @@ targets = targets_single
 @load models["4"] model hparams tf_vec
 c_n = c_at_wl(800.0f0, medium)
 rng = MersenneTwister(31338)
-f1 = calc_fisher(4, 0.1, 0.2, 1, targets_line, model, tf_vec, c_n; use_grad=false, rng=rng)
+
+pos = SA[-25.0, 5.0, -460]
+dir_theta = 0.1
+dir_phi = 0.3
+dir = sph_to_cart(dir_theta, dir_phi)
+
+p = Particle(pos, dir, 0.0, 5E4, 0.0, PEMinus)
+
+f1 = calc_fisher_matrix(p, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, use_grad=false, rng=rng)
+
+cholesky(f1)
+
 rng = MersenneTwister(31338)
 f2 = calc_fisher(4, 0.1, 0.2, 1, targets_line, model, tf_vec, c_n; use_grad=true, rng=rng)
 
@@ -158,7 +183,7 @@ begin
     dir = sph_to_cart(dir_theta, dir_phi)
     t0 = 0.
     backtrack = 300
-    pos_shifted = p0 .- backtrack .* dir 
+    pos_shifted = p0 .- backtrack .* dir
     time_shifted = t0 - backtrack / c_vac_m_ns
     energy = 4e5
 
@@ -166,7 +191,7 @@ begin
     phi_deg = rad2deg(dir_phi)
 
     rng = MersenneTwister(3)
-   
+
     muon = Particle(pos_shifted, dir, time_shifted, energy, backtrack*2., PMuMinus)
     losses = propagate_muon(muon)
     losses_filt = [p for p in losses if p.energy > 100]
@@ -240,18 +265,18 @@ begin
 
         targets_range = targets[target_mask]
         data = sample_multi_particle_event(particles, targets_range, model, tf_dict, c_n, rng)
-        
+
         #unfolded = unfold_energy_losses(pos, dir; data=data, model=model, tf_vec=tf_dict, targets=targets_range)
 
         #feat_buffer = zeros(9, get_pmt_count(eltype(targets_range))*length(targets_range)*length(particles))
         #llh2d = track_likelihood_fixed_losses.(log10(energy), thetas, permutedims(phis), Ref(pos); muon_energy=energy, losses=particles, data=data, targets=targets_range, model=gpu(model), tf_vec=tf_dict, c_n=c_n, feat_buffer=feat_buffer)
-        
+
         feat_buffer = zeros(9, get_pmt_count(eltype(targets_range))*length(targets_range)*length(dist_along))
         llh2d = track_likelihood_energy_unfolding.(
             thetas, permutedims(phis), Ref(p0), t0; data=data, targets=targets_range, model=gpu(model),
             tf_vec=tf_dict, c_n=c_n, spacing=0.5, amp_only=true)
-        
-        
+
+
         rellh = maximum(llh2d) .- llh2d
         row, col = divrem(i-1, 2)
         ax = Axis(ga[row+1, col+1], title=dkey, xlabel="Zenith (deg)", ylabel="Azimuth (deg)", limits=ranges[1:4])
