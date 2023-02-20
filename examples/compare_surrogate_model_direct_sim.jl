@@ -46,8 +46,8 @@ particles = [
 
 log10_ampl = (get_log_amplitudes(particles, targets_hex, gpu(model), tf_vec; feat_buffer=nothing)[1][:] .+ log(1E4)) ./ log(10)
 
-hist(log10_ampl,  
-    axis=(; xlabel="Log10(Number of Photons / PMT)",  title="1E9 GeV EM Cascade "))
+hist(log10_ampl,
+    axis=(; xlabel="Log10(Number of Photons / PMT)", title="1E9 GeV EM Cascade "))
 
 
 

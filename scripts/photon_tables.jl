@@ -67,7 +67,7 @@ function make_setup(
     )
     wl_range = (300.0f0, 800.0f0)
 
-    spectrum = CherenkovSpectrum(wl_range, 30, medium)
+    spectrum = CherenkovSpectrum(wl_range, medium, 30)
 
     if mode == :extended
         particle = Particle(
@@ -126,15 +126,15 @@ function run_sim(
 
 
     direction::SVector{3,Float32} = sph_to_cart(acos(dir_costheta), dir_phi)
-        
+
     if mode == :bare_infinite_track
         r = direction[1] / direction[2]
-        ppos = SA_F32[distance / sqrt(1 + r^2), -r*distance / sqrt(1+r^2), 0]
+        ppos = SA_F32[distance/sqrt(1 + r^2), -r*distance/sqrt(1 + r^2), 0]
     else
         ppos = SA_F32[0, 0, distance]
     end
 
-    
+
 
     base_weight = 1.0
     photons = nothing
@@ -321,7 +321,7 @@ mode_choices = ["extended", "bare_infinite_track", "pointlike"]
     default = 100
     "--mode"
     help = "Simulation Mode;  must be one of " * join(mode_choices, ", ", " or ")
-    range_tester = (x->x in mode_choices)
+    range_tester = (x -> x in mode_choices)
     default = "extended"
     "--e_min"
     help = "Minimum energy"

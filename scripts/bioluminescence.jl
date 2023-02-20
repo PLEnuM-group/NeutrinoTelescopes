@@ -1,4 +1,6 @@
+using PhotonPropagation
 using NeutrinoTelescopes
+using PhysicsTools
 using CairoMakie
 using StaticArrays
 using DataFrames
@@ -18,7 +20,7 @@ using Base.Iterators
 
 function make_biolumi_sources_from_positions(positions, n_ph, trange)
 
-    positions =  SVector{3, Float32}.(positions)
+    positions = SVector{3,Float32}.(positions)
     mask = norm.(positions) .> 0.3
     positions = positions[mask]
 
@@ -26,8 +28,8 @@ function make_biolumi_sources_from_positions(positions, n_ph, trange)
 
     for (i, pos) in enumerate(positions)
         sources[i] = PointlikeTimeRangeEmitter(
-            SVector{3, Float32}(pos),
-            (0., trange),
+            SVector{3,Float32}(pos),
+            (0.0, trange),
             Int64(n_ph)
         )
     end
@@ -63,7 +65,7 @@ function make_biolumi_sources(
 
         sources[i] = PointlikeTimeRangeEmitter(
             @SVector[pos_x, pos_y, pos_z],
-            (0., trange),
+            (0.0, trange),
             Int64(n_ph)
         )
     end
@@ -79,15 +81,15 @@ function make_random_sources(
     sources = Vector{PointlikeTimeRangeEmitter}(undef, n_pos)
 
 
-    radii = rand(Uniform(0, 1), n_pos) .^(1/3) .* (radius - 0.3) .+ 0.3
+    radii = rand(Uniform(0, 1), n_pos) .^ (1 / 3) .* (radius - 0.3) .+ 0.3
     thetas = acos.(rand(Uniform(-1, 1), n_pos))
-    phis = rand(Uniform(0, 2*π), n_pos)
+    phis = rand(Uniform(0, 2 * π), n_pos)
 
     pos = Float32.(radii) .* sph_to_cart.(Float32.(thetas), Float32.(phis))
 
     sources = PointlikeTimeRangeEmitter.(
         pos,
-        Ref((0., trange)),
+        Ref((0.0, trange)),
         Ref(Int64(n_ph))
     )
 
@@ -102,7 +104,7 @@ function lc_trigger(sorted_hits, time_window)
 
         lc_flag = false
 
-        j = i+1
+        j = i + 1
         while j <= nrow(sorted_hits)
             if (sorted_hits[j, :time] - sorted_hits[i, :time]) <= time_window
                 lc_flag = true
@@ -141,7 +143,7 @@ function count_coinc_in_tw(sorted_hits, time_window)
 
     t_start = sorted_hits[1, :time]
 
-    window_cnt = Dict{Int64, Set{Int64}}()
+    window_cnt = Dict{Int64,Set{Int64}}()
 
     for i in 1:nrow(sorted_hits)
         window_id = div((sorted_hits[i, :time] - t_start), time_window)
@@ -160,26 +162,33 @@ end
 function plot_sources(sources)
 
     scatter([0], [0], [0], marksersize=10, markercolor=:black,
-    xlim=(-5, 5), ylim=(-5, 5), zlim=(-5, 5))
+        xlim=(-5, 5), ylim=(-5, 5), zlim=(-5, 5))
 
     scatter!(
         [src.position[1] for src in sources],
         [src.position[2] for src in sources],
         [src.position[3] for src in sources]
-        )
+    )
 
     plot!([0, 0], [0, 0], [-5, 5])
 end
 
 
-function sim_biolumi(target, sources)
+function sim_biolumi(target, sources, seed)
 
     medium = make_cascadia_medium_properties(0.99f0)
-    mono_spec = Monochromatic(420f0)
+    mono_spec = Monochromatic(420.0f0)
     orientation = RotMatrix3(I)
 
-    photons = propagate_photons(sources, target, medium, mono_spec)
-    hits = make_hits_from_photons(photons, target, medium, orientation)
+    setup = PhotonPropSetup(sources, [target], medium, mono_spec, seed)
+    photons = propagate_photons(setup)
+
+    hits = make_hits_from_photons(photons, setup, orientation)
+
+    if nrow(hits) == 0
+        return DataFrame()
+    end
+    calc_total_weight!(hits, setup)
     all_hits = resample_simulation(hits)
     all_hits[!, :time] = convert.(Float64, all_hits[:, :time])
     return all_hits
@@ -188,16 +197,17 @@ end
 
 
 function run_sim(
-        target,
-        target_1pmt,
-        sources,
-        trange::Number,
-       )
+    target,
+    target_1pmt,
+    sources,
+    trange::Number,
+    seed
+)
 
-    all_hits = sim_biolumi(target, sources)
-    all_hits_1pmt = sim_biolumi(target_1pmt, sources)
+    all_hits = sim_biolumi(target, sources, seed)
+    all_hits_1pmt = sim_biolumi(target_1pmt, sources, seed)
 
-    downsampling = 10 .^(0:0.1:3)
+    downsampling = 10 .^ (0:0.1:3)
 
     results = []
 
@@ -217,8 +227,8 @@ function run_sim(
         rate = nrow(hits) / trange * 1E9 # Rate in Hz
         rate_1pmt = nrow(hits_1pmt) / trange * 1E9 # Rate in Hz
 
-        
-        windows = [10, 15, 20, 15]
+
+        windows = [10, 15, 20, 30]
         sorted_hits = sort(hits, [:time])
 
         for window in windows
@@ -234,7 +244,7 @@ function run_sim(
                 coincs_fixed_w=coincs_fixed_w)
             push!(results, ntup)
         end
-   
+
     end
 
     return DataFrame(results)
@@ -264,10 +274,10 @@ function make_all_coinc_rate_plot(ax, n_sim, res...)
                 ax,
                 coinc_trigger[:, :hit_rate_mean],
                 coinc_trigger[:, col_sym] .* (1E9 / (trange * n_sim)),
-                label=string(lc_level ),
+                label=string(lc_level),
                 linestyle=Cycled(j),
                 color=Cycled(i)
-                )
+            )
 
         end
     end
@@ -277,21 +287,21 @@ end
 
 
 
-pmt_area = Float32((75e-3 / 2)^2*π)
+pmt_area = Float32((75e-3 / 2)^2 * π)
 target_radius = 0.21f0
 target = MultiPMTDetector(
-    @SVector[0.0f0, 0f0,  0.f0],
+    @SVector[0.0f0, 0.0f0, 0.0f0],
     target_radius,
     pmt_area,
-    make_pom_pmt_coordinates(Float32))
+    make_pom_pmt_coordinates(Float32),
+    UInt16(1))
 
 target_1pmt = MultiPMTDetector(
-    @SVector[0.0f0, 0f0,  0.0f0],
+    @SVector[0.0f0, 0.0f0, 0.0f0],
     target_radius,
     pmt_area,
-    make_pom_pmt_coordinates(Float32)
-)
-
+    SA_F32[π 0]',
+    UInt16(1))
 
 trange = 1E7
 
@@ -299,8 +309,8 @@ function read_sources(path, trange, nph)
     bio_pos = DataFrame(read_parquet(path))
     bio_sources = Vector{PointlikeTimeRangeEmitter}()
     for i in 1:nrow(bio_pos)
-        position = SVector{3, Float32}(Vector{Float32}(bio_pos[i, [:x, :y, :z]]))
-        sources = PointlikeTimeRangeEmitter(position, (0., trange), Int64(ceil(nph)))
+        position = SVector{3,Float32}(Vector{Float32}(bio_pos[i, [:x, :y, :z]]))
+        sources = PointlikeTimeRangeEmitter(position, (0.0, trange), Int64(ceil(nph)))
         push!(bio_sources, sources)
     end
     bio_sources
@@ -308,30 +318,35 @@ end
 
 
 
-n_sim = 100
+n_sim = 10
 all_res = []
-for n_sources in [5, 10, 30, 50, 80, 100]
+all_n_src = [5, 10, 30, 50, 80, 100]
+all_n_src = [5]
+for n_sources in all_n_src
 
-    n_ph = Int64(ceil((1E9 /  n_sources)))
+    n_ph = Int64(ceil((1E9 / n_sources)))
 
     Random.seed!(31338)
     bio_sources = [make_biolumi_sources(n_sources, n_ph, trange) for _ in 1:n_sim]
-    rnd_sources = [make_random_sources(n_sources, n_ph*7, trange, 5) for _ in 1:n_sim]
+    rnd_sources = [make_random_sources(n_sources, n_ph * 7, trange, 5) for _ in 1:n_sim]
 
 
     bio_pos_df = Vector{Float64}.(JSON.parsefile(joinpath(@__DIR__, "../assets/relative_emission_positions.json")))
-    bio_sources_fd = [sample(make_biolumi_sources_from_positions(bio_pos_df, n_ph*3, trange), n_sources, replace=false)  for _ in 1:n_sim]
+    bio_sources_fd = [sample(make_biolumi_sources_from_positions(bio_pos_df, n_ph * 3, trange), n_sources, replace=false) for _ in 1:n_sim]
 
-    results_bio = vcat(
-        [run_sim(target, target_1pmt, sources, trange) for sources in bio_sources[1:n_sim]]...
+    results_bio = reduce(
+        vcat,
+        [run_sim(target, target_1pmt, sources, trange, i) for (i, sources) in enumerate(bio_sources[1:n_sim])]
     )
 
-    results_bio_fd = vcat(
-    [run_sim(target, target_1pmt, sources, trange) for sources in bio_sources_fd[1:n_sim]]...
+    results_bio_fd = reduce(
+        vcat,
+        [run_sim(target, target_1pmt, sources, trange, i) for (i, sources) in enumerate(bio_sources_fd[1:n_sim])]
     )
 
-    results_rnd = vcat(
-        [run_sim(target, target_1pmt, sources, trange) for sources in rnd_sources[1:n_sim]]...
+    results_rnd = reduce(
+        vcat,
+        [run_sim(target, target_1pmt, sources, trange, i) for (i, sources) in enumerate(rnd_sources[1:n_sim])]
     )
 
     push!(all_res, (n_src=n_sources, bio=results_bio, bio_df=results_bio_fd, rng=results_rnd))
@@ -339,9 +354,9 @@ end
 
 
 theme = Theme(
-        palette=(color = Makie.wong_colors(), linestyle = [:solid, :dash, :dot]),
-        Lines = (cycle = Cycle([:color, :linestyle], covary=true),)       
-    )
+    palette=(color=Makie.wong_colors(), linestyle=[:solid, :dash, :dot]),
+    Lines=(cycle=Cycle([:color, :linestyle], covary=true),)
+)
 
 set_theme!(theme)
 
@@ -350,18 +365,18 @@ grid = GridLayout()
 
 for (i, res) in enumerate(all_res)
 
-    row, col = divrem(i-1, 2)
+    row, col = divrem(i - 1, 2)
     @show i, row, col
 
     ax = Axis(f,
-    title = format("{:d} sources", res[:n_src]),
-    xlabel = "Single PMT Rate",
-    ylabel = "LC Rate",
-    yscale = log10,
-    xscale = log10,
-    yminorticks = IntervalsBetween(8),
-    yminorticksvisible = true,
-    yminorgridvisible = true,
+        title=format("{:d} sources", res[:n_src]),
+        xlabel="Single PMT Rate",
+        ylabel="LC Rate",
+        yscale=log10,
+        xscale=log10,
+        yminorticks=IntervalsBetween(8),
+        yminorticksvisible=true,
+        yminorgridvisible=true,
     )
 
     ylims!(ax, (0.1, 1E7))
@@ -374,10 +389,10 @@ end
 lc_range = 2:6
 f.layout[1, 1] = grid
 group_color = [
-    LineElement(linestyle=:solid, color = col) for col in Makie.wong_colors()[1:length(lc_range)]
-    ]
+    LineElement(linestyle=:solid, color=col) for col in Makie.wong_colors()[1:length(lc_range)]
+]
 
-group_linestyle = [LineElement(linestyle=ls, color = :black) for ls in [:solid, :dash, :dot]]
+group_linestyle = [LineElement(linestyle=ls, color=:black) for ls in [:solid, :dash, :dot]]
 
 legend = Legend(
     f,
@@ -432,14 +447,14 @@ mean_hit_rate_1pmt = combine(groupby(results_bio, :ds_rate), :hit_rate_1pmt => m
 coinc_trigger = innerjoin(coinc_trigger, mean_hit_rate_1pmt, on=:ds_rate)
 
 
-rates_bio = groupby(results_bio, :ds_rate)[(1.0, )][:, :hit_rate_1pmt]
-rates_rnd = groupby(results_rnd, :ds_rate)[(1.0, )][:, :hit_rate_1pmt]
-rates_bio_fd = groupby(results_bio_fd, :ds_rate)[(1.0, )][:, :hit_rate_1pmt]
+rates_bio = groupby(results_bio, :ds_rate)[(1.0,)][:, :hit_rate_1pmt]
+rates_rnd = groupby(results_rnd, :ds_rate)[(1.0,)][:, :hit_rate_1pmt]
+rates_bio_fd = groupby(results_bio_fd, :ds_rate)[(1.0,)][:, :hit_rate_1pmt]
 f = Figure()
 ax = Axis(f[1, 1],
-    title = "Single PMT-Rates",
-    xlabel = "Log10(Rate)",
-    ylabel = "Count"
+    title="Single PMT-Rates",
+    xlabel="Log10(Rate)",
+    ylabel="Count"
 )
 
 hist!(ax, log10.(rates_bio_fd), label="Bio FD")
@@ -457,13 +472,13 @@ f
 
 results_bio_1pmt = vcat(
     [run_sim(target_1pmt, sources, trange) for sources in bio_sources[1:n_sim]]...
-    )
+)
 results_rnd_1pmt = vcat(
     [run_sim(target_1pmt, sources, trange) for sources in rnd_sources[1:n_sim]]...
-    )
+)
 results_bio_fd_1pmt = vcat(
     [run_sim(target_1pmt, sources, trange) for sources in bio_sources_fd[1:n_sim]]...
-    )
+)
 
 
 mean_hit_rate_1pmt_bio = combine(groupby(results_bio_1pmt, :ds_rate), :hit_rate => mean)
@@ -477,15 +492,15 @@ n_sim = 50
 
 results_bio = vcat(
     [run_sim(target, sources, trange) for sources in bio_sources[1:n_sim]]...
-    )
+)
 
 results_bio_df = vcat(
     [run_sim(target, sources, trange) for sources in bio_sources_fd[1:n_sim]]...
-    )
+)
 
 results_rnd = vcat(
     [run_sim(target, sources, trange) for sources in rnd_sources[1:n_sim]]...
-    )
+)
 
 
 
@@ -519,10 +534,10 @@ for key in keys(grpd)
         weights=weights,
         label=string(key[1]),
         yscale=:log10,
-        bins = 1:9,
+        bins=1:9,
         yrange=(1E-1, 1E8),
-        yticks = 10 .^ (0:2:8)
-        )
+        yticks=10 .^ (0:2:8)
+    )
 end
 
 p
@@ -534,8 +549,8 @@ results_bio[1][1]
 
 
 scatterhist(
-    coinc_levels, weights=fill((1E9/(trange * length(t))),
-    length(coinc_levels)),
+    coinc_levels, weights=fill((1E9 / (trange * length(t))),
+        length(coinc_levels)),
     yscale=:log10,
     bins=1:7,
     ylim=(1E-2, 1E7),
@@ -544,8 +559,8 @@ scatterhist(
     title=format("Single-PMT Rate: {:.2f} kHz", mean_rates[1, :bio] / 1000))
 p = scatterhist!(
     coinc_levels_rnd,
-    weights=fill((1E9/(trange * length(trnd))),
-    length(coinc_levels_rnd)),
+    weights=fill((1E9 / (trange * length(trnd))),
+        length(coinc_levels_rnd)),
     yscale=:log10,
     label="Random",
     bins=1:7,
