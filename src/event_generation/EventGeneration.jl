@@ -1,9 +1,16 @@
 module EventGeneration
+using Reexport
+
 include("injectors.jl")
 include("detectors.jl")
-include("proposal_interface.jl")
-using Reexport
+
 @reexport using .Injectors
 @reexport using .Detectors
-@reexport using .ProposalInterface
+
+try
+    include("proposal_interface.jl")
+    @reexport using .ProposalInterface
+catch y
+    @warn "Could not load proposal interface."
+end
 end
