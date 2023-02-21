@@ -6,16 +6,13 @@ using StaticArrays
 using DataFrames
 using Rotations
 using Formatting
-import Pipe: @pipe
 using LinearAlgebra
 using Distributions
 using Random
-using BenchmarkTools
 using StatsBase
 using Parquet
 using JSON
 using Base.Iterators
-
 
 
 function make_biolumi_sources_from_positions(positions, n_ph, trange)
@@ -196,6 +193,9 @@ function sim_biolumi(target, sources, seed)
 end
 
 
+
+
+
 function run_sim(
     target,
     target_1pmt,
@@ -300,7 +300,7 @@ target_1pmt = MultiPMTDetector(
     @SVector[0.0f0, 0.0f0, 0.0f0],
     target_radius,
     pmt_area,
-    SA_F32[π 0]',
+    SA_F32[0 0]',
     UInt16(1))
 
 trange = 1E7
@@ -318,10 +318,10 @@ end
 
 
 
-n_sim = 10
+n_sim = 5
 all_res = []
-all_n_src = [5, 10, 30, 50, 80, 100]
-all_n_src = [5]
+#all_n_src = [5, 10, 30, 50, 80, 100]
+all_n_src = [1, 10, 50, 100]
 for n_sources in all_n_src
 
     n_ph = Int64(ceil((1E9 / n_sources)))
@@ -334,10 +334,12 @@ for n_sources in all_n_src
     bio_pos_df = Vector{Float64}.(JSON.parsefile(joinpath(@__DIR__, "../assets/relative_emission_positions.json")))
     bio_sources_fd = [sample(make_biolumi_sources_from_positions(bio_pos_df, n_ph * 3, trange), n_sources, replace=false) for _ in 1:n_sim]
 
+    #=
     results_bio = reduce(
         vcat,
         [run_sim(target, target_1pmt, sources, trange, i) for (i, sources) in enumerate(bio_sources[1:n_sim])]
     )
+    =#
 
     results_bio_fd = reduce(
         vcat,
@@ -349,7 +351,7 @@ for n_sources in all_n_src
         [run_sim(target, target_1pmt, sources, trange, i) for (i, sources) in enumerate(rnd_sources[1:n_sim])]
     )
 
-    push!(all_res, (n_src=n_sources, bio=results_bio, bio_df=results_bio_fd, rng=results_rnd))
+    push!(all_res, (n_src=n_sources, bio_df=results_bio_fd, rng=results_rnd))
 end
 
 
@@ -382,7 +384,7 @@ for (i, res) in enumerate(all_res)
     ylims!(ax, (0.1, 1E7))
     xlims!(ax, (1E4, 5E6))
 
-    make_all_coinc_rate_plot(ax, n_sim, res[:bio], res[:bio_df], res[:rng])
+    make_all_coinc_rate_plot(ax, n_sim, res[:bio_df], res[:rng])
 
     grid[row+1, col+1] = ax
 end
@@ -397,14 +399,14 @@ group_linestyle = [LineElement(linestyle=ls, color=:black) for ls in [:solid, :d
 legend = Legend(
     f,
     [group_color, group_linestyle],
-    [string.(lc_range), ["Bio Mock", "Bio FD", "Random"]],
+    [string.(lc_range), ["Bio FD", "Random"]],
     ["LC Level", "Em. Pos."])
 
 f[1, 2] = legend
 f
 
 
-
+all_res
 
 #=
 write_parquet(joinpath(@__DIR__, "../assets/bio_sources.parquet"),
@@ -464,6 +466,20 @@ axislegend(ax)
 f
 
 
+n_sources = 10
+seed = 1
+rng = Random.MersenneTwister(seed)
+n_ph = Int64(ceil((1E9 / n_sources)))
+bio_pos_df = Vector{Float64}.(JSON.parsefile(joinpath(@__DIR__, "../assets/relative_emission_positions.json")))
+bio_sources_fd = sample(rng, make_biolumi_sources_from_positions(bio_pos_df, n_ph * 3, trange), n_sources, replace=false)
+all_hits = sim_biolumi(target, bio_sources_fd, seed)
+all_hits_1pmt = sim_biolumi(target_1pmt, bio_sources_fd, seed)
+
+single_pmt_rate =
+
+all_hits
+
+bio_sources = make
 
 
 
