@@ -11,11 +11,11 @@ using DataFrames
 
 
 models_casc = Dict(
-    "1" => joinpath(@__DIR__, "../data/full_kfold_1_FNL.bson"),
-    "2" => joinpath(@__DIR__, "../data/full_kfold_2_FNL.bson"),
-    "3" => joinpath(@__DIR__, "../data/full_kfold_3_FNL.bson"),
-    "4" => joinpath(@__DIR__, "../data/full_kfold_4_FNL.bson"),
-    "5" => joinpath(@__DIR__, "../data/full_kfold_5_FNL.bson"),
+    "1" => joinpath(@__DIR__, "../data/extended_cascade_1_FNL.bson"),
+    "2" => joinpath(@__DIR__, "../data/extended_cascade_2_FNL.bson"),
+    "3" => joinpath(@__DIR__, "../data/extended_cascade_3_FNL.bson"),
+    "4" => joinpath(@__DIR__, "../data/extended_cascade_4_FNL.bson"),
+    "5" => joinpath(@__DIR__, "../data/extended_cascade_5_FNL.bson"),
 )
 
 # Tracks are simulated only at 100TeV!!!

@@ -3,8 +3,13 @@ using PyCall
 using PhysicsTools
 export proposal_secondary_to_particle, propagate_muon
 
-pp = pyimport("proposal")
-pp.InterpolationSettings.tables_path = joinpath(@__DIR__, "../../assets/proposal_tables")
+const pp = PyNULL()
+
+function __init__()
+    tmp = pyimport("proposal")
+    tmp.InterpolationSettings.tables_path = joinpath(@__DIR__, "../../assets/proposal_tables")
+    copy!(pp, tmp)
+end
 
 function proposal_secondary_to_particle(loss)
     energy = loss.energy / 1E3
@@ -22,6 +27,7 @@ function propagate_muon(particle)
     direction = particle.direction
     length = particle.length
     time = particle.time
+    energy = particle.energy
 
     if particle.type == PMuMinus
         particle = pp.particle.MuMinusDef()
@@ -53,4 +59,5 @@ function propagate_muon(particle)
 
     return final_state, stochastic_losses
 end
+
 end
