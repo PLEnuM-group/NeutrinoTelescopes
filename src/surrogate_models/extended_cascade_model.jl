@@ -71,12 +71,13 @@ Flux.@functor NNRQNormFlow (embedding,)
 
 function create_mlp_embedding(;
     hidden_structure::AbstractVector{<:Integer},
+    n_in,
     n_out,
     dropout=0,
     non_linearity=relu,
     split_final=false)
     model = []
-    push!(model, Dense(24 => hidden_structure[1], non_linearity))
+    push!(model, Dense(n_in => hidden_structure[1], non_linearity))
     push!(model, Dropout(dropout))
 
     hs_h = hidden_structure[2:end]
@@ -102,6 +103,7 @@ end
 
 function create_resnet_embedding(;
     hidden_structure::AbstractVector{<:Integer},
+    n_in,
     n_out,
     non_linearity=relu,
     dropout=0
@@ -114,7 +116,7 @@ function create_resnet_embedding(;
     layer_width = hidden_structure[1]
 
     model = []
-    push!(model, Dense(24 => layer_width, non_linearity))
+    push!(model, Dense(n_in => layer_width, non_linearity))
     push!(model, Dropout(dropout))
 
     for _ in 2:length(hidden_structure)
@@ -205,6 +207,7 @@ function setup_time_expectation_model(hparams::RQNormFlowHParams)
 
     embedding = create_mlp_embedding(
         hidden_structure=hidden_structure,
+        n_in=24,
         n_out=n_out,
         dropout=hparams.dropout,
         non_linearity=non_lin,
@@ -413,7 +416,6 @@ function dataframe_to_matrix(df)
     feature_matrix[3:5, :] .= reduce(hcat, sph_to_cart.(df[:, :dir_theta], df[:, :dir_phi]))
     feature_matrix[6:8, :] .= reduce(hcat, sph_to_cart.(df[:, :pos_theta], df[:, :pos_phi]))
     feature_matrix[9, :] .= df[:, :pmt_id]
-
     return feature_matrix
 end
 

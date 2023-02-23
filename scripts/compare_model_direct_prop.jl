@@ -18,6 +18,7 @@ models_casc = Dict(
     "5" => joinpath(@__DIR__, "../data/full_kfold_5_FNL.bson"),
 )
 
+# Tracks are simulated only at 100TeV!!!
 models_track = Dict(
     "1" => joinpath(@__DIR__, "../data/infinite_bare_muon_1_FNL.bson"),
     "2" => joinpath(@__DIR__, "../data/infinite_bare_muon_2_FNL.bson"),
@@ -48,14 +49,16 @@ particles = [
     Particle(pos, dir, 0.0, energy, 0.0, PEMinus),
 ]
 
-
 hits = mc_expectation(particles, targets_single, 1);
 compare_mc_model(particles, targets_single, models_casc, medium, hits)
 
 
 particles_track = [
-    Particle(pos .- 50 .* dir, dir, -50 / 0.3, 1E4, 100, PMuPlus)
+    Particle(pos .- 50 .* dir, dir, -50 / 0.3, 1E5, 100, PMuPlus)
 ]
+
+propagate_muon(particles_track[1])
+
 
 hits_track = mc_expectation(particles_track, targets_single, 1);
 compare_mc_model(particles_track, targets_single, models_track, medium, hits_track)
@@ -63,6 +66,8 @@ compare_mc_model(particles_track, targets_single, models_track, medium, hits_tra
 f = h5open(joinpath(@__DIR__, "../data/photon_table_bare_infinite_0.hd5"))
 grp = f["pmt_hits/dataset_101"]
 hits = DataFrame(grp[:, :], [:tres, :pmt_id])
+
+attrs(grp)
 
 minimum(hits[:, :tres])
 
