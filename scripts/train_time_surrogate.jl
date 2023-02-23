@@ -12,6 +12,7 @@ using Glob
 using Flux
 using BSON: @save, @load
 using ArgParse
+using JSON
 
 
 s = ArgParseSettings()
@@ -23,7 +24,10 @@ s = ArgParseSettings()
     "-o"
     help = "Output path"
     required = true
-    "--model-name"
+    "--hparam_config"
+    help = "Output path"
+    required = true
+    "--model_name"
     help = "Model name"
     required = true
 end
@@ -39,19 +43,8 @@ nsel_frac = 0.9
 tres, nhits, cond_labels, tf_dict = read_pmt_hits(fnames_casc, nsel_frac, rng)
 data = (tres=tres, label=cond_labels, nhits=nhits)
 
-hyperparams_default = Dict(
-    :K => 12,
-    :epochs => 100,
-    :lr => 0.007,
-    :mlp_layer_size => 768,
-    :mlp_layers => 2,
-    :dropout => 0.1,
-    :non_linearity => :relu,
-    :batch_size => 30000,
-    :seed => 1,
-    :l2_norm_alpha => 0,
-    :adam_beta_1 => 0.9,
-    :adam_beta_2 => 0.999
-)
+hyperparams = JSON.parsefile(parsed_args[:hparam_config], dicttype=Dict{Symbol,Any})
 
-kfold_train_model(data, outpath, model_name, tf_dict; hyperparams_default...)
+@show hyperparams
+
+kfold_train_model(data, outpath, model_name, tf_dict; hyperparams...)

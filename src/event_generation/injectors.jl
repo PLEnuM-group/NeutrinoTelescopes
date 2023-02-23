@@ -6,9 +6,6 @@ using Distributions
 using PhysicsTools
 import Base.rand
 
-
-
-
 export sample_volume, inject
 export Cylinder, Cuboid, VolumeType
 export VolumeInjector, Injector
@@ -78,35 +75,38 @@ function rand(vol::Cuboid{T}) where {T}
 end
 
 abstract type AngularDistribution end
-
 struct UniformAngularDistribution <: AngularDistribution end
 
 function Base.rand(::UniformAngularDistribution)
     phi = rand() * 2 * π
     theta = acos(2 * rand() - 1)
-
     return sph_to_cart(theta, phi)
 end
 
 
 abstract type Injector end
-struct VolumeInjector{T<:VolumeType,U<:UnivariateDistribution,W<:AngularDistribution} <: Injector
-    volume::T
-    e_dist::U
+struct VolumeInjector{
+    V<:VolumeType,
+    E<:UnivariateDistribution,
+    A<:AngularDistribution,
+    L<:UnivariateDistribution,
+    T<:UnivariateDistribution} <: Injector
+    volume::V
+    e_dist::E
     type_dist::CategoricalSetDistribution{Symbol}
-    angular_dist::W
+    angular_dist::A
+    length_dist::L
+    time_dist::T
 end
-
-
-
 
 function Base.rand(inj::VolumeInjector)
     pos = rand(inj.volume)
     energy = rand(inj.e_dist)
     ptype = rand(inj.type_dist)
     dir = rand(inj.angular_dist)
-
-    return Particle(pos, dir, zero(eltype(pos)), energy, ptype)
+    length = rand(inj.length_dist)
+    time = rand(inj.time_dist)
+    return Particle(pos, dir, time, energy, length, ptype)
 
 end
 

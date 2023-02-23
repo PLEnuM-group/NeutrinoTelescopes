@@ -17,7 +17,10 @@ function mc_expectation(particles::AbstractVector{<:Particle}, targets::Abstract
     medium = make_cascadia_medium_properties(0.99f0)
     spectrum = CherenkovSpectrum(wl_range, medium)
 
-    sources = [ExtendedCherenkovEmitter(convert(Particle{Float32}, p), medium, wl_range) for p in particles]
+    sources = [particle_shape(p) isa Cascade ?
+               ExtendedCherenkovEmitter(convert(Particle{Float32}, p), medium, wl_range) :
+               CherenkovTrackEmitter(convert(Particle{Float32}, p), medium, wl_range)
+               for p in particles]
 
     targets_c::Vector{MultiPMTDetector{Float32,N,L}} = targets
 

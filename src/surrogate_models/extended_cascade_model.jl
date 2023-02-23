@@ -185,7 +185,7 @@ Base.@kwdef struct RQNormFlowHParams
     lr_min::Float64 = 1E-5
     epochs::Int64 = 50
     dropout::Float64 = 0.1
-    non_linearity::Symbol = :relu
+    non_linearity::String = "relu"
     seed::Int64 = 31338
     l2_norm_alpha = 0.0
     adam_beta_1 = 0.9
@@ -196,7 +196,7 @@ end
 function setup_time_expectation_model(hparams::RQNormFlowHParams)
     hidden_structure = fill(hparams.mlp_layer_size, hparams.mlp_layers)
 
-    non_lins = Dict(:relu => relu, :tanh => tanh)
+    non_lins = Dict("relu" => relu, "tanh" => tanh)
     non_lin = non_lins[hparams.non_linearity]
 
     # 3 K + 1 for spline, 1 for shift, 1 for scale, 1 for log-expectation
@@ -503,7 +503,7 @@ pmt index.
 The resulting feature matrix is then transformed column by column using the transformations
 included in `tf_vec`.
 """
-function calc_flow_input(particle::P, target::PhotonTarget, tf_vec::AbstractVector) where {PT, DT, TT, ET, LT, PType, P <: Particle{PT, DT, TT, ET, LT, PType}}
+function calc_flow_input(particle::P, target::PhotonTarget, tf_vec::AbstractVector) where {PT,DT,TT,ET,LT,PType,P<:Particle{PT,DT,TT,ET,LT,PType}}
 
     particle_pos = particle.position
     particle_dir = particle.direction

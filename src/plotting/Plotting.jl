@@ -44,8 +44,6 @@ function compare_mc_model(
     times = -20:1:100
     for (mname, model_path) in models
         @load model_path model hparams tf_vec
-        input = calc_flow_input(particles, targets, tf_vec)
-
 
         shape_lhs = []
         local log_expec
@@ -53,6 +51,7 @@ function compare_mc_model(
             _, shape_lh, log_expec = SurrogateModels.evaluate_model(particles, Vector.(eachrow(t .+ t_geos .+ t0)), targets, gpu(model), tf_vec, c_n)
             push!(shape_lhs, collect(shape_lh))
         end
+        @show log_expec
 
         shape_lh = reduce(hcat, shape_lhs)
 
@@ -72,7 +71,8 @@ compare_mc_model(particles, targets, models) = compare_mc_model(particles, targe
 
 function plot_hits_on_module(data, pos, dir, particles, model, target, medium)
 
-    if eltype(particles) !<: AbstractArray
+    if eltype(particles)
+        !<:AbstractArray
         particles = [particles]
     end
 
@@ -81,17 +81,17 @@ function plot_hits_on_module(data, pos, dir, particles, model, target, medium)
 
     t_geo = calc_tgeo_tracks(pos, dir, target.position, medium)
     n_pmt = get_pmt_count(eltype(targets))
-    
+
     for i in 1:n_pmt
         row, col = divrem(i - 1, 4)
         ax = Axis(ga[col+1, row+1], xlabel="Time Residual(ns)", ylabel="Photons / time", title="PMT $i",
-                  )
+        )
         hist!(ax, data[i] .- t_geo, bins=-20:3:100, color=:orange)
     end
 
     times = -20:1:100
     for particles in [particles_truth, particles_unfolded]
-    
+
         shape_lhs = []
         local log_expec
         for t in times
@@ -104,7 +104,7 @@ function plot_hits_on_module(data, pos, dir, particles, model, target, medium)
         for i in 1:n_pmt
             row, col = divrem(i - 1, 4)
             lines!(ga[col+1, row+1], times, exp.(shape_lh[i, :] .+ log_expec[i]))
-            
+
         end
     end
 
