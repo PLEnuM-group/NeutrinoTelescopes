@@ -3,3 +3,4 @@
 /tensorboard_logs
 .vscode
 /data
+/assets/proposal_tables/*
