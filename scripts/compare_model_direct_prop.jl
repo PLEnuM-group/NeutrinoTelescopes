@@ -57,11 +57,18 @@ particles_track = [
     Particle(pos .- 50 .* dir, dir, -50 / 0.3, 1E5, 100, PMuPlus)
 ]
 
-propagate_muon(particles_track[1])
+propagated_particle, losses  = propagate_muon(particles_track[1])
+length(losses)
+hits_track = mc_expectation(losses, targets_single, 1);
+compare_mc_model(losses, targets_single, models_casc, medium, hits_track)
 
+c_n = c_at_wl(800., medium)
+@load models_casc["1"] model tf_vec
 
-hits_track = mc_expectation(particles_track, targets_single, 1);
-compare_mc_model(particles_track, targets_single, models_track, medium, hits_track)
+feat_buffer = zeros(9, get_pmt_count(eltype(targets_hex))*length(targets_hex)*length(losses)) 
+
+targets_range_mask = any(norm.([p.position for p in losses] .- permutedims([t.position for t in targets_hex])) .<= 200, dims=1)[1, :]
+sample_multi_particle_event(losses, targets_hex[targets_range_mask], model, tf_vec, c_n, rng, feat_buffer=feat_buffer)
 
 f = h5open(joinpath(@__DIR__, "../data/photon_table_bare_infinite_0.hd5"))
 grp = f["pmt_hits/dataset_101"]

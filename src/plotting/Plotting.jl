@@ -51,7 +51,6 @@ function compare_mc_model(
             _, shape_lh, log_expec = SurrogateModels.evaluate_model(particles, Vector.(eachrow(t .+ t_geos .+ t0)), targets, gpu(model), tf_vec, c_n)
             push!(shape_lhs, collect(shape_lh))
         end
-        @show log_expec
 
         shape_lh = reduce(hcat, shape_lhs)
 

@@ -4,7 +4,10 @@ using Random
 using StaticArrays
 using Distributions
 using PhysicsTools
+using UUIDs
+using StructTypes
 import Base.rand
+import ..Event
 
 export sample_volume, inject
 export Cylinder, Cuboid, VolumeType
@@ -30,6 +33,8 @@ struct Cylinder{T} <: VolumeType
     radius::T
 end
 
+StructTypes.StructType(::Type{<:Cylinder}) = StructTypes.Struct()
+
 """
     Cylinder{T} <: VolumeType
 
@@ -42,9 +47,13 @@ struct Cuboid{T} <: VolumeType
     l_z::T
 end
 
+StructTypes.StructType(::Type{<:Cuboid}) = StructTypes.Struct()
+
 struct FixedPosition{T} <: VolumeType
     position::SVector{3,T}
 end
+
+StructTypes.StructType(::Type{<:FixedPosition}) = StructTypes.Struct()
 """
     rand(::VolumeType)
 
@@ -77,6 +86,8 @@ end
 abstract type AngularDistribution end
 struct UniformAngularDistribution <: AngularDistribution end
 
+StructTypes.StructType(::Type{UniformAngularDistribution}) = StructTypes.Struct()
+
 function Base.rand(::UniformAngularDistribution)
     phi = rand() * 2 * π
     theta = acos(2 * rand() - 1)
@@ -93,11 +104,14 @@ struct VolumeInjector{
     T<:UnivariateDistribution} <: Injector
     volume::V
     e_dist::E
-    type_dist::CategoricalSetDistribution{Symbol}
+    type_dist::CategoricalSetDistribution
     angular_dist::A
     length_dist::L
     time_dist::T
 end
+
+StructTypes.StructType(::Type{VolumeInjector}) = StructTypes.Struct()
+
 
 function Base.rand(inj::VolumeInjector)
     pos = rand(inj.volume)
@@ -106,7 +120,11 @@ function Base.rand(inj::VolumeInjector)
     dir = rand(inj.angular_dist)
     length = rand(inj.length_dist)
     time = rand(inj.time_dist)
-    return Particle(pos, dir, time, energy, length, ptype)
+
+    event = Event()
+    event[:particles] = [Particle(pos, dir, time, energy, length, ptype)]
+
+    return event
 
 end
 

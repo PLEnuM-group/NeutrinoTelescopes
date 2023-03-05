@@ -24,9 +24,11 @@ using PhotonPropagation
 using ParameterSchedulers
 using ParameterSchedulers: Scheduler
 
+
 using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow
 using ...Processing
 
+export ArrivalTimeSurrogate, RQSplineModel
 export kfold_train_model
 export get_log_amplitudes, unfold_energy_losses, t_first_likelihood
 export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_likelihood, track_likelihood_energy_unfolding
@@ -513,7 +515,8 @@ function calc_flow_input(particle::P, target::PhotonTarget, tf_vec::AbstractVect
     target_pos = target.position
 
     rel_pos = particle_pos .- target_pos
-    dist = norm(rel_pos)
+    # TODO: Remove hardcoded max distance
+    dist = clamp(norm(rel_pos), 0., 200.)
     normed_rel_pos = rel_pos ./ dist
 
     n_pmt = get_pmt_count(target)
@@ -556,15 +559,17 @@ end
 function calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec, output)
 
     n_pmt = get_pmt_count(eltype(targets))
-
+    out_ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
+    
     for (p_ix, t_ix) in product(eachindex(particles), eachindex(targets))
         particle = particles[p_ix]
         target = targets[t_ix]
         rel_pos = particle.position .- target.position
-        dist = norm(rel_pos)
+        # TODO: Remove hardcoded max distance
+        dist = clamp(norm(rel_pos), 0., 200.)
         normed_rel_pos = rel_pos ./ dist
 
-        out_ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
+      
 
         for pmt_ix in 1:n_pmt
 
@@ -578,7 +583,7 @@ function calc_flow_input(particles::AbstractVector{<:Particle}, targets::Abstrac
         end
     end
 
-    feature_matrix = copy(output)
+    feature_matrix = @view output[:, 1:length(out_ix)]
 
     return apply_feature_transform(feature_matrix, tf_vec, n_pmt)
 end
@@ -610,10 +615,15 @@ end
 
 Sample arrival times at `targets` for `particles` using `model`.
 """
-function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng=nothing; oversample=1)
+function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng=nothing; oversample=1, feat_buffer=nothing)
 
     n_pmt = get_pmt_count(eltype(targets))
-    input = calc_flow_input(particles, targets, tf_vec)
+    if !isnothing(feat_buffer)
+        input = calc_flow_input(particles, targets, tf_vec, feat_buffer)
+    else
+        input = calc_flow_input(particles, targets, tf_vec)
+    end
+    
     output = model.embedding(input)
 
     # The embedding for all the parameters is

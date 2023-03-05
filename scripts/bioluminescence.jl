@@ -13,28 +13,8 @@ using StatsBase
 using Parquet
 using JSON
 using Base.Iterators
-
-
-function make_biolumi_sources_from_positions(positions, n_ph, trange)
-
-    positions = SVector{3,Float32}.(positions)
-    mask = norm.(positions) .> 0.3
-    positions = positions[mask]
-
-    sources = Vector{PointlikeTimeRangeEmitter}(undef, length(positions))
-
-    for (i, pos) in enumerate(positions)
-        sources[i] = PointlikeTimeRangeEmitter(
-            SVector{3,Float32}(pos),
-            (0.0, trange),
-            Int64(n_ph)
-        )
-    end
-
-    return sources
-
-end
-
+using Arrow
+using Glob
 
 function make_biolumi_sources(
     n_pos::Integer,
@@ -196,36 +176,37 @@ end
 
 
 
-function run_sim(
-    target,
-    target_1pmt,
-    sources,
-    trange::Number,
-    seed
-)
-
-    all_hits = sim_biolumi(target, sources, seed)
-    all_hits_1pmt = sim_biolumi(target_1pmt, sources, seed)
-
-    downsampling = 10 .^ (0:0.1:3)
-
+function evaluate_sim(files)
+    trange = 1E7
     results = []
+    for f in files
+        
+        tbl = Arrow.Table(f)
+        single_pmt_rate = JSON.parse(Arrow.getmetadata(tbl)["metadata_json"])["single_pmt_rate"]
+        hits = DataFrame(tbl)
+        all_hits = resample_simulation(hits)
+        all_hits[!, :time] = convert.(Float64, all_hits[:, :time] )
 
-    for ds in downsampling
+        downsampling = 1. # 10 .^ (0:0.1:3)
 
-        if ds ≈ 1
-            hits = all_hits
-            hits_1pmt = all_hits_1pmt
-        else
-            n_sel = Int64(ceil(nrow(all_hits) / ds))
-            hits = all_hits[shuffle(1:nrow(all_hits))[1:n_sel], :]
+        
 
-            n_sel = Int64(ceil(nrow(all_hits_1pmt) / ds))
-            hits_1pmt = all_hits_1pmt[shuffle(1:nrow(all_hits_1pmt))[1:n_sel], :]
-        end
+        #=
+        for ds in downsampling
 
+            if ds ≈ 1
+                hits = all_hits
+                hits_1pmt = all_hits_1pmt
+            else
+                n_sel = Int64(ceil(nrow(all_hits) / ds))
+                hits = all_hits[shuffle(1:nrow(all_hits))[1:n_sel], :]
+
+                n_sel = Int64(ceil(nrow(all_hits_1pmt) / ds))
+                hits_1pmt = all_hits_1pmt[shuffle(1:nrow(all_hits_1pmt))[1:n_sel], :]
+            end
+        =#
+        hits = all_hits
         rate = nrow(hits) / trange * 1E9 # Rate in Hz
-        rate_1pmt = nrow(hits_1pmt) / trange * 1E9 # Rate in Hz
 
 
         windows = [10, 15, 20, 30]
@@ -236,9 +217,9 @@ function run_sim(
             coincs_fixed_w = count_coinc_in_tw(sorted_hits, window)
 
             ntup = (
-                ds_rate=ds,
+                ds_rate=1,
                 hit_rate=rate,
-                hit_rate_1pmt=rate_1pmt,
+                hit_rate_1pmt=single_pmt_rate,
                 time_window=window,
                 coincs_trigger=coincs_trigger,
                 coincs_fixed_w=coincs_fixed_w)
@@ -246,7 +227,6 @@ function run_sim(
         end
 
     end
-
     return DataFrame(results)
 end
 
@@ -256,7 +236,7 @@ function count_lc_levels(a)
 end
 
 
-function make_all_coinc_rate_plot(ax, n_sim, res...)
+function make_all_coinc_rate_plot(ax, n_sim, trange=1E7, res...)
     lc_range = 2:6
 
     for (j, result_df) in enumerate(res)
@@ -286,25 +266,6 @@ end
 
 
 
-
-pmt_area = Float32((75e-3 / 2)^2 * π)
-target_radius = 0.21f0
-target = MultiPMTDetector(
-    @SVector[0.0f0, 0.0f0, 0.0f0],
-    target_radius,
-    pmt_area,
-    make_pom_pmt_coordinates(Float32),
-    UInt16(1))
-
-target_1pmt = MultiPMTDetector(
-    @SVector[0.0f0, 0.0f0, 0.0f0],
-    target_radius,
-    pmt_area,
-    SA_F32[0 0]',
-    UInt16(1))
-
-trange = 1E7
-
 function read_sources(path, trange, nph)
     bio_pos = DataFrame(read_parquet(path))
     bio_sources = Vector{PointlikeTimeRangeEmitter}()
@@ -316,7 +277,21 @@ function read_sources(path, trange, nph)
     bio_sources
 end
 
+files = glob("*.arrow", joinpath(@__DIR__, "../data/biolumi_sims"))
+results = evaluate_sim(files)
 
+
+theme = Theme(
+    palette=(color=Makie.wong_colors(), linestyle=[:solid, :dash, :dot]),
+    Lines=(cycle=Cycle([:color, :linestyle], covary=true),)
+)
+
+set_theme!(theme)
+
+fig = Figure()
+ax = Axis(fig[1, 1])
+make_all_coinc_rate_plot(ax, length(files), 1E7, results)
+fig
 
 n_sim = 5
 all_res = []
@@ -355,12 +330,7 @@ for n_sources in all_n_src
 end
 
 
-theme = Theme(
-    palette=(color=Makie.wong_colors(), linestyle=[:solid, :dash, :dot]),
-    Lines=(cycle=Cycle([:color, :linestyle], covary=true),)
-)
 
-set_theme!(theme)
 
 f = Figure()
 grid = GridLayout()

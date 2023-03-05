@@ -1,6 +1,7 @@
 module ProposalInterface
 using PyCall
 using PhysicsTools
+using StaticArrays
 export proposal_secondary_to_particle, propagate_muon
 
 const pp = PyNULL()
@@ -30,23 +31,24 @@ function propagate_muon(particle)
     energy = particle.energy
 
     if particle.type == PMuMinus
-        particle = pp.particle.MuMinusDef()
+        ptype = pp.particle.MuMinusDef()
     elseif particle.type == PMuPlus
-        particle = pp.particle.MuPlusDef()
+        ptype = pp.particle.MuPlusDef()
     else
         error("Type $(particle.type) not supported")
     end
-    propagator = pp.Propagator(particle, joinpath(@__DIR__, "../../assets/proposal_config.json"))
+    propagator = pp.Propagator(ptype, joinpath(@__DIR__, "../../assets/proposal_config.json"))
 
     initial_state = pp.particle.ParticleState()
     initial_state.energy = energy * 1E3
     initial_state.position = pp.Cartesian3D(position[1] * 100, position[2] * 100, position[3] * 100)
     initial_state.direction = pp.Cartesian3D(direction[1], direction[2], direction[3])
     initial_state.time = time / 1E9
-    final_state = propagator.propagate(initial_state, max_distance=length * 100)
-    stochastic_losses = final_state.stochastic_losses()
-    stochastic_losses = loss_to_particle.(stochastic_losses)
+    secondaries = propagator.propagate(initial_state, max_distance=length * 100)
+    stochastic_losses = secondaries.stochastic_losses()
+    stochastic_losses = proposal_secondary_to_particle.(stochastic_losses)
 
+    final_state = secondaries.final_state()
     length = final_state.propagated_distance / 100
 
     final_state = Particle(

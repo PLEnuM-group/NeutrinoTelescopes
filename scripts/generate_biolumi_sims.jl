@@ -87,7 +87,6 @@ for n_sources in [1, 5, 10, 50, 100]
         end
         single_pmt_rate = (sum(hits_1pmt[:, :total_weight]) / trange) * 1E9 / 1E3 #[kHz]
 
-        fname_meta = joinpath(outpath, "meta_$(n_sources)_$i.json")
         fname_table = joinpath(outpath, "hits_$(n_sources)_$i.arrow")
 
         metadata = Dict(
