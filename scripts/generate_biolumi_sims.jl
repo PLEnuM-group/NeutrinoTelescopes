@@ -72,7 +72,7 @@ if !ispath(outpath)
     mkdir(outpath)
 end
 
-for n_sources in [1, 5, 10, 50, 100]
+for n_sources in [200, 500, 1000]
     for i in 1:50
         n_ph = Int(1E9 / n_sources)
         seed = i

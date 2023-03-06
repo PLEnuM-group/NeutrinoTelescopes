@@ -8,6 +8,10 @@ using Unitful
 using LinearAlgebra
 using StatsBase
 using PoissonRandom
+using Reexport
+
+include("triggering.jl")
+@rexport Triggering
 
 const c_vac_m_ns = ustrip(u"m/ns", SpeedOfLightInVacuum)
 
