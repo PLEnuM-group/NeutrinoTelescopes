@@ -173,57 +173,51 @@ function sim_biolumi(target, sources, seed)
 end
 
 
-
-
-
 function evaluate_sim(files)
     trange = 1E7
     results = []
     for f in files
-        
+
         tbl = Arrow.Table(f)
-        single_pmt_rate = JSON.parse(Arrow.getmetadata(tbl)["metadata_json"])["single_pmt_rate"]
+        meta = JSON.parse(Arrow.getmetadata(tbl)["metadata_json"])
+        single_pmt_rate = meta["single_pmt_rate"] * 1E3 # rate in Hz
+
+        nsources = length(meta["sources"])
+        time_range = 1E7 # TODO READ FROM NEW FILES
         hits = DataFrame(tbl)
         all_hits = resample_simulation(hits)
-        all_hits[!, :time] = convert.(Float64, all_hits[:, :time] )
+        all_hits[!, :time] = convert.(Float64, all_hits[:, :time])
 
-        downsampling = 1. # 10 .^ (0:0.1:3)
+        downsampling = 10 .^ (0:0.1:3) # #1.0
 
-        
-
-        #=
         for ds in downsampling
 
             if ds ≈ 1
                 hits = all_hits
-                hits_1pmt = all_hits_1pmt
             else
                 n_sel = Int64(ceil(nrow(all_hits) / ds))
                 hits = all_hits[shuffle(1:nrow(all_hits))[1:n_sel], :]
-
-                n_sel = Int64(ceil(nrow(all_hits_1pmt) / ds))
-                hits_1pmt = all_hits_1pmt[shuffle(1:nrow(all_hits_1pmt))[1:n_sel], :]
             end
-        =#
-        hits = all_hits
-        rate = nrow(hits) / trange * 1E9 # Rate in Hz
 
+            rate = nrow(hits) / trange * 1E9 # Rate in Hz
 
-        windows = [10, 15, 20, 30]
-        sorted_hits = sort(hits, [:time])
+            windows = [10, 15, 20, 30]
+            sorted_hits = sort(hits, [:time])
 
-        for window in windows
-            coincs_trigger = calc_coincs_from_trigger(sorted_hits, window)
-            coincs_fixed_w = count_coinc_in_tw(sorted_hits, window)
-
-            ntup = (
-                ds_rate=1,
-                hit_rate=rate,
-                hit_rate_1pmt=single_pmt_rate,
-                time_window=window,
-                coincs_trigger=coincs_trigger,
-                coincs_fixed_w=coincs_fixed_w)
-            push!(results, ntup)
+            for window in windows
+                coincs_trigger = calc_coincs_from_trigger(sorted_hits, window)
+                coincs_fixed_w = count_coinc_in_tw(sorted_hits, window)
+                ntup = (
+                    ds_rate=ds,
+                    hit_rate=rate,
+                    hit_rate_1pmt=single_pmt_rate / ds,
+                    time_window=window,
+                    coincs_trigger=coincs_trigger,
+                    coincs_fixed_w=coincs_fixed_w,
+                    time_range=time_range,
+                    n_sources=nsources)
+                push!(results, ntup)
+            end
         end
 
     end
@@ -232,20 +226,23 @@ end
 
 
 function count_lc_levels(a)
-    return [counts(vcat(a...), 2:10)]
+    return [counts(reduce(vcat, a), 2:10)]
 end
 
 
-function make_all_coinc_rate_plot(ax, n_sim, trange=1E7, res...)
-    lc_range = 2:6
+function make_all_coinc_rate_plot(ax, results_df, trange=1E7, lc_range=2:6)
 
-    for (j, result_df) in enumerate(res)
-        grpd_tw = groupby(groupby(result_df, :time_window)[3], :ds_rate)
-        coinc_trigger = combine(grpd_tw, :coincs_trigger => count_lc_levels => AsTable)
+    grouped_n_src = groupby(results_df, :n_sources)
+
+    for (j, result_df) in enumerate(grouped_n_src)
+
+        grouped_ds = groupby(result_df, :ds_rate)
+        coinc_trigger = combine(grouped_ds, :coincs_trigger => count_lc_levels => AsTable)
         #coinc_trigger = combine(grpd_tw, :coincs_fixed_w => count_lc_levels => AsTable)
-        mean_hit_rate_1pmt = combine(groupby(result_df, :ds_rate), :hit_rate_1pmt => mean => :hit_rate_mean)
+        mean_hit_rate_1pmt = combine(grouped_ds, :hit_rate_1pmt => mean => :hit_rate_mean)
         coinc_trigger = innerjoin(coinc_trigger, mean_hit_rate_1pmt, on=:ds_rate)
-
+        n_sim = combine(grouped_ds, nrow => :n_sim)
+        coinc_trigger = innerjoin(coinc_trigger, n_sim, on=:ds_rate)
 
         for (i, lc_level) in enumerate(lc_range)
             col_sym = Symbol(format("x{:d}", i))
@@ -253,7 +250,7 @@ function make_all_coinc_rate_plot(ax, n_sim, trange=1E7, res...)
             lines!(
                 ax,
                 coinc_trigger[:, :hit_rate_mean],
-                coinc_trigger[:, col_sym] .* (1E9 / (trange * n_sim)),
+                coinc_trigger[:, col_sym] .* (1E9 ./ (trange .* coinc_trigger[:, :n_sim])),
                 label=string(lc_level),
                 linestyle=Cycled(j),
                 color=Cycled(i)
@@ -277,21 +274,47 @@ function read_sources(path, trange, nph)
     bio_sources
 end
 
-files = glob("*.arrow", joinpath(@__DIR__, "../data/biolumi_sims"))
-results = evaluate_sim(files)
-
-
 theme = Theme(
-    palette=(color=Makie.wong_colors(), linestyle=[:solid, :dash, :dot]),
+    palette=(color=Makie.wong_colors(), linestyle=[:solid, :dash, :dot, :dashdot, :dashdotdot]),
     Lines=(cycle=Cycle([:color, :linestyle], covary=true),)
 )
 
 set_theme!(theme)
 
+files = glob("*.arrow", joinpath(@__DIR__, "../data/biolumi_sims"))
+#results = evaluate_sim(files)
+
+
+mask = results[:, :time_window] .== 20
+subsel = results[mask, :]
+
+lc_range = 2:6
 fig = Figure()
-ax = Axis(fig[1, 1])
-make_all_coinc_rate_plot(ax, length(files), 1E7, results)
+ax = Axis(fig[1, 1],
+    yscale=log10, xscale=log10,
+    limits=(1E3, 1E6, 10, 1E6),
+    xlabel="Single PMT Rate",
+    ylabel="LC Rate", yminorticks=IntervalsBetween(8),
+    yminorticksvisible=true,
+    yminorgridvisible=true,)
+make_all_coinc_rate_plot(ax, subsel, 1E7, lc_range)
+
+group_color = [
+    LineElement(linestyle=:solid, color=col) for col in Makie.wong_colors()[1:length(lc_range)]
+]
+
+group_linestyle = [LineElement(linestyle=ls, color=:black) for ls in [:solid, :dash, :dot, :dashdot, :dashdotdot]]
+
+legend = Legend(
+    fig,
+    [group_color, group_linestyle],
+    [string.(lc_range), string.(getproperty.(keys(groupby(subsel, :n_sources)), :n_sources))],
+    ["LC Level", "N-Sources"])
+
+fig[1, 2] = legend
 fig
+
+
 
 n_sim = 5
 all_res = []
@@ -358,6 +381,7 @@ for (i, res) in enumerate(all_res)
 
     grid[row+1, col+1] = ax
 end
+
 lc_range = 2:6
 f.layout[1, 1] = grid
 group_color = [
@@ -446,8 +470,7 @@ all_hits = sim_biolumi(target, bio_sources_fd, seed)
 all_hits_1pmt = sim_biolumi(target_1pmt, bio_sources_fd, seed)
 
 single_pmt_rate =
-
-all_hits
+    all_hits
 
 bio_sources = make
 

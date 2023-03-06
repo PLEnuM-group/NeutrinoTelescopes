@@ -93,7 +93,8 @@ for n_sources in [1, 5, 10, 50, 100]
             "target" => target,
             "target_1pmt" => target_1pmt,
             "sources" => bio_sources_fd,
-            "single_pmt_rate" => single_pmt_rate)
+            "single_pmt_rate" => single_pmt_rate,
+            "time_range" => trange)
 
         Arrow.write(fname_table, hits, metadata=["metadata_json" => JSON.json(metadata),])
     end
