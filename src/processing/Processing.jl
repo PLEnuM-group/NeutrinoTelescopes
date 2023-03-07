@@ -11,7 +11,7 @@ using PoissonRandom
 using Reexport
 
 include("triggering.jl")
-@rexport Triggering
+@reexport using .Triggering
 
 const c_vac_m_ns = ustrip(u"m/ns", SpeedOfLightInVacuum)
 

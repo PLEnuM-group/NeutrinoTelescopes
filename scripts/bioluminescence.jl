@@ -15,40 +15,9 @@ using JSON
 using Base.Iterators
 using Arrow
 using Glob
+using CSV
+using Interpolations
 
-function make_biolumi_sources(
-    n_pos::Integer,
-    n_ph::Integer,
-    trange::Float64)
-    sources = Vector{PointlikeTimeRangeEmitter}(undef, n_pos)
-
-    for i in 1:n_pos
-
-        pos_x::Float32 = 0
-        pos_y::Float32 = 0
-        pos_z::Float32 = 0
-
-        if i < 20
-            pos_z = rand([-1, 1]) * rand(Uniform(0.3, 3))
-            pos_x = rand(Uniform(0.1, 1))
-            pos_y = rand(Uniform(-0.2, 0.2))
-
-
-        else
-            pos_z = rand(Normal(0, 1))
-            pos_x = rand(Uniform(0.5, 5))
-            pos_y = rand(Uniform(-1, 1))
-        end
-
-        sources[i] = PointlikeTimeRangeEmitter(
-            @SVector[pos_x, pos_y, pos_z],
-            (0.0, trange),
-            Int64(n_ph)
-        )
-    end
-
-    return sources
-end
 
 function make_random_sources(
     n_pos::Integer,
@@ -72,8 +41,6 @@ function make_random_sources(
 
     return sources
 end
-
-
 
 
 function plot_sources(sources)
@@ -223,36 +190,46 @@ set_theme!(theme)
 
 files = glob("*.arrow", joinpath(@__DIR__, "../data/biolumi_sims"))
 results = evaluate_sim(files)
-
-
 mask = results[:, :time_window] .== 20 .&& results[:, :n_sources] .> 10
 subsel = results[mask, :]
 
-lc_range = 2:6
-fig = Figure()
-ax = Axis(fig[1, 1],
-    yscale=log10, xscale=log10,
-    limits=(1E3, 1E6, 10, 1E6),
-    xlabel="Single PMT Rate",
-    ylabel="LC Rate", yminorticks=IntervalsBetween(8),
-    yminorticksvisible=true,
-    yminorgridvisible=true,)
-make_all_coinc_rate_plot(ax, subsel, 1E7, lc_range)
 
-group_color = [
-    LineElement(linestyle=:solid, color=col) for col in Makie.wong_colors()[1:length(lc_range)]
-]
+begin
+    lc_range = 2:6
+    fig = Figure()
+    ax = Axis(fig[1, 1],
+        yscale=log10, xscale=log10,
+        limits=(1E3, 1E6, 10, 1E6),
+        xlabel="Single PMT Rate (Hz)",
+        ylabel="LC Rate (Hz)", yminorticks=IntervalsBetween(8),
+        yminorticksvisible=true,
+        yminorgridvisible=true,)
+    make_all_coinc_rate_plot(ax, subsel, 1E7, lc_range)
 
-group_linestyle = [LineElement(linestyle=ls, color=:black) for ls in [:solid, :dash, :dot, :dashdot, :dashdotdot]]
+    group_color = [
+        LineElement(linestyle=:solid, color=col) for col in Makie.wong_colors()[1:length(lc_range)]
+    ]
 
-legend = Legend(
-    fig,
-    [group_color, group_linestyle],
-    [string.(lc_range), string.(getproperty.(keys(groupby(subsel, :n_sources)), :n_sources))],
-    ["LC Level", "N-Sources"])
+    group_linestyle = [LineElement(linestyle=ls, color=:black) for ls in [:solid, :dash, :dot, :dashdot, :dashdotdot]]
 
-fig[1, 2] = legend
-fig
+    legend = Legend(
+        fig,
+        [group_color, group_linestyle],
+        [string.(lc_range), string.(getproperty.(keys(groupby(subsel, :n_sources)), :n_sources))],
+        ["LC Level", "N-Sources"])
+
+    fig[1, 2] = legend
+    fig
+end
+
+straw_cum_rates = CSV.read(joinpath(@__DIR__, "../assets/straw_cumulative_rates.csv"), DataFrame, header=[:rate, :frac_above])
+
+straw_cum_rates_interp = linear_interpolation(straw_cum_rates[:, :rate], straw_cum_rates[:, :frac_above])
+
+xs = 3.5:0.1:5.5
+
+lines(10 .^ xs, straw_cum_rates_interp(10 .^ xs), axis=(; xscale=log10, xlabel="Straw Rate (Hz)", ylabel="Fraction Above Rate"))
+
 
 
 

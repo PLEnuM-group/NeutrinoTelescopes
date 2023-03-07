@@ -4,7 +4,19 @@ using DataFrames
 
 export lc_trigger, calc_coincs_from_trigger, count_coinc_in_tw
 
-function lc_trigger(sorted_hits, time_window)
+"""
+    lc_trigger(sorted_hits::AbstractDataFrame, time_window)
+
+Calculate local-coincidence triggers for `sorted_hits` in `time_window`.
+
+The algorithm loops through all hits ``h_i``. When the next hit ``h_j`` is closer than the
+time window ``\\delta`` a new trigger is started. The trigger will accumulate all hits
+``h_j`` that are within ``h_i + \\delta``. Finally, a trigger is emitted when it includes
+hits on at least two different PMTs.
+
+Returns a Vector of hit-time vectors.
+"""
+function lc_trigger(sorted_hits::AbstractDataFrame, time_window)
 
     triggers = []
     i = 1
