@@ -190,6 +190,10 @@ set_theme!(theme)
 
 files = glob("*.arrow", joinpath(@__DIR__, "../data/biolumi_sims"))
 results = evaluate_sim(files)
+
+Arrow.write(joinpath(@__DIR__, "../data/biolumi_summary.arrow"), results)
+
+
 mask = results[:, :time_window] .== 20 .&& results[:, :n_sources] .> 10
 subsel = results[mask, :]
 
