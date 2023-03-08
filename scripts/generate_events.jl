@@ -8,7 +8,10 @@ using BSON
 using Flux
 using StaticArrays
 using DataStructures
-using JSON
+using JSON3
+using DataFrames
+using Arrow
+
 
 BSON.@load joinpath(@__DIR__, "../data/extended_cascade_2_FNL.bson") model tf_vec
 
@@ -31,8 +34,26 @@ ang_dist = UniformAngularDistribution()
 length_dist = Dirac(0.)
 time_dist = Dirac(0.)
 inj = VolumeInjector(cylinder, edist, pdist, ang_dist,length_dist, time_dist)
+hit_generator = SurrogateModelHitGenerator(model, tf_vec, 200., d)
+ec = EventCollection(inj)
 
 event = rand(inj)
-hit_generator = SurrogateModelHitGenerator(model, tf_vec, 200., d)
+@profview generate_hit_times!(event, d, hit_generator)
 
-generate_hit_times!(event, d, hit_generator)
+
+
+event
+push!(ec, event)
+
+Base.iterate(e::EventCollection) = iterate(e.events)
+
+open("test.arrow", "w") do io
+
+    for e in ec
+        record = (event_id=[e.id], times=[e[:photon_hits][:, :time]])
+        Arrow.write(io, record)
+
+    end
+end
+JSON3.write(ec)
+
