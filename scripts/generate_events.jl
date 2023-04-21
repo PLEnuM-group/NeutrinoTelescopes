@@ -1,6 +1,7 @@
 using NeutrinoTelescopes
 using PhotonPropagation
 using PhysicsTools
+using PMTSimulation
 using CairoMakie
 using Distributions
 using Random
@@ -38,9 +39,31 @@ hit_generator = SurrogateModelHitGenerator(model, tf_vec, 200.0, d)
 ec = EventCollection(inj)
 
 event = rand(inj)
-@profview generate_hit_times!(event, d, hit_generator)
+hits = generate_hit_times!(event, d, hit_generator)
 
 
+event
+groups = groupby(hits, [:pmt_id, :module_id])
+
+function unfold_per_module(hits)
+    min_time, max_time = extrema(hits[:, :time])
+
+    min_time = div(min_time-20, 1/STD_PMT_CONFIG.sampling_freq) * 1/STD_PMT_CONFIG.sampling_freq
+    max_time = div(max_time+20, 1/STD_PMT_CONFIG.sampling_freq) * 1/STD_PMT_CONFIG.sampling_freq
+
+    per_pmt_pulses = make_reco_pulses(hits, STD_PMT_CONFIG, (min_time, max_time))
+    return per_pmt_pulses
+end
+
+pulsesmap = combine(groups, unfold_per_module)[:, :x1]
+
+bins = 10 .^(-1:0.2:3)
+
+fig, ax = hist(combine(groups, nrow)[:, :nrow], bins=bins, 
+    axis=(;xscale=log10, yscale=log10, limits=(0.1, 1000, 0.1, 500)), fillto=0.1)
+hist!(ax, (get_total_charge.(pulsesmap)), bins=bins, fillto=0.1)
+
+fig
 
 event
 push!(ec, event)
