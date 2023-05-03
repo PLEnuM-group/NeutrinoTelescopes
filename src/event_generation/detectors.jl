@@ -30,21 +30,21 @@ function make_pom_pmt_coordinates(T::Type)
 
     coords = Matrix{T}(undef, 2, 16)
 
-    # upper
-    coords[1, 1:4] .= deg2rad(90 - 57.5)
-    coords[2, 1:4] = (range(π / 4; step=π / 2, length=4))
+    #upper 
+    coords[1, 1:4] .= deg2rad(90 - 25)
+    coords[2, 1:4] = (range(0; step=π / 2, length=4))
 
     # upper 2
-    coords[1, 5:8] .= deg2rad(90 - 25)
-    coords[2, 5:8] = (range(0; step=π / 2, length=4))
+    coords[1, 5:8] .= deg2rad(90 - 57.5)
+    coords[2, 5:8] = (range(π / 4; step=π / 2, length=4))
 
     # lower 2
     coords[1, 9:12] .= deg2rad(90 + 25)
-    coords[2, 9:12] = (range(0; step=π / 2, length=4))
+    coords[2, 9:12] = [π/2, 0, 3*π/2, π]
 
     # lower
     coords[1, 13:16] .= deg2rad(90 + 57.5)
-    coords[2, 13:16] = (range(π / 4; step=π / 2, length=4))
+    coords[2, 13:16] = [π/4, 7/4*π, 5/4*π, 3/4*π]
 
     R = calc_rot_matrix(SA[0.0, 0.0, 1.0], SA[1.0, 0.0, 0.0])
     @views for col in eachcol(coords)
