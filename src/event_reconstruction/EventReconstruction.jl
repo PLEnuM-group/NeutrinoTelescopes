@@ -11,7 +11,7 @@ include("geometric_features.jl")
 
 export mc_expectation, calc_resolution_maxlh
 
-function mc_expectation(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:D}, seed) where {T,N,L,D<:MultiPMTDetector{T,N,L}}
+function mc_expectation(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:D}, seed) where {T,N,L,D<:SphericalMultiPMTDetector{N,L,T}}
 
     wl_range = (300.0f0, 800.0f0)
     medium = make_cascadia_medium_properties(0.99f0)

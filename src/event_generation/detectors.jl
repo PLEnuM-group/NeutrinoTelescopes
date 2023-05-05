@@ -57,15 +57,32 @@ end
 
 
 function make_pone_module(position, module_id)
+
+   
+    PROJECT_ROOT = pkgdir(PhotonPropagation)
+
     pmt_area = (75e-3 / 2)^2 * π
-    target_radius = 0.21
-    target = MultiPMTDetector(
-        position,
-        target_radius,
+    #target_radius = 0.21
+    target_radius = 0.3
+
+    shape = Spherical(Float32.(position), Float32(target_radius))
+
+    acceptance = POMAcceptance(
+        joinpath(PROJECT_ROOT, "assets/pmt_acc_3d.hd5"),
+        joinpath(PROJECT_ROOT, "assets/PMTAcc.csv",)
+
+    )
+
+    target = POM(
+        shape,
         pmt_area,
         make_pom_pmt_coordinates(Float64),
+        acceptance,
         UInt16(module_id)
     )
+
+    
+
 
     return target
 end
