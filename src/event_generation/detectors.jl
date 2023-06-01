@@ -68,7 +68,7 @@ function make_pone_module(position, module_id)
     shape = Spherical(Float32.(position), Float32(target_radius))
 
     acceptance = POMAcceptance(
-        joinpath(PROJECT_ROOT, "assets/pmt_acc_2d_pca.hd5"),
+        joinpath(PROJECT_ROOT, "assets/pmt_acc.hd5"),
     )
 
     target = POM(

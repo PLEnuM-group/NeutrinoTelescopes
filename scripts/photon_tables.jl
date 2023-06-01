@@ -56,15 +56,7 @@ function make_setup(
     g=0.99f0)
 
     medium = make_cascadia_medium_properties(g)
-    pmt_area = Float32((75e-3 / 2)^2 * π)
-    target_radius = 0.21f0
-    target = MultiPMTDetector(
-        @SVector[0.0f0, 0.0f0, 0.0f0],
-        target_radius,
-        pmt_area,
-        make_pom_pmt_coordinates(Float32),
-        UInt16(1)
-    )
+    target = make_pone_module(targ_pos, UInt16(1))
     wl_range = (300.0f0, 800.0f0)
 
     spectrum = CherenkovSpectrum(wl_range, medium, 30)
@@ -80,14 +72,16 @@ function make_setup(
         )
         source = ExtendedCherenkovEmitter(particle, medium, wl_range)
     elseif mode == :bare_infinite_track
-        ppos = pos .- 200 .* dir
+        length = 400f0
+        ppos = pos .- length/2 .* dir
+        
 
         particle = Particle(
             ppos,
             dir,
             0.0f0,
             Float32(energy),
-            400.0f0,
+            length,
             PMuMinus
         )
         source = CherenkovTrackEmitter(particle, medium, wl_range)
@@ -135,7 +129,6 @@ function run_sim(
     end
 
 
-
     base_weight = 1.0
     photons = nothing
 
@@ -161,9 +154,14 @@ function run_sim(
 
     nph_sim = nrow(photons)
 
-    if nph_sim > 1E6
-        photons = photons[1:1000000, :]
-        base_weight *= nph_sim / 1E6
+    # if more than 1E6 photons make it to the module,
+    # take the first 1E6 and scale weights
+
+    n_ph_limit = 1000000
+
+    if nph_sim > n_ph_limit
+        photons = photons[1:n_ph_limit, :]
+        base_weight *= nph_sim / n_ph_limit
     end
 
     calc_time_residual!(photons, setup)
