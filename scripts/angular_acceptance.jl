@@ -13,8 +13,9 @@ using Interpolations
 using Distributions
 using PhysicalConstants.CODATA2018
 using Unitful
-
-
+using Rotations
+using LinearAlgebra
+using JSON3
 
 
 begin
@@ -140,3 +141,34 @@ h5open(fname, "r") do fid
     lines!(ax, fid["wavelengths"][:], fid["acc_pmt_grp_2"][:])
     fig
 end
+
+
+using DataFrames
+using StaticArrays
+using Cthulhu
+using Rotations
+using Random
+using LinearAlgebra
+using NeutrinoTelescopes
+using PhotonPropagation
+n = 1000000
+positions = rand(SVector{3, Float64}, n)
+directions = rand(SVector{3, Float64}, n)
+directions ./= norm.(directions)
+total_weights = rand(n)
+
+
+
+photons = DataFrame(position=positions, direction=directions, total_weight=total_weights, module_id=ones(n), wavelength=fill(400, n))
+
+target = make_pone_module(SA_F32[0., 0., 10.], UInt16(1))
+medium = make_cascadia_medium_properties(0.95f0)
+source = PointlikeIsotropicEmitter(SA_F32[0., 0., 0.], 0f0, 10000)
+spectrum = Monochromatic(4250f0)
+
+seed = 1
+
+# Setup propagation
+setup = PhotonPropSetup([source], [target], medium, spectrum, seed)
+
+@profview make_hits_from_photons(photons, setup, RotMatrix3(I))

@@ -11,19 +11,25 @@ using PoissonRandom
 using Reexport
 
 include("triggering.jl")
+include("io.jl")
 @reexport using .Triggering
+@reexport using .IO
 
 const c_vac_m_ns = ustrip(u"m/ns", SpeedOfLightInVacuum)
 
 export calc_time_residual!, calc_tgeo, c_at_wl
 export calc_time_residual_tracks!, calc_tgeo_tracks
-export resample_simulation
+
 
 calc_tgeo(distance, c_n::Number) = distance / c_n
 calc_tgeo(distance, medium::MediumProperties) = calc_tgeo(distance, c_at_wl(800.0, medium))
 
-function calc_tgeo(particle::Particle, target::PhotonTarget, c_n_or_medium)
-    return calc_tgeo(norm(particle.position .- target.position) - target.radius, c_n_or_medium)
+function calc_tgeo(distance, target::PhotonTarget{<:Spherical}, c_n_or_medium)
+    return  calc_tgeo(distance - target.shape.radius, c_n_or_medium)
+end
+
+function calc_tgeo(particle::Particle, target, c_n_or_medium)
+    return calc_tgeo(norm(particle.position .- target.shape.position), target, c_n_or_medium)
 end
 
 
@@ -59,7 +65,7 @@ function calc_time_residual_tracks!(df::AbstractDataFrame, setup::PhotonPropSetu
         tgeo = calc_tgeo_tracks(
             setup.sources[1].position,
             setup.sources[1].direction,
-            target.position,
+            target.shape.position,
             setup.medium)
 
         subdf[!, :tres] = (subdf[:, :time] .- tgeo .- t0)
@@ -74,8 +80,8 @@ function calc_time_residual_cascades!(df::AbstractDataFrame, setup::PhotonPropSe
     t0 = setup.sources[1].time
     for (key, subdf) in pairs(groupby(df, :module_id))
         target = targ_id_map[key.module_id]
-        distance = norm(setup.sources[1].position .- target.position)
-        tgeo = calc_tgeo((distance - target.radius), setup.medium)
+        distance = norm(setup.sources[1].position .- target.shape.position)
+        tgeo = calc_tgeo(distance, target, setup.medium)
 
         subdf[!, :tres] = (subdf[:, :time] .- tgeo .- t0)
     end
@@ -91,6 +97,7 @@ function calc_time_residual!(df::AbstractDataFrame, setup::PhotonPropSetup)
 
 end
 
+#=
 function resample_simulation(hit_times, total_weights, downsample=1.0)
     wsum = sum(total_weights)
 
@@ -121,7 +128,7 @@ function resample_simulation(df::AbstractDataFrame; downsample=1.0, per_pmt=true
     resampled_hits = combine(groups, [time_col, :total_weight] => wrapped => time_col)
     return resampled_hits
 end
-
+=#
 
 
 end
