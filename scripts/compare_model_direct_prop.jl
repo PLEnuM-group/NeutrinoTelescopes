@@ -10,24 +10,26 @@ using HDF5
 using DataFrames
 
 
+model_path = joinpath(ENV["WORK"], "time_surrogate")
+
 models_casc = Dict(
-    "1" => joinpath(@__DIR__, "../data/extended_cascade_1_FNL.bson"),
-    "2" => joinpath(@__DIR__, "../data/extended_cascade_2_FNL.bson"),
-    "3" => joinpath(@__DIR__, "../data/extended_cascade_3_FNL.bson"),
-    "4" => joinpath(@__DIR__, "../data/extended_cascade_4_FNL.bson"),
-    "5" => joinpath(@__DIR__, "../data/extended_cascade_5_FNL.bson"),
+    "1" => joinpath(model_path, "extended/extended_casc_1_FNL.bson"),
+    "2" => joinpath(model_path, "extended/extended_casc_2_FNL.bson"),
+    "3" => joinpath(model_path, "extended/extended_casc_3_FNL.bson"),
+    "4" => joinpath(model_path, "extended/extended_casc_4_FNL.bson"),
+    "5" => joinpath(model_path, "extended/extended_casc_5_FNL.bson"),
 )
 
 # Tracks are simulated only at 100TeV!!!
 models_track = Dict(
-    "1" => joinpath(@__DIR__, "../data/infinite_bare_muon_1_FNL.bson"),
-    "2" => joinpath(@__DIR__, "../data/infinite_bare_muon_2_FNL.bson"),
-    "3" => joinpath(@__DIR__, "../data/infinite_bare_muon_3_FNL.bson"),
-    "4" => joinpath(@__DIR__, "../data/infinite_bare_muon_4_FNL.bson"),
-    "5" => joinpath(@__DIR__, "../data/infinite_bare_muon_5_FNL.bson"),
+    "1" => joinpath(model_path, "infinite_track/infinite_bare_muon_1_FNL.bson"),
+    "2" => joinpath(model_path, "infinite_track/infinite_bare_muon_2_FNL.bson"),
+    "3" => joinpath(model_path, "infinite_track/infinite_bare_muon_3_FNL.bson"),
+    "4" => joinpath(model_path, "infinite_track/infinite_bare_muon_4_FNL.bson"),
+    "5" => joinpath(model_path, "infinite_track/infinite_bare_muon_5_FNL.bson"),
 )
 
-targets_single = [make_pone_module(@SVector[-25.0, 0.0, -450.0], 1)]
+targets_single = [POM(@SVector[-25.0, 0.0, -450.0], 1)]
 targets_line = make_detector_line(@SVector[-25.0, 0.0, 0.0], 20, 50, 1)
 targets_three_l = [
     make_detector_line(@SVector[-25.0, 0.0, 0.0], 20, 50, 1)
@@ -36,11 +38,11 @@ targets_three_l = [
 targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
 
 detectors = Dict("Single" => targets_single, "Line" => targets_line, "Tri" => targets_three_l, "Hex" => targets_hex)
-medium = make_cascadia_medium_properties(0.99f0)
+medium = make_cascadia_medium_properties(0.95f0)
 
-pos = SA[-25.0, 0, -460]
-dir_theta = 1.5
-dir_phi = 1.3
+pos = SA[-15.0, 10, -460]
+dir_theta = 0.6
+dir_phi = 0.1
 dir = sph_to_cart(dir_theta, dir_phi)
 energy = 3e4
 
@@ -49,7 +51,7 @@ particles = [
     Particle(pos, dir, 0.0, energy, 0.0, PEMinus),
 ]
 
-hits = mc_expectation(particles, targets_single, 1);
+hits = mc_expectation(particles, targets_single, 1, medium);
 compare_mc_model(particles, targets_single, models_casc, medium, hits)
 
 

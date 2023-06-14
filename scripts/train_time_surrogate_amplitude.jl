@@ -40,18 +40,19 @@ model_name = parsed_args[:model_name]
 
 rng = MersenneTwister(31338)
 nsel_frac = 0.9
-hits, features, tf_vec = read_pmt_hits(fnames_casc, nsel_frac, rng)
-data = (tres=Float32.(hits), label=Float32.(features))
+hits, features, tf_vec = read_pmt_number_of_hits(fnames_casc, nsel_frac, rng)
 
-hparams = RQNormFlowHParams(
-    K=12,
+data = (nhits=hits, labels=features)
+
+
+hparams = PoissonExpModel(
     batch_size=5000,
     mlp_layers = 2,
     mlp_layer_size = 512,
-    lr = 0.001,
-    lr_min = 1E-7,
+    lr = 0.002,
+    lr_min = 1E-5,
     epochs = 100,
-    dropout = 0.1,
+    dropout = 0,
     non_linearity = "relu",
     seed = 31338,
     l2_norm_alpha = 0.0,
@@ -61,4 +62,5 @@ hparams = RQNormFlowHParams(
 )
 
 
-kfold_train_model(data, outpath, model_name, tf_vec, 5, hparams)
+
+kfold_train_model(data, outpath, model_name, tf_vec, 2, hparams)

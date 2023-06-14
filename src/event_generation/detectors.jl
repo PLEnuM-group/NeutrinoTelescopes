@@ -19,7 +19,7 @@ get_detector_medium(d::Detector) = d.medium
 
 function get_bounding_cylinder(d::Detector; padding_top=50., padding_side=50.)
     modules = get_detector_modules(d)
-    positions = reduce(hcat, [m.position for m in modules])
+    positions = reduce(hcat, [m.shape.position for m in modules])
     center_xyz = mean(positions, dims=2)[:]
     radius = maximum(norm.(positions[1:2, :] .- center_xyz[1:2]))
     height = maximum(abs.(extrema(positions[3, :] .- center_xyz[3])))
@@ -30,7 +30,7 @@ end
 
 
 
-function make_detector_line(position, n_modules, vert_spacing, module_id_start=1, mod_constructor=make_pone_module)
+function make_detector_line(position, n_modules, vert_spacing, module_id_start=1, mod_constructor=POM)
 
     line = [
         mod_constructor(SVector{3}(position .- (i - 1) .* [0, 0, vert_spacing]), i + module_id_start)
@@ -39,7 +39,7 @@ function make_detector_line(position, n_modules, vert_spacing, module_id_start=1
     return line
 end
 
-function make_hex_detector(n_side, dist, n_per_line, vert_spacing; z_start=0, mod_constructor=make_pone_module, truncate=0)
+function make_hex_detector(n_side, dist, n_per_line, vert_spacing; z_start=0, mod_constructor=POM, truncate=0)
 
     modules = []
     line_id = 1

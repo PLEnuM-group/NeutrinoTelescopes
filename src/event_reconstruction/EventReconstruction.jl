@@ -11,10 +11,9 @@ include("geometric_features.jl")
 
 export mc_expectation, calc_resolution_maxlh
 
-function mc_expectation(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:D}, seed) where {T,N,L,D<:SphericalMultiPMTDetector{N,L,T}}
+function mc_expectation(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, seed, medium::MediumProperties)
 
     wl_range = (300.0f0, 800.0f0)
-    medium = make_cascadia_medium_properties(0.99f0)
     spectrum = CherenkovSpectrum(wl_range, medium)
 
     sources = [particle_shape(p) isa Cascade ?
@@ -22,9 +21,7 @@ function mc_expectation(particles::AbstractVector{<:Particle}, targets::Abstract
                CherenkovTrackEmitter(convert(Particle{Float32}, p), medium, wl_range)
                for p in particles]
 
-    targets_c::Vector{MultiPMTDetector{Float32,N,L}} = targets
-
-    @show eltype(targets_c)
+    targets_c::Vector{POM{Float32}} = convert(Vector{POM{Float32}}, targets)
 
     photon_setup = PhotonPropSetup(sources, targets_c, medium, spectrum, seed)
     photons = propagate_photons(photon_setup)

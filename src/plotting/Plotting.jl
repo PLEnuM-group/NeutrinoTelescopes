@@ -11,6 +11,7 @@ using StaticArrays
 using BSON: @load
 using LinearAlgebra
 using ...Processing
+using DataFrames
 
 export compare_mc_model
 export plot_hits_on_module
@@ -20,10 +21,9 @@ function compare_mc_model(
     targets::AbstractVector{<:PhotonTarget},
     models::Dict,
     medium::MediumProperties,
-    hits)
+    hits; oversampling=1)
 
     c_n = c_at_wl(800.0f0, medium)
-
 
     fig = Figure(resolution=(1500, 1000))
     ga = fig[1, 1] = GridLayout(4, 4)
@@ -33,22 +33,21 @@ function compare_mc_model(
         mask = hits[:, :pmt_id] .== i
         ax = Axis(ga[col+1, row+1], xlabel="Time Residual(ns)", ylabel="Photons / time", title="PMT $i",
         )
-        hist!(ax, hits[mask, :tres], bins=-20:3:100, weights=hits[mask, :total_weight], color=:orange, normalization=:density,)
+        hist!(ax, hits[mask, :tres], bins=-20:3:100, color=:orange, normalization=:density, weights=fill(1/oversampling, sum(mask)))
     end
 
     n_pmt = get_pmt_count(eltype(targets))
 
-    t_geos = repeat([calc_tgeo(norm(particles[1].position - t.position) - t.radius, c_n) for t in targets], n_pmt)
+    t_geos = repeat([calc_tgeo(norm(particles[1].position - t.shape.position) - t.shape.radius, c_n) for t in targets], n_pmt)
     t0 = particles[1].time
 
     times = -20:1:100
-    for (mname, model_path) in models
-        @load model_path model hparams tf_vec
+    for (mname, model) in models
 
         shape_lhs = []
         local log_expec
         for t in times
-            _, shape_lh, log_expec = SurrogateModels.evaluate_model(particles, Vector.(eachrow(t .+ t_geos .+ t0)), targets, gpu(model), tf_vec, c_n)
+            _, shape_lh, log_expec = SurrogateModels.evaluate_model(particles, Vector.(eachrow(t .+ t_geos .+ t0)), targets, model, c_n)
             push!(shape_lhs, collect(shape_lh))
         end
 

@@ -14,7 +14,7 @@ using HDF5
 using StatsBase
 using LinearAlgebra
 using Flux.Optimise
-using BSON: @save
+using BSON: @save, load
 using Base.Iterators
 using PoissonRandom
 using LogExpFunctions
@@ -23,20 +23,37 @@ using PhysicsTools
 using PhotonPropagation
 using ParameterSchedulers
 using ParameterSchedulers: Scheduler
+using StructTypes
 
 
 using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow
 using ...Processing
 
-export ArrivalTimeSurrogate, RQSplineModel
+export ArrivalTimeSurrogate, RQSplineModel, PhotonSurrogate
 export kfold_train_model
 export get_log_amplitudes, unfold_energy_losses, t_first_likelihood
 export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_likelihood, track_likelihood_energy_unfolding
 export sample_cascade_event, evaluate_model, sample_multi_particle_event
-export create_pmt_table, preproc_labels, read_pmt_hits, calc_flow_input, fit_trafo_pipeline, log_likelihood_with_poisson
-export train_time_expectation_model, train_model!, RQNormFlowHParams
-export setup_optimizer, setup_time_expectation_model, setup_dataloaders
+export create_pmt_table, preproc_labels, read_pmt_hits, fit_trafo_pipeline, log_likelihood_with_poisson, read_pmt_number_of_hits
+export calc_flow_input!, calc_flow_input
+export train_model!, RQNormFlowHParams, PoissonExpModel
+export setup_optimizer, setup_model, setup_dataloaders
 export Normalizer
+
+
+struct Normalizer{T}
+    mean::T
+    σ::T
+end
+
+Normalizer(x::AbstractVector) = Normalizer(mean(x), std(x))
+(norm::Normalizer)(x::Number) = (x - norm.mean) / norm.σ
+
+function fit_normalizer!(x::AbstractVector)
+    tf = Normalizer(x)
+    x .= tf.(x)
+    return x, tf
+end
 
 
 abstract type ArrivalTimeSurrogate end
@@ -70,6 +87,22 @@ end
 # Make embedding parameters trainable
 Flux.@functor NNRQNormFlow (embedding,)
 
+struct PhotonSurrogate
+    amp_model::Chain
+    amp_transformations::Vector{Normalizer}
+    time_model::RQSplineModel
+    time_transformations::Vector{Normalizer}
+end
+
+function PhotonSurrogate(fname_amp, fname_time)
+
+    b1 = load(fname_amp)
+    b2 = load(fname_time)
+    return PhotonSurrogate(b1[:model], b1[:tf_vec], b2[:model], b2[:tf_vec])
+
+end
+
+Flux.gpu(s::PhotonSurrogate) = PhotonSurrogate(gpu(s.amp_model), s.amp_transformations, gpu(s.time_model), s.time_transformations)
 
 function create_mlp_embedding(;
     hidden_structure::AbstractVector{<:Integer},
@@ -141,13 +174,9 @@ Evaluate normalizing flow at values `x` with conditional values `cond`.
 Returns logpdf and log-expectation
 """
 function (m::RQSplineModel)(x, cond)
-    params = m.embedding(Float64.(cond))
-
-    spline_params = params[1:end-1, :]
-    logpdf_eval = eval_transformed_normal_logpdf(x, spline_params, m.range_min, m.range_max)
-    log_expec = params[end, :]
-    return logpdf_eval, log_expec
-
+    params = m.embedding(cond)
+    logpdf_eval = eval_transformed_normal_logpdf(x, params, m.range_min, m.range_max)
+    return logpdf_eval
 end
 
 
@@ -157,30 +186,49 @@ end
 Evaluate model and return sum of logpdfs of normalizing flow and poisson
 """
 function log_likelihood_with_poisson(x::NamedTuple, model::ArrivalTimeSurrogate)
+
     logpdf_eval, log_expec = model(x[:tres], x[:label])
+    non_zero_mask = x[:nhits] .> 0
+    logpdf_eval = logpdf_eval .* non_zero_mask
 
     # poisson: log(exp(-lambda) * lambda^k)
     poiss_f = x[:nhits] .* log_expec .- exp.(log_expec) .- loggamma.(x[:nhits] .+ 1.0)
 
+    # sets correction to nhits of nhits > 0 and to 0 for nhits == 0
+    # avoids nans
+    correction = x[:nhits] .+ (.!non_zero_mask)
+
     # correct for overcounting the poisson factor
-    poiss_f = poiss_f ./ x[:nhits]
+    poiss_f = poiss_f ./ correction
 
     return -(sum(logpdf_eval) + sum(poiss_f)) / length(x[:tres])
 end
 
 
 """
-    log_likelihood_with_poisson(x::NamedTuple, model::RQNormFlow)
+log_likelihood(x::NamedTuple, model::ArrivalTimeSurrogate)
 
-Evaluate model and return sum of logpdfs of normalizing flow and poisson
+Evaluate model and return sum of logpdfs of normalizing flow
 """
 function log_likelihood(x::NamedTuple, model::ArrivalTimeSurrogate)
-    logpdf_eval = model(x[:tres], x[:label], false)
+    logpdf_eval = model(x[:tres], x[:label])
     return -sum(logpdf_eval) / length(x[:tres])
 end
 
 
-Base.@kwdef struct RQNormFlowHParams
+function log_poisson_likelihood(x::NamedTuple, model)
+    
+    # one expectation per PMT (16 x batch_size)
+    log_expec = model(x[:labels])
+    poiss_f = x[:nhits] .* log_expec .- exp.(log_expec) .- loggamma.(x[:nhits] .+ 1.0)
+
+    return -sum(poiss_f) / size(x[:labels], 2)
+end
+
+abstract type HyperParams end
+
+
+Base.@kwdef struct RQNormFlowHParams <: HyperParams
     K::Int64 = 10
     batch_size::Int64 = 5000
     mlp_layers::Int64 = 2
@@ -197,7 +245,26 @@ Base.@kwdef struct RQNormFlowHParams
     resnet = false
 end
 
-function setup_time_expectation_model(hparams::RQNormFlowHParams)
+
+Base.@kwdef struct PoissonExpModel <: HyperParams
+    batch_size::Int64 = 5000
+    mlp_layers::Int64 = 2
+    mlp_layer_size::Int64 = 512
+    lr::Float64 = 0.001
+    lr_min::Float64 = 1E-5
+    epochs::Int64 = 50
+    dropout::Float64 = 0.1
+    non_linearity::String = "relu"
+    seed::Int64 = 31338
+    l2_norm_alpha = 0.0
+    adam_beta_1 = 0.9
+    adam_beta_2 = 0.999
+    resnet = false
+end
+
+StructTypes.StructType(::Type{<:HyperParams}) = StructTypes.Struct()
+
+function setup_model(hparams::RQNormFlowHParams)
     hidden_structure = fill(hparams.mlp_layer_size, hparams.mlp_layers)
 
     non_lins = Dict("relu" => relu, "tanh" => tanh)
@@ -205,7 +272,7 @@ function setup_time_expectation_model(hparams::RQNormFlowHParams)
 
     # 3 K + 1 for spline, 1 for shift, 1 for scale, 1 for log-expectation
     n_spline_params = 3 * hparams.K + 1
-    n_out = n_spline_params + 3
+    n_out = n_spline_params + 2
 
     embedding = create_mlp_embedding(
         hidden_structure=hidden_structure,
@@ -216,15 +283,35 @@ function setup_time_expectation_model(hparams::RQNormFlowHParams)
         split_final=false)
 
     model = NNRQNormFlow(embedding, hparams.K, -20.0, 100.0)
-    return model
+    return model, log_likelihood
 end
 
-function setup_dataloaders(train_data, test_data, hparams::RQNormFlowHParams)
 
-    rng = Random.MersenneTwister(hparams.seed)
+
+function setup_model(hparams::PoissonExpModel)
+    hidden_structure = fill(hparams.mlp_layer_size, hparams.mlp_layers)
+
+    non_lins = Dict("relu" => relu, "tanh" => tanh)
+    non_lin = non_lins[hparams.non_linearity]
+
+    embedding = create_mlp_embedding(
+        hidden_structure=hidden_structure,
+        n_in=8,
+        n_out=16,
+        dropout=hparams.dropout,
+        non_linearity=non_lin,
+        split_final=false)
+
+    
+    return embedding, log_poisson_likelihood
+end
+
+
+function setup_dataloaders(train_data, test_data, seed::Integer, batch_size::Integer)
+    rng = Random.MersenneTwister(seed)
     train_loader = DataLoader(
         train_data,
-        batchsize=hparams.batch_size,
+        batchsize=batch_size,
         shuffle=true,
         rng=rng)
 
@@ -236,9 +323,14 @@ function setup_dataloaders(train_data, test_data, hparams::RQNormFlowHParams)
     return train_loader, test_loader
 end
 
-function setup_dataloaders(data, hparams::RQNormFlowHParams)
-    train_data, test_data = splitobs(data, at=0.7)
-    return setup_dataloaders(train_data, test_data, hparams)
+
+function setup_dataloaders(train_data, test_data, hparams::HyperParams)
+    setup_dataloaders(train_data, test_data, hparams.seed, hparams.batch_size)   
+end
+
+function setup_dataloaders(data, args...)
+    train_data, test_data = splitobs(data, at=0.7, shuffle=true)
+    return setup_dataloaders(train_data, test_data, args...)
 end
 
 
@@ -267,39 +359,13 @@ function setup_optimizer(hparams, n_batches)
 
     opt = Adam(hparams.lr, (hparams.adam_beta_1, hparams.adam_beta_2))
     if hparams.l2_norm_alpha > 0
-        opt = Optimiser(WeightDecay(hparams.l2_norm_alpha), opt)
+        opt = OptimiserChain(WeightDecay(hparams.l2_norm_alpha), opt)
     end
     schedule = Interpolator(CosAnneal(λ0=hparams.lr_min, λ1=hparams.lr, period=hparams.epochs), n_batches)
     return Scheduler(schedule, opt)
 end
 
-function train_time_expectation_model(data, use_gpu=true, use_early_stopping=true, checkpoint_path=nothing, model_name="RQNormFlow"; hyperparams...)
 
-    hparams = RQNormFlowHParams(; hyperparams...)
-    model = setup_time_expectation_model(hparams)
-
-    logdir = joinpath(@__DIR__, "../../tensorboard_logs/$model_name")
-    lg = TBLogger(logdir)
-
-    train_loader, test_loader = setup_dataloaders(data, hparams)
-
-    opt = setup_optimizer(hparams, length(train_loader))
-
-    device = use_gpu ? gpu : cpu
-    model, final_test_loss, best_test_loss, best_test_epoch, time_elapsed = train_model!(
-        optimizer=opt,
-        train_loader=train_loader,
-        test_loader=test_loader,
-        model=model,
-        loss_function=log_likelihood_with_poisson,
-        hparams=hparams,
-        logger=lg,
-        device=device,
-        use_early_stopping=use_early_stopping,
-        checkpoint_path=checkpoint_path)
-
-    return model, final_test_loss, best_test_loss, best_test_epoch, hparams, opt, time_elapsed
-end
 
 
 function train_model!(;
@@ -359,10 +425,12 @@ function train_model!(;
         #param_dict = Dict{String,Any}()
         #fill_param_dict!(param_dict, model, "")
 
-        with_logger(logger) do
-            @info "loss" train = total_train_loss test = total_test_loss
-            @info "hparams" lr = optimizer.optim.eta log_step_increment = 0
-            #@info "model" params = param_dict log_step_increment = 0
+        if !isnothing(logger)
+            with_logger(logger) do
+                @info "loss" train = total_train_loss test = total_test_loss
+                @info "hparams" lr = optimizer.optim.eta log_step_increment = 0
+                #@info "model" params = param_dict log_step_increment = 0
+            end
 
         end
         println("Epoch: $epoch, Train: $total_train_loss Test: $total_test_loss")
@@ -380,34 +448,7 @@ function train_model!(;
 end
 
 
-function create_pmt_table(grp, limit=true)
-    hits = DataFrame(grp[:, :], [:tres, :pmt_id])
-    for (k, v) in attrs(grp)
-        hits[!, k] .= v
-    end
 
-    hits = DataFrames.transform!(groupby(hits, :pmt_id), nrow => :hits_per_pmt)
-
-    if limit && (nrow(hits) > 200)
-        hits = hits[1:200, :]
-    end
-
-    return hits
-end
-
-struct Normalizer{T}
-    mean::T
-    σ::T
-end
-
-Normalizer(x::AbstractVector) = Normalizer(mean(x), std(x))
-(norm::Normalizer)(x::Number) = (x - norm.mean) / norm.σ
-
-function fit_normalizer!(x::AbstractVector)
-    tf = Normalizer(x)
-    x .= tf.(x)
-    return x, tf
-end
 
 
 function dataframe_to_matrix(df)
@@ -421,41 +462,116 @@ function dataframe_to_matrix(df)
     return feature_matrix
 end
 
-function apply_feature_transform(m, tf_vec, n_pmt)
 
-    lev = 1:n_pmt
-    one_hot = (lev .== permutedims(m[9, :]))
 
+function apply_feature_transform(m, tf_vec)
+    # Not mutating version...
     tf_matrix = mapreduce(
         t -> permutedims(t[2].(t[1])),
         vcat,
         zip(eachrow(m), tf_vec)
     )
-
-    return vcat(one_hot, tf_matrix)
+    return tf_matrix
 end
 
+function apply_feature_transform!(m, tf_vec, output)
+    # Mutating version...
+    for (in_row, out_row, tf) in zip(eachrow(m), eachrow(output), tf_vec)
+        out_row[:] .= tf.(in_row)
+    end
+    return output
+end
 
-function preproc_labels(df, n_pmt, tf_vec=nothing)
-
-    feature_matrix = dataframe_to_matrix(df)
-
-    if isnothing(tf_vec)
-        tf_vec = Vector{Normalizer{Float64}}(undef, 8)
-        for (row, ix) in zip(eachrow(feature_matrix), eachindex(tf_vec))
-            tf = Normalizer(row)
-            tf_vec[ix] = tf
-        end
+function initialize_normalizers(feature_matrix)
+    tf_vec = Vector{Normalizer{Float64}}(undef, 8)
+    for (row, ix) in zip(eachrow(feature_matrix), eachindex(tf_vec))
+        tf = Normalizer(row)
+        tf_vec[ix] = tf
     end
 
-    feature_matrix = apply_feature_transform(feature_matrix, tf_vec, n_pmt)
+    return tf_vec
+end
 
+function preproc_labels(feature_matrix::AbstractMatrix, tf_vec=nothing)
+    if isnothing(tf_vec)
+        tf_vec = initialize_normalizers(feature_matrix)       
+    end
+    feature_matrix = apply_feature_transform(feature_matrix, tf_vec)
     return feature_matrix, tf_vec
 end
 
-function read_pmt_hits(fnames, nsel_frac=0.8, rng=nothing)
+function preproc_labels!(feature_matrix::AbstractMatrix, output, tf_vec=nothing)
+    if isnothing(tf_vec)
+        tf_vec = initialize_normalizers(feature_matrix)       
+    end
+    feature_matrix = apply_feature_transform!(feature_matrix, tf_vec, output)
+    return feature_matrix, tf_vec
+end
 
-    all_hits = []
+
+function append_onehot_pmt(features, pmt_ixs)
+    one_hot = zeros(Float64, 16, size(features, 2))
+    lev = 1:16
+    one_hot[:, :] .= (lev .== permutedims(pmt_ixs))
+    return vcat(features, one_hot)
+end
+
+
+function count_hit_per_pmt(grp)
+
+    feature_vector = zeros(Float64, 8)
+    hit_vector = zeros(Float64, 16)
+
+    grp_attrs = attrs(grp)
+    
+    feature_vector[1] = log.(grp_attrs["distance"])
+    feature_vector[2] = log.(grp_attrs["energy"])
+
+    feature_vector[3:5] = reduce(hcat, sph_to_cart.(grp_attrs["dir_theta"], grp_attrs["dir_phi"]))
+    feature_vector[6:8] = reduce(hcat, sph_to_cart.(grp_attrs["pos_theta"], grp_attrs["pos_phi"]))
+
+    if size(grp, 1) == 0
+        return feature_vector, hit_vector
+    end
+
+    hits = DataFrame(grp[:, :], [:tres, :pmt_id])
+
+    hits_per_pmt = combine(groupby(hits, :pmt_id), nrow)
+    pmt_id_ix = Int.(hits_per_pmt[:, :pmt_id])
+    hit_vector[pmt_id_ix] .= hits_per_pmt[:, :nrow]
+
+    return feature_vector, hit_vector
+end
+
+function create_pmt_table(grp, limit=nothing)
+
+    out_length = !isnothing(limit) ? min(limit, size(grp, 1)) : size(grp, 1)
+
+    feature_matrix = zeros(Float64, 8, out_length)
+    hit_times = zeros(Float64, out_length)
+
+    grp_attrs = attrs(grp)
+    
+    feature_matrix[1, :] .= log.(grp_attrs["distance"])
+    feature_matrix[2, :] .= log.(grp_attrs["energy"])
+
+    feature_matrix[3:5, :] .= permutedims(reduce(hcat, sph_to_cart.(grp_attrs["dir_theta"], grp_attrs["dir_phi"])))
+    feature_matrix[6:8, :] .= permutedims(reduce(hcat, sph_to_cart.(grp_attrs["pos_theta"], grp_attrs["pos_phi"])))
+
+    data_mat = grp[1:out_length, :]
+
+    hit_times = data_mat[:, 1]
+    pmt_ixs = data_mat[:, 2]
+
+
+    return feature_matrix, pmt_ixs, hit_times
+
+end
+
+
+function read_pmt_number_of_hits(fnames, nsel_frac=0.8, rng=default_rng())
+    features = Vector{Vector{Float64}}(undef, 0)
+    hits = Vector{Vector{Float64}}(undef, 0)
     for fname in fnames
         h5open(fname, "r") do fid
             if !isnothing(rng)
@@ -470,25 +586,65 @@ function read_pmt_hits(fnames, nsel_frac=0.8, rng=nothing)
                 index_end = Int(ceil(length(datasets) * nsel_frac))
             end
 
-
             for grpn in datasets[1:index_end]
                 grp = fid["pmt_hits"][grpn]
-                hits = create_pmt_table(grp)
-                push!(all_hits, hits)
+                f,h = count_hit_per_pmt(grp)
+                push!(features, f)
+                push!(hits, h)
             end
+
         end
     end
 
-    rnd_ixs = shuffle(rng, 1:length(all_hits))
+    hits = reduce(hcat, hits)
+    features = reduce(hcat, features)
+    features, tf_vec = preproc_labels!(features, features)
 
-    all_hits = all_hits[rnd_ixs]
+    return hits, features, tf_vec
 
-    hits_df = reduce(vcat, all_hits)
+end
 
-    tres = hits_df[:, :tres]
-    nhits = hits_df[:, :hits_per_pmt]
-    cond_labels, tf_dict = preproc_labels(hits_df, 16)
-    return tres, nhits, cond_labels, tf_dict
+
+function read_pmt_hits(fnames, nsel_frac=0.8, rng=default_rng())
+
+    features = Vector{Matrix{Float64}}(undef, 0)
+    pmt_ixs = Vector{Vector{Float64}}(undef, 0)
+    hits = Vector{Vector{Float64}}(undef, 0)
+
+    for fname in fnames
+        h5open(fname, "r") do fid
+            if !isnothing(rng)
+                datasets = shuffle(rng, keys(fid["pmt_hits"]))
+            else
+                datasets = keys(fid["pmt_hits"])
+            end
+
+            if nsel_frac == 1
+                index_end = length(datasets)
+            else
+                index_end = Int(ceil(length(datasets) * nsel_frac))
+            end
+
+            for grpn in datasets[1:index_end]
+                grp = fid["pmt_hits"][grpn]
+                if size(grp, 1) == 0
+                    continue
+                end
+                f, pix, h = create_pmt_table(grp, 100)
+                push!(features, f)
+                push!(pmt_ixs, pix)
+                push!(hits, h)
+            end
+        end
+    end
+    hits = reduce(vcat, hits)
+    features = reduce(hcat, features)
+    pmt_ixs = reduce(vcat, pmt_ixs)
+
+    features, tf_vec = preproc_labels!(features, features)
+    features = append_onehot_pmt(features, pmt_ixs)
+
+    return hits, features, tf_vec
 end
 
 read_hdf(fname::String, nsel, rng) = read_hdf([fname], nsel, rng)
@@ -512,7 +668,7 @@ function calc_flow_input(particle::P, target::PhotonTarget, tf_vec::AbstractVect
     particle_pos = particle.position
     particle_dir = particle.direction
     particle_energy = particle.energy
-    target_pos = target.position
+    target_pos = target.shape.position
 
     rel_pos = particle_pos .- target_pos
     # TODO: Remove hardcoded max distance
@@ -522,7 +678,7 @@ function calc_flow_input(particle::P, target::PhotonTarget, tf_vec::AbstractVect
     n_pmt = get_pmt_count(target)
 
     T = promote_type(PT, DT, TT, ET, LT, typeof(dist))
-    feature_matrix::Matrix{T} = repeat(
+    features::Matrix{T} = repeat(
         [
             log(dist)
             log(particle_energy)
@@ -531,9 +687,10 @@ function calc_flow_input(particle::P, target::PhotonTarget, tf_vec::AbstractVect
         ],
         1, n_pmt)
 
-    feature_matrix = vcat(feature_matrix, permutedims(1:n_pmt))
+    features, _ = preproc_labels(features, tf_vec)
+    features = append_onehot_pmt(features, 1:n_pmt)
 
-    return apply_feature_transform(feature_matrix, tf_vec, n_pmt)
+    return features
 
 end
 
@@ -556,7 +713,11 @@ function calc_flow_input(particles::AbstractVector{<:Particle}, targets::Abstrac
 end
 
 
-function calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec, output)
+function calc_flow_input!(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec, output)
+
+    if size(output, 1) != 8 + 16
+        error("Output buffer gas wrong size")
+    end
 
     n_pmt = get_pmt_count(eltype(targets))
     out_ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
@@ -564,14 +725,12 @@ function calc_flow_input(particles::AbstractVector{<:Particle}, targets::Abstrac
     for (p_ix, t_ix) in product(eachindex(particles), eachindex(targets))
         particle = particles[p_ix]
         target = targets[t_ix]
-        rel_pos = particle.position .- target.position
+        rel_pos = particle.position .- target.shape.position
         # TODO: Remove hardcoded max distance
         dist = clamp(norm(rel_pos), 0., 200.)
         normed_rel_pos = rel_pos ./ dist
-
       
-
-        for pmt_ix in 1:n_pmt
+        @inbounds for pmt_ix in 1:n_pmt
 
             ix = out_ix[pmt_ix, p_ix, t_ix]
 
@@ -579,13 +738,11 @@ function calc_flow_input(particles::AbstractVector{<:Particle}, targets::Abstrac
             output[2, ix] = log(particle.energy)
             output[3:5, ix] = particle.direction
             output[6:8, ix] = normed_rel_pos
-            output[9, ix] = pmt_ix
+            output[9:24, ix] = (pmt_ix .== 1:16)
+
         end
     end
-
-    feature_matrix = @view output[:, 1:length(out_ix)]
-
-    return apply_feature_transform(feature_matrix, tf_vec, n_pmt)
+    return apply_feature_transform!(output, tf_vec, output) 
 end
 
 
@@ -633,7 +790,7 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
     log_expec_per_source = output[end, :]
     expec_per_source = exp.(log_expec_per_source) .* oversample
 
-    n_hits_per_source = pois_rand.(rng, expec_per_source)
+    n_hits_per_source = pois_rand.(rng, Float64.(expec_per_source))
     n_hits_per_source_rs = reshape(
         n_hits_per_source,
         n_pmt,
@@ -672,7 +829,7 @@ function sample_multi_particle_event(particles, targets, model, tf_vec, c_n, rng
             particle = particles[p_ix]
             this_n_hits = n_hits_per_source_rs[pmt_ix, p_ix, t_ix]
             if this_n_hits > 0
-                t_geo = calc_tgeo(norm(particle.position .- target.position) - target.radius, c_n)
+                t_geo = calc_tgeo(norm(particle.position .- target.shape.position) - target.shape.radius, c_n)
                 times_sel = selectors[pmt_ix, p_ix, t_ix]
                 data_this_target[data_selectors[p_ix]] = times[times_sel] .+ t_geo .+ particle.time
             end
@@ -702,20 +859,21 @@ Evaluate `model` for `particles` and ´targets`
 Returns:
     -log_expec_per_pmt: Log of expected photons per pmt. Shape: [n_pmt, 1, n_targets]
     -log_expec_per_src_pmt_rs: Log of expected photons per pmt and per particle. Shape [n_pmt, n_particles, n_targets]
-    -flow_params: Flattened input parameters to the normalizing flow
 """
-function get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=nothing)
+function get_log_amplitudes(particles, targets, model::PhotonSurrogate; feat_buffer=nothing)
     n_pmt = get_pmt_count(eltype(targets))
+
+    tf_vec = model.amp_transformations
 
     if isnothing(feat_buffer)
         input = calc_flow_input(particles, targets, tf_vec)
     else
-        input = calc_flow_input(particles, targets, tf_vec, feat_buffer)
+        input = calc_flow_input!(particles, targets, tf_vec, feat_buffer)
     end
-    output::Matrix{eltype(input)} = cpu(model.embedding(gpu(input)))
 
-    flow_params = output[1:end-1, :]
-    log_expec_per_src_trg = output[end, :]
+    input = input[1:8, 1:1]
+
+    log_expec_per_src_trg::Matrix{eltype(input)} = cpu(model.amp_model(gpu(input)))
 
     log_expec_per_src_pmt_rs = reshape(
         log_expec_per_src_trg,
@@ -723,7 +881,7 @@ function get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=nothi
 
     log_expec_per_pmt = LogExpFunctions.logsumexp(log_expec_per_src_pmt_rs, dims=2)
 
-    return log_expec_per_pmt, log_expec_per_src_pmt_rs, flow_params
+    return log_expec_per_pmt, log_expec_per_src_pmt_rs
 end
 
 
@@ -759,9 +917,12 @@ function shape_llh_generator(data; particles, targets, flow_params, rel_log_expe
 end
 
 
-function evaluate_model(particles, data, targets, model, tf_vec, c_n; feat_buffer=nothing)
 
-    log_expec_per_pmt, log_expec_per_src_pmt_rs, flow_params = get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=feat_buffer)
+
+
+function evaluate_model(particles, data, targets, model::PhotonSurrogate, c_n; feat_buffer=nothing)
+
+    log_expec_per_pmt, log_expec_per_src_pmt_rs = get_log_amplitudes(particles, targets, model; feat_buffer=feat_buffer)
 
     rel_log_expec = log_expec_per_src_pmt_rs .- log_expec_per_pmt
 
@@ -769,7 +930,16 @@ function evaluate_model(particles, data, targets, model, tf_vec, c_n; feat_buffe
     # Flattening log_expec_per_pmt with [:] will let the first dimension be the inner one
     poiss_llh = poisson_logpmf.(hits_per_target, log_expec_per_pmt[:])
 
-    shape_llh_gen = shape_llh_generator(data; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model, c_n=c_n)
+    if isnothing(feat_buffer)
+        input = calc_flow_input(particles, targets, model.time_transformations)
+    else
+        input = calc_flow_input!(particles, targets, model.time_transformations, feat_buffer)
+    end
+
+    flow_params = cpu(model.time_model.embedding(gpu(input)))
+
+
+    shape_llh_gen = shape_llh_generator(data; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model.time_model, c_n=c_n)
     return poiss_llh, shape_llh_gen, log_expec_per_pmt
 end
 
@@ -894,14 +1064,13 @@ function track_likelihood_energy_unfolding(dir_theta, dir_phi, position, time; s
     return multi_particle_likelihood(losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, amp_only=amp_only)
 end
 
-function kfold_train_model(data, outpath, model_name, tf_vec, k=5; hyperparams...)
-    hparams = RQNormFlowHParams(; hyperparams...)
-
+function kfold_train_model(data, outpath, model_name, tf_vec, n_folds, hparams::HyperParams)
+    
     logdir = joinpath(@__DIR__, "../../tensorboard_logs/$model_name")
 
-    for (model_num, (train_data, val_data)) in enumerate(kfolds(data; k=k))
+    for (model_num, (train_data, val_data)) in enumerate(kfolds(data; k=n_folds))
         lg = TBLogger(logdir)
-        model = setup_time_expectation_model(hparams)
+        model, loss_f = setup_model(hparams)
         chk_path = joinpath(outpath, "$(model_name)_$(model_num)")
 
         train_loader, test_loader = setup_dataloaders(train_data, val_data, hparams)
@@ -912,7 +1081,7 @@ function kfold_train_model(data, outpath, model_name, tf_vec, k=5; hyperparams..
             train_loader=train_loader,
             test_loader=test_loader,
             model=model,
-            loss_function=log_likelihood_with_poisson,
+            loss_function=loss_f,
             hparams=hparams,
             logger=lg,
             device=device,

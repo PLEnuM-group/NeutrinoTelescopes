@@ -83,14 +83,16 @@ function run_sim(
 
     calc_time_residual!(photons, setup)
     transform!(photons, :position => (p -> reduce(hcat, p)') => [:pos_x, :pos_y, :pos_z])
+    transform!(photons, :direction => (p -> reduce(hcat, p)') => [:dir_x, :dir_y, :dir_z])
     calc_total_weight!(photons, setup)
     photons[!, :total_weight] .*= base_weight
 
     save_hdf!(
         output_fname,
         "photons",
-        Matrix{Float64}(photons[:, [:tres, :pos_x, :pos_y, :pos_z, :total_weight]]),
+        Matrix{Float64}(photons[:, [:tres, :pos_x, :pos_y, :pos_z, :dir_x, :dir_y, :dir_z, :total_weight, :module_id, :wavelength]]),
         sim_attrs)
+    return nothing
 
 end
 
@@ -103,7 +105,6 @@ function run_sims(parsed_args)
     n_sims = parsed_args["n_sims"]
     n_skip = parsed_args["n_skip"]
     mode = Symbol(parsed_args["mode"])
-    n_resample = parsed_args["n_resample"]
     e_min = parsed_args["e_min"]
     e_max = parsed_args["e_max"]
     dist_min = parsed_args["dist_min"]
@@ -179,11 +180,6 @@ mode_choices = ["extended", "bare_infinite_track", "pointlike"]
     arg_type = Int
     required = false
     default = 0
-    "--n_resample"
-    help = "Number of resamples per photon sim"
-    arg_type = Int
-    required = false
-    default = 100
     "--mode"
     help = "Simulation Mode;  must be one of " * join(mode_choices, ", ", " or ")
     range_tester = (x -> x in mode_choices)

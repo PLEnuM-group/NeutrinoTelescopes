@@ -9,38 +9,34 @@ using PhysicsTools
 using PhotonPropagation
 using HDF5
 using StaticArrays
+using ArgParse
+using JSON3
 
 include("utils.jl")
 
-function resample_dataset(fname)
+function resample_dataset(infile, outfile, n_resample)
 
     group = "photons"
     
-    fid = h5open(fname, "r")
+    fid = h5open(infile, "r")
     datasets = keys(fid[group])
     close(fid)
 
     for ds in datasets
     
-        fid = h5open(fname)
+        fid = h5open(infile)
         photons = DataFrame(
-            fid[group][ds],
-            [:tres, :pos_x, :pos_y, :pos_z, :total_weight]
+            read(fid[group][ds]),
+            [:tres, :pos_x, :pos_y, :pos_z, :dir_x, :dir_y, :dir_z, :total_weight, :module_id, :wavelength]
         )
 
-        ats = attrs(fid[group][ds])
 
-        direction::SVector{3,Float32} = sph_to_cart(acos(ats["dir_costheta"]), ats["dir_phi"])
-        ppos =  JSON.read(ats["source_pos"], SVector{3, Float32})
+        sim_attrs = Dict(attrs(fid[group][ds]))
 
-        setup = make_setup(
-            Symbol(ats["mode"]),
-            ppos,
-            direction,
-            ats["energy"],
-            ats["seed"];
-            g=Float32(ats["g"])
-        )
+        direction::SVector{3,Float32} = sph_to_cart(acos(sim_attrs["dir_costheta"]), sim_attrs["dir_phi"])
+        ppos =  JSON3.read(sim_attrs["source_pos"], SVector{3, Float32})
+
+        target = POM(SA_F32[0, 0, 0], UInt16(1))
         
         close(fid)
 
@@ -50,11 +46,9 @@ function resample_dataset(fname)
             Sample a random rotation matrix and rotate the pmts on the module accordingly.
             =#
             orientation = rand(RotMatrix3)
-            hits = make_hits_from_photons(photons, setup, orientation)
+            hits = make_hits_from_photons(photons, [target], orientation)
 
-            if nrow(hits) < 10
-                continue
-            end
+           
 
             #=
             Rotating the module (active rotation) is equivalent to rotating the coordinate system
@@ -79,15 +73,41 @@ function resample_dataset(fname)
             sim_attrs["pos_theta"] = pos_theta
             sim_attrs["pos_phi"] = pos_phi
 
+            if nrow(hits) == 0
+                out_mat = Matrix{Float64}(undef, (0, 2))        
+            else
+                out_mat = Matrix{Float64}(hits[:, [:tres, :pmt_id]])
+            end
+
             save_hdf!(
-                fname,
+                outfile,
                 "pmt_hits",
-                Matrix{Float64}(hits[:, [:tres, :pmt_id]]),
+                out_mat,
                 sim_attrs)
         end
-    
-    
     end
 end
+
+
+s = ArgParseSettings()
+
+@add_arg_table s begin
+    "--infile"
+    help = "Input filename"
+    arg_type = String
+    required = true
+    "--outfile"
+    help = "Output filename"
+    arg_type = String
+    required = true
+    "--resample"
+    help = "Number of resamples"
+    arg_type = Int64
+    default = 100
+end
+
+parsed_args = parse_args(ARGS, s)
+
+resample_dataset(parsed_args["infile"], parsed_args["outfile"], parsed_args["resample"])
 
 

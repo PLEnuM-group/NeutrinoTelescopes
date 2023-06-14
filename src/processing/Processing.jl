@@ -24,7 +24,7 @@ export calc_time_residual_tracks!, calc_tgeo_tracks
 calc_tgeo(distance, c_n::Number) = distance / c_n
 calc_tgeo(distance, medium::MediumProperties) = calc_tgeo(distance, c_at_wl(800.0, medium))
 
-function calc_tgeo(distance, target::PhotonTarget{<:Spherical}, c_n_or_medium)
+function calc_tgeo(distance::Real, target::PhotonTarget{<:Spherical}, c_n_or_medium)
     return  calc_tgeo(distance - target.shape.radius, c_n_or_medium)
 end
 

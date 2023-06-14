@@ -12,6 +12,7 @@ using Rotations
 using LinearAlgebra
 using DataFrames
 using Zygote
+using DataStructures
 
 using SpecialFunctions
 using StatsBase
@@ -23,33 +24,32 @@ using Base.Iterators
 using Formatting
 
 
+model_path = joinpath(ENV["WORK"], "time_surrogate")
 
-
-models = Dict(
-    "1" => joinpath(@__DIR__, "../data/full_kfold_1_FNL.bson"),
-    "2" => joinpath(@__DIR__, "../data/full_kfold_2_FNL.bson"),
-    "3" => joinpath(@__DIR__, "../data/full_kfold_3_FNL.bson"),
-    "4" => joinpath(@__DIR__, "../data/full_kfold_4_FNL.bson"),
-    "5" => joinpath(@__DIR__, "../data/full_kfold_5_FNL.bson"),
-    #"FULL" => joinpath(@__DIR__, "../assets/rq_spline_model_l2_0_FULL_FNL.bson")
+models_casc = Dict(
+    "1" => joinpath(model_path, "extended/extended_casc_1_FNL.bson"),
+    "2" => joinpath(model_path, "extended/extended_casc_2_FNL.bson"),
+    "3" => joinpath(model_path, "extended/extended_casc_3_FNL.bson"),
+    "4" => joinpath(model_path, "extended/extended_casc_4_FNL.bson"),
+    "5" => joinpath(model_path, "extended/extended_casc_5_FNL.bson"),
 )
 
-targets_single = [make_pone_module(@SVector[-25., 0., -450.], 1)]
-targets_line = make_detector_line(@SVector[-25., 0.0, 0.0], 20, 50, 1)
+targets_single = [POM(@SVector[-25.0, 0.0, -450.0], 1)]
+targets_line = make_detector_line(@SVector[-25.0, 0.0, 0.0], 20, 50, 1)
 targets_three_l = [
-    make_detector_line(@SVector[-25., 0.0, 0.0], 20, 50, 1)
-    make_detector_line(@SVector[25., 0.0, 0.0], 20, 50, 21)
-    make_detector_line(@SVector[0., sqrt(50^2-25^2), 0.0], 20, 50, 41)]
+    make_detector_line(@SVector[-25.0, 0.0, 0.0], 20, 50, 1)
+    make_detector_line(@SVector[25.0, 0.0, 0.0], 20, 50, 21)
+    make_detector_line(@SVector[0.0, sqrt(50^2 - 25^2), 0.0], 20, 50, 41)]
 targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
 
 detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => targets_three_l, "Hex" => targets_hex)
-medium = make_cascadia_medium_properties(0.99f0)
+medium = make_cascadia_medium_properties(0.95f0)
 
 
 
-function calc_fisher_matrix(particle; targets, model, tf_vec, c_n, use_grad=false, rng=nothing)
+function calc_fisher_matrix(particle; targets, model, tf_vec, c_n, use_grad=false, rng=nothing, n_samples=30)
     pos = particle.position
-    targets_range = [t for t in targets if norm(t.position .- pos) < 200]
+    targets_range = [t for t in targets if norm(t.shape.position .- pos) < 200]
     if length(targets_range) == 0
         return zeros(3, 3)
     end
@@ -59,7 +59,7 @@ function calc_fisher_matrix(particle; targets, model, tf_vec, c_n, use_grad=fals
     gpu_model = gpu(model)
 
     matrices = []
-    for __ in 1:100
+    for __ in 1:n_samples
         samples = sample_cascade_event(10^logenergy, dir_theta, dir_phi, pos, 0.; targets=targets_range, model=model, tf_vec=tf_vec, rng=rng, c_n=c_n)
         if use_grad
             logl_grad = collect(Zygote.gradient(
@@ -75,31 +75,45 @@ function calc_fisher_matrix(particle; targets, model, tf_vec, c_n, use_grad=fals
         end
     end
 
-    return mean(matrices)
+    fisher_matrix = mean(matrices)
+
+    # Symmetrize
+
+    fisher_matrix = 0.5 * (fisher_matrix + fisher_matrix')
+
+    return fisher_matrix
 
 end
 
 
-function calc_fisher(logenergy, dir_theta, dir_phi, n, targets, model, tf_vec, c_n; use_grad=false, rng=nothing)
+function calc_fisher(logenergy, dir_theta, dir_phi, n, targets, model, tf_vec, c_n; use_grad=false, rng=nothing, cyl_height=1000, cyl_center=SA[0, 0, -450])
     matrices = []
     dir = sph_to_cart(dir_theta, dir_phi)
     for _ in 1:n
 
-        pos_theta = acos(rand(rng, Uniform(-1, 1)))
         pos_phi = rand(rng, Uniform(0, 2*pi))
         r = sqrt(rand(rng, Uniform(5^2, 50^2)))
-        pos = r .* sph_to_cart(pos_theta, pos_phi)
+        pos_x = r * cos(pos_phi)
+        pos_y = r * sin(pos_phi)
+        pos_z = rand(rng, Uniform(-cyl_height / 2,  cyl_height/2))
+        pos = SA[pos_x, pos_y, pos_z] .+ cyl_center
 
         p = Particle(pos, dir, 0., 10^logenergy, 0., PEMinus)
-
         push!(matrices, calc_fisher_matrix(p, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, use_grad=use_grad, rng=rng))
     end
 
-    return mean(matrices)
+    averaged_fisher = mean(matrices)
+
+    #symmetrize
+
+    averaged_fisher = 0.5 * (averaged_fisher + averaged_fisher')
+
+
+    return averaged_fisher
 end
 
 targets = targets_single
-@load models["4"] model hparams tf_vec
+@load models_casc["4"] model hparams tf_vec
 c_n = c_at_wl(800.0f0, medium)
 rng = MersenneTwister(31338)
 
@@ -108,32 +122,48 @@ dir_theta = 0.1
 dir_phi = 0.3
 dir = sph_to_cart(dir_theta, dir_phi)
 
-p = Particle(pos, dir, 0.0, 5E4, 0.0, PEMinus)
-
-f1 = calc_fisher_matrix(p, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, use_grad=false, rng=rng)
-
-cholesky(f1)
+p = Particle(pos, dir, 0.0, 1E4, 0.0, PEMinus)
 
 rng = MersenneTwister(31338)
-f2 = calc_fisher(4, 0.1, 0.2, 1, targets_line, model, tf_vec, c_n; use_grad=true, rng=rng)
+f1 = calc_fisher_matrix(p, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, use_grad=false, rng=rng, n_samples=30)
+f2 = calc_fisher(4, 0.1, 0.3, 10, targets, model, tf_vec, c_n; use_grad=true, rng=rng, cyl_height=100, cyl_center=SA[-25, 0, -450])
+f3 = calc_fisher(4, 0.1, 0.3, 10, targets_line, model, tf_vec, c_n; use_grad=true, rng=rng, cyl_center=SA[-25, 0, -450])
 
-inv(f1)
-inv(f2)
 
-logenergies = 2:0.5:5
+logenergies = 2:1:5
+
+
+d = Detector(targets_hex, medium)
+cylinder = get_bounding_cylinder(d)
+pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
+edist = Pareto(1, 1E4) + 1E4
+ang_dist = UniformAngularDistribution()
+length_dist = Dirac(0.0)
+time_dist = Dirac(0.0)
+inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
+hit_generator = SurrogateModelHitGenerator(model, tf_vec, 200.0, d)
+ec = EventCollection(inj)
+
+event = rand(inj)
+event[:particles]
+hits = generate_hit_times!(event, d, hit_generator)
+
+
 
 model_res = Dict()
-for (mname, model_path) in models
-    @load model_path model hparams opt tf_dict
+for (mname, model_path) in models_casc
+    @load model_path model hparams tf_vec
     Flux.testmode!(model)
 
-    sds= [calc_fisher(e, 0.1, 0.2, 50, model, use_grad=true) for e in logenergies]
+    sds= [calc_fisher(e, 0.1, 0.2, 10, targets_line, model, tf_vec, c_n, use_grad=false, rng=rng) for e in logenergies]
+
     cov = inv.(sds)
 
     sampled_sds = []
     for c in cov
 
         cov_za = c[2:3, 2:3]
+        @show cov_za
         dist = MvNormal([0.1, 0.2], 0.5 * (cov_za + cov_za'))
         rdirs = rand(dist, 10000)
 
@@ -151,27 +181,6 @@ for (mname, res) in model_res
 end
 
 fig
-
-
-zazres =  (reduce(hcat, [sqrt.(v) for v in diag.(inv.(sds))])[2:3, :])
-
-zazi_dist = MvNormal()
-
-
-
-
-
-
-
-rad2deg.(acos.(dot.(sph_to_cart.(v[2, :], v[3, :]), Ref(sph_to_cart(0.1, 0.2))))
-
-
-CairoMakie.scatter(logenergies, reduce(hcat, [sqrt.(v) for v in diag.(inv.(sds))])[1, :], axis=(yscale=log10, ))
-
-CairoMakie.scatter(logenergies, rad2deg.(reduce(hcat, [sqrt.(v) for v in diag.(inv.(sds))])[2, :]))
-
-
-
 
 
 
