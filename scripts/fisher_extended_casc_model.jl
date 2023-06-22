@@ -22,6 +22,8 @@ using Optim
 using QuadGK
 using Base.Iterators
 using Formatting
+using FiniteDifferences
+using ForwardDiff
 
 
 model_path = joinpath(ENV["WORK"], "time_surrogate")
@@ -47,7 +49,7 @@ medium = make_cascadia_medium_properties(0.95f0)
 
 
 
-function calc_fisher_matrix(particle; targets, model, tf_vec, c_n, use_grad=false, rng=nothing, n_samples=30)
+function calc_fisher_matrix(particle; targets, model, c_n, use_grad=false, rng=nothing, n_samples=30)
     pos = particle.position
     targets_range = [t for t in targets if norm(t.shape.position .- pos) < 200]
     if length(targets_range) == 0
@@ -60,16 +62,16 @@ function calc_fisher_matrix(particle; targets, model, tf_vec, c_n, use_grad=fals
 
     matrices = []
     for __ in 1:n_samples
-        samples = sample_cascade_event(10^logenergy, dir_theta, dir_phi, pos, 0.; targets=targets_range, model=model, tf_vec=tf_vec, rng=rng, c_n=c_n)
+        samples = sample_cascade_event(10^logenergy, dir_theta, dir_phi, pos, 0.; targets=targets_range, model=gpu_model, rng=rng, c_n=c_n)
         if use_grad
-            logl_grad = collect(Zygote.gradient(
-                (logenergy, dir_theta, dir_phi) -> single_cascade_likelihood(logenergy, dir_theta, dir_phi, pos, 0, data=samples, targets=targets_range, model=gpu_model, tf_vec=tf_vec, c_n=c_n),
-                logenergy, dir_theta, dir_phi))
+            logl_grad = collect(ForwardDiff.gradient(
+                x -> single_cascade_likelihood(x[1], x[2], x[3], pos, 0, data=samples, targets=targets_range, model=gpu_model, c_n=c_n),
+                [logenergy, dir_theta, dir_phi]))
 
             push!(matrices, logl_grad .* logl_grad')
         else
-            logl_hessian =  Zygote.hessian(
-                x -> single_cascade_likelihood(x[1], x[2], x[3], pos, 0., data=samples, targets=targets_range, model=gpu_model, tf_vec=tf_vec, c_n=c_n),
+            logl_hessian =  ForwardDiff.hessian(
+                x -> single_cascade_likelihood(x[1], x[2], x[3], pos, 0., data=samples, targets=targets_range, model=model, c_n=c_n),
                 [logenergy, dir_theta, dir_phi])
             push!(matrices, .-logl_hessian)
         end
@@ -86,7 +88,7 @@ function calc_fisher_matrix(particle; targets, model, tf_vec, c_n, use_grad=fals
 end
 
 
-function calc_fisher(logenergy, dir_theta, dir_phi, n, targets, model, tf_vec, c_n; use_grad=false, rng=nothing, cyl_height=1000, cyl_center=SA[0, 0, -450])
+function calc_fisher(logenergy, dir_theta, dir_phi, n, targets, model, c_n; use_grad=false, rng=nothing, cyl_height=1000, cyl_center=SA[0, 0, -450])
     matrices = []
     dir = sph_to_cart(dir_theta, dir_phi)
     for _ in 1:n
@@ -99,7 +101,7 @@ function calc_fisher(logenergy, dir_theta, dir_phi, n, targets, model, tf_vec, c
         pos = SA[pos_x, pos_y, pos_z] .+ cyl_center
 
         p = Particle(pos, dir, 0., 10^logenergy, 0., PEMinus)
-        push!(matrices, calc_fisher_matrix(p, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, use_grad=use_grad, rng=rng))
+        push!(matrices, calc_fisher_matrix(p, targets=targets, model=model, c_n=c_n, use_grad=use_grad, rng=rng))
     end
 
     averaged_fisher = mean(matrices)
@@ -113,7 +115,10 @@ function calc_fisher(logenergy, dir_theta, dir_phi, n, targets, model, tf_vec, c
 end
 
 targets = targets_single
-@load models_casc["4"] model hparams tf_vec
+model_path = joinpath(ENV["WORK"], "time_surrogate")
+model = PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson"))
+model = gpu(model)
+
 c_n = c_at_wl(800.0f0, medium)
 rng = MersenneTwister(31338)
 
@@ -122,12 +127,75 @@ dir_theta = 0.1
 dir_phi = 0.3
 dir = sph_to_cart(dir_theta, dir_phi)
 
-p = Particle(pos, dir, 0.0, 1E4, 0.0, PEMinus)
+typeof(pos)
+
+log_energy = 4.
+
+p = Particle(pos, dir, 0.0, 10^log_energy, 0.0, PEMinus)
 
 rng = MersenneTwister(31338)
-f1 = calc_fisher_matrix(p, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, use_grad=false, rng=rng, n_samples=30)
-f2 = calc_fisher(4, 0.1, 0.3, 10, targets, model, tf_vec, c_n; use_grad=true, rng=rng, cyl_height=100, cyl_center=SA[-25, 0, -450])
-f3 = calc_fisher(4, 0.1, 0.3, 10, targets_line, model, tf_vec, c_n; use_grad=true, rng=rng, cyl_center=SA[-25, 0, -450])
+samples = sample_cascade_event(10^log_energy, dir_theta, dir_phi, pos, 0.; targets=targets, model=model, rng=rng, c_n=c_n)
+
+
+function make_lh_func(;pos, time, data, targets, model, c_n)
+
+    function evaluate_lh(log_energy::Real, dir_theta::Real, dir_phi::Real)
+        return single_cascade_likelihood(log_energy, dir_theta, dir_phi, pos, time, data=data, targets=targets, model=model, c_n=c_n)
+    end
+
+    wrapped(pars::Vector{<:Real}) = evaluate_lh(pars...)
+
+    return evaluate_lh, wrapped
+end
+
+
+f, fwrapped = make_lh_func(pos=pos, time=0., data=samples, targets=targets, model=model, c_n=c_n)
+
+logl_grad = collect(ForwardDiff.gradient(fwrapped, [log_energy, dir_theta, dir_phi]))
+
+fwrapped([log_energy, dir_theta, dir_phi])
+
+@allocated ForwardDiff.gradient(fwrapped, [log_energy, dir_theta, dir_phi]) 
+
+logl_grad_b = collect(Zygote.gradient(f, log_energy, dir_theta, dir_phi))
+#dir_theta, dir_phi))
+
+g(dir_theta) = f(log_energy, dir_theta, dir_phi)
+
+g(dir_theta) 
+
+
+
+dir_thetas = 0:0.01:0.2
+
+log_energies = 3:0.05:5
+llhs = g.(dir_thetas)
+plot(dir_thetas, llhs)
+
+diffquot(f, ϵ, x0) = (f(x0+ϵ/2) .- f(x0-ϵ/2) ) ./ ϵ
+epss = -7:0.1:-2
+
+#logl_grad_b = collect(Zygote.gradient(g, dir_theta))
+logl_grad = collect(ForwardDiff.gradient(p -> g(p[1]), [dir_theta]))#
+
+fig, ax = plot(epss, diffquot.(g, 10 .^epss, dir_theta))
+#hlines!(ax, logl_grad_b[1])
+hlines!(ax, logl_grad[1])
+fig
+
+
+central_fdm(5, 1)(f, log_energy)
+
+
+loglforw = Zygote.gradient( x -> Zygote.forwarddiff(f, x), log_energy)
+
+
+
+
+
+f1 = calc_fisher_matrix(p, targets=targets, model=model, c_n=c_n, use_grad=true, rng=rng, n_samples=30)
+f2 = calc_fisher(4, 0.1, 0.3, 10, targets, model, c_n; use_grad=true, rng=rng, cyl_height=100, cyl_center=SA[-25, 0, -450])
+f3 = calc_fisher(4, 0.1, 0.3, 10, targets_line, model, c_n; use_grad=true, rng=rng, cyl_center=SA[-25, 0, -450])
 
 
 logenergies = 2:1:5

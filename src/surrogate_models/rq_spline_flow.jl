@@ -170,7 +170,7 @@ Constrain spline parameters.
 
 Adapted from distrax.
 """
-function constrain_spline_params(params, range_min, range_max, min_bin_size=1e-4, min_knot_slope=1e-4)
+function constrain_spline_params(params, range_min::Real, range_max::Real, min_bin_size=1e-4, min_knot_slope=1e-4)
     num_bins = div((size(params, 1) - 1), 3)
     unnormalized_bin_widths = params[1:num_bins, :]
     unnormalized_bin_heights = params[num_bins+1:2*num_bins, :]
@@ -183,8 +183,11 @@ function constrain_spline_params(params, range_min, range_max, min_bin_size=1e-4
     bin_heights = _normalize_bin_sizes(unnormalized_bin_heights, range_size,
         min_bin_size)
 
-    x_pos = range_min .+ cumsum(bin_widths[1:end-1, :], dims=1)
-    y_pos = range_min .+ cumsum(bin_heights[1:end-1, :], dims=1)
+    T = eltype(params)
+
+    x_pos::Matrix{T} = range_min .+ cumsum(bin_widths[1:end-1, :], dims=1)
+    y_pos::Matrix{T} = range_min .+ cumsum(bin_heights[1:end-1, :], dims=1)
+
     if ndims(params) == 1
         pad_shape = (1,)
     else
@@ -220,7 +223,7 @@ end
 
 Implements a numerically stable version of the quadratic formula.
 
-Adapted from distrayx
+Adapted from distrax
 """
 function safe_quadratic_root(a, b, c)
     # This is not a general solution to the quadratic equation, as it assumes
@@ -346,11 +349,14 @@ function inv_rqs_univariate(x_pos::AbstractMatrix, y_pos::AbstractMatrix, knot_s
     @assert size(x_pos) == size(y_pos) && size(x_pos) == size(knot_slopes)
     @assert size(x_pos, 2) == length(y)
 
-    below_range = y .<= y_pos[1, :]
-    above_range = y .>= y_pos[end, :]
+
+    T = promote_type(eltype(x_pos), eltype(y_pos), eltype(knot_slopes), eltype(y))
+
+    @views below_range = y .<= y_pos[1, :]
+    @views above_range = y .>= y_pos[end, :]
 
     # this will have shape (n_knots, length(x))
-    correct_bin = ((y .>= y_pos[1:end-1, :]') .&& (y .< y_pos[2:end, :]'))'
+    @views correct_bin = ((y .>= y_pos[1:end-1, :]') .&& (y .< y_pos[2:end, :]'))'
 
     # is any of the x points in range
     any_bin_in_range = any(correct_bin, dims=1)
@@ -359,9 +365,10 @@ function inv_rqs_univariate(x_pos::AbstractMatrix, y_pos::AbstractMatrix, knot_s
 
     correct_bin = my_where(any_bin_in_range, correct_bin, first_bin)
 
-    x_pos_bin = (x_pos[1:end-1, :][correct_bin], x_pos[2:end, :][correct_bin])
-    y_pos_bin = (y_pos[1:end-1, :][correct_bin], y_pos[2:end, :][correct_bin])
-    knot_slopes_bin = (knot_slopes[1:end-1, :][correct_bin], knot_slopes[2:end, :][correct_bin])
+    
+    @views x_pos_bin = (x_pos[1:end-1, :][correct_bin], x_pos[2:end, :][correct_bin])
+    @views y_pos_bin = (y_pos[1:end-1, :][correct_bin], y_pos[2:end, :][correct_bin])
+    @views knot_slopes_bin = (knot_slopes[1:end-1, :][correct_bin], knot_slopes[2:end, :][correct_bin])
 
     bin_width = x_pos_bin[2] .- x_pos_bin[1]
     bin_height = y_pos_bin[2] .- y_pos_bin[1]
@@ -379,25 +386,30 @@ function inv_rqs_univariate(x_pos::AbstractMatrix, y_pos::AbstractMatrix, knot_s
     # Solve quadratic to obtain z and then x.
     z = safe_quadratic_root.(a, b, c)
     z = clamp.(z, 0.0, 1.0)  # Ensure z is in [0, 1].
-    x = bin_width .* z .+ x_pos_bin[1]
+    x::Vector{T} = bin_width .* z .+ x_pos_bin[1]
 
     # Compute log det Jacobian.
     sq_z = z .^ 2
     z1mz = z .- sq_z  # z(1-z)
     sq_1mz = (1.0 .- z) .^ 2
     denominator = bin_slope .+ slopes_term .* z1mz
-    logdet = -2.0 .* log.(bin_slope) .- log.(
+    logdet::Vector{T} = -2.0 .* log.(bin_slope) .- log.(
         knot_slopes_bin[2] .* sq_z .+ 2.0 .* bin_slope .* z1mz .+
         knot_slopes_bin[1] .* sq_1mz) .+ 2.0 .* log.(denominator)
 
     # If y is outside the spline range, we default to a linear transformation.
-   x = my_where(below_range, (y .- y_pos[1, :]) ./ knot_slopes[1, :] .+ x_pos[1, :], x)
-   x = my_where(above_range, (y .- y_pos[end, :]) ./ knot_slopes[end, :] .+ x_pos[end, :], x)
-   logdet = my_where(below_range, .-log.(knot_slopes[1, :]), logdet)
-   logdet = my_where(above_range, .-log.(knot_slopes[end, :]), logdet)
-    return x, logdet
+   @views x = my_where(below_range, (y .- y_pos[1, :]) ./ knot_slopes[1, :] .+ x_pos[1, :], x)
+   @views x = my_where(above_range, (y .- y_pos[end, :]) ./ knot_slopes[end, :] .+ x_pos[end, :], x)
+   @views logdet = my_where(below_range, .-log.(knot_slopes[1, :]), logdet)
+   @views logdet = my_where(above_range, .-log.(knot_slopes[end, :]), logdet)
+   return x, logdet
 end
 
+
+function inv_rqs_univariate(x_pos::AbstractMatrix, y_pos::AbstractMatrix, knot_slopes::AbstractMatrix, y::Real)
+    result = inv_rqs_univariate(x_pos, y_pos, knot_slopes, [y])
+    return first(result[1]), first(result[2]) 
+end
 
 function _split_params(params)
 
@@ -424,16 +436,53 @@ function eval_transformed_normal_logpdf(
     #scale = 5.
     #shift = 0.
 
-    x_pos, y_pos, knot_slopes = constrain_spline_params(spline_params, range_min, range_max)
-    x, logdet_spline = inv_rqs_univariate(x_pos, y_pos, knot_slopes, y)
+    @views x_pos, y_pos, knot_slopes = constrain_spline_params(spline_params, range_min, range_max)
+    @views x, logdet_spline = inv_rqs_univariate(x_pos, y_pos, knot_slopes, y)
 
     normal_logpdf = -0.5 .* (x .^ 2 .+ log(2 * pi))
 
     normal_logpdf = -log.(scale) .- 0.5 .* (log(2 * π) .+ ((x .- shift) ./ scale) .^ 2)
     #normal_logpdf =  logpdf.(Normal(0, 1), x)
 
+    
+
     return normal_logpdf .+ logdet_spline
 end
+
+#=
+"""
+    function eval_transformed_normal_logpdf(y, params, range_min, range_max)
+
+Evaluate logpdf of scaled, shifted, rq-spline applied to normal distribution
+"""
+function eval_transformed_normal_logpdf(
+    y::AbstractVector,
+    params::AbstractVector,
+    range_min, range_max)
+
+    spline_params, shift, scale = _split_params(params)
+
+    @views x_pos, y_pos, knot_slopes = constrain_spline_params(spline_params, range_min, range_max)
+    
+    xld = inv_rqs_univariate.(Ref(x_pos), Ref(y_pos), Ref(knot_slopes), y)
+
+    @views x_and_logdet_spline::Matrix{eltype(x_pos)} = reduce(hcat, collect.(xld))
+
+    
+    x = x_and_logdet_spline[1, :]
+    logdet_spline = x_and_logdet_spline[2, :]
+
+    normal_logpdf = -0.5 .* (x .^ 2 .+ log(2 * pi))
+
+    normal_logpdf = -log.(scale) .- 0.5 .* (log(2 * π) .+ ((x .- shift) ./ scale) .^ 2)
+    #normal_logpdf =  logpdf.(Normal(0, 1), x)
+
+    
+
+    return normal_logpdf .+ logdet_spline
+end
+
+=#
 
 """
     eval_transformed_normal_logpdf(
@@ -447,12 +496,37 @@ function eval_transformed_normal_logpdf(
     params::AbstractVector,
     range_min, range_max)
 
-    return eval_transformed_normal_logpdf(
-        y,
-        repeat(params, 1, length(y)),
-        range_min,
-        range_max)
+    
+    return 
+    #return map(y -> eval_transformed_normal_logpdf([y], permutedims(params)', range_min, range_max)[1], y)
+  
 end
+
+function eval_transformed_normal_logpdf(
+    y::AbstractVector,
+    params::AbstractVector,
+    range_min, range_max)
+
+    params = permutedims(params)'
+    spline_params, shift, scale = _split_params(params)
+
+    x_pos, y_pos, knot_slopes = constrain_spline_params(spline_params, range_min, range_max)
+    x_pos = repeat(x_pos[:], 1, length(y))
+    y_pos = repeat(y_pos[:], 1, length(y))
+    knot_slopes = repeat(knot_slopes[:], 1, length(y))
+    
+      
+    x, logdet_spline = inv_rqs_univariate(x_pos, y_pos, knot_slopes, y)
+    normal_logpdf = -0.5 .* (x .^ 2 .+ log(2 * pi))
+
+    normal_logpdf = -log.(scale) .- 0.5 .* (log(2 * π) .+ ((x .- shift) ./ scale) .^ 2)
+    #normal_logpdf =  logpdf.(Normal(0, 1), x)
+
+    
+
+    return normal_logpdf .+ logdet_spline
+end
+
 
 
 normal_cdf(x, mu, sigma) = 0.5 * (1 + erf((x -mu) / (sigma * sqrt(2))))

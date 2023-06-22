@@ -21,19 +21,26 @@ function compare_mc_model(
     targets::AbstractVector{<:PhotonTarget},
     models::Dict,
     medium::MediumProperties,
-    hits; oversampling=1)
+    hits; oversampling=1, bin_width=2)
 
     c_n = c_at_wl(800.0f0, medium)
 
     fig = Figure(resolution=(1500, 1000))
     ga = fig[1, 1] = GridLayout(4, 4)
 
+
+    samples = sample_multi_particle_event(particles, targets, first(models)[2], c_n; oversample=oversampling, feat_buffer=nothing)
+
+    t_geo = calc_tgeo(norm(particles[1].position - targets[1].shape.position) - targets[1].shape.radius, c_n)
+
+
     for i in 1:16
         row, col = divrem(i - 1, 4)
         mask = hits[:, :pmt_id] .== i
-        ax = Axis(ga[col+1, row+1], xlabel="Time Residual(ns)", ylabel="Photons / time", title="PMT $i",
+        ax = Axis(ga[col+1, row+1], xlabel="Time Residual(ns)", ylabel="Hit density (1/ns)", title="PMT $i",
         )
         hist!(ax, hits[mask, :tres], bins=-20:3:100, color=:orange, normalization=:density, weights=fill(1/oversampling, sum(mask)))
+        hist!(ax, samples[i] .- t_geo .- particles[1].time, bins=-20:3:100, color=:slateblue, normalization=:density, weights=fill(1/oversampling, length(samples[i])))
     end
 
     n_pmt = get_pmt_count(eltype(targets))
@@ -41,7 +48,7 @@ function compare_mc_model(
     t_geos = repeat([calc_tgeo(norm(particles[1].position - t.shape.position) - t.shape.radius, c_n) for t in targets], n_pmt)
     t0 = particles[1].time
 
-    times = -20:1:100
+    times = -20:bin_width:100
     for (mname, model) in models
 
         shape_lhs = []
