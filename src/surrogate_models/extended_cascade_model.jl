@@ -99,7 +99,11 @@ function PhotonSurrogate(fname_amp, fname_time)
 
     b1 = load(fname_amp)
     b2 = load(fname_time)
-    return PhotonSurrogate(b1[:model], b1[:tf_vec], b2[:model], b2[:tf_vec])
+
+    time_model = b2[:model]
+    Flux.testmode!(time_model)
+
+    return PhotonSurrogate(b1[:model], b1[:tf_vec], time_model, b2[:tf_vec])
 
 end
 
@@ -501,23 +505,12 @@ function preproc_labels(feature_matrix::AbstractMatrix, tf_vec=nothing)
     return feature_matrix, tf_vec
 end
 
-function preproc_labels(feature_vec::AbstractVector, tf_vec)
-    features, tf_vec =  preproc_labels(permutedims(feature_vec), tf_vec) 
-    return features[:], tf_vec
-end
-
 function preproc_labels!(feature_matrix::AbstractMatrix, output, tf_vec=nothing)
     if isnothing(tf_vec)
         tf_vec = initialize_normalizers(feature_matrix)       
     end
     feature_matrix = apply_feature_transform!(feature_matrix, tf_vec, output)
     return feature_matrix, tf_vec
-end
-
-
-function preproc_labels!(feature_vec::AbstractVector, output, tf_vec)
-    features, tf_vec =  preproc_labels!(permutedims(feature_vec), output, tf_vec)
-    return features[:], tf_vec
 end
 
 
@@ -661,9 +654,26 @@ end
 
 read_hdf(fname::String, nsel, rng) = read_hdf([fname], nsel, rng)
 
+"""
+    _calc_flow_input(
+        particle::P,
+        target::PhotonTarget,
+        tf_vec::AbstractVector) where {PT,DT,TT,ET,LT,PType,P<:Particle{PT,DT,TT,ET,LT,PType}}
 
+Transform a particle and a target into input features for a neural netork.
 
-function _calc_flow_input(particle::P, target::PhotonTarget, tf_vec::AbstractVector) where {PT,DT,TT,ET,LT,PType,P<:Particle{PT,DT,TT,ET,LT,PType}}
+The resulting feature vector contains the log distance of particle and target,
+the log of the particle energy, the particle direction (in cartesian coordinates) and the
+direction from target to particle.
+
+The resulting feature vector is then transformed item by item using the corresponding transformations
+included in `tf_vec`.
+"""
+function _calc_flow_input(
+    particle::P,
+    target::PhotonTarget,
+    tf_vec::AbstractVector) where {PT,DT,TT,ET,LT,PType,P<:Particle{PT,DT,TT,ET,LT,PType}}
+
     particle_pos = particle.position
     particle_dir = particle.direction
     particle_energy = particle.energy
@@ -677,19 +687,73 @@ function _calc_flow_input(particle::P, target::PhotonTarget, tf_vec::AbstractVec
     T = promote_type(PT, DT, TT, ET, LT, typeof(dist))
 
     features::Vector{T} = [log(dist); log(particle_energy); particle_dir; normed_rel_pos]
-    features, _ = preproc_labels(features, tf_vec)
+    #features, _ = preproc_labels(features, tf_vec)
+    features = apply_feature_transform(features, tf_vec)[:]
     return features
 end
 
+"""
+    _calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
+
+Map input feature calculation over particles and targets. The product of particles and targets is traversed in
+the order particles, targets. The result is stacked horizontally
+"""
 function _calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
 
     res = mapreduce(
         t -> _calc_flow_input(t[1], t[2], tf_vec),
         hcat,
         product(particles, targets))
-
     return res
 end
+
+
+function _calc_flow_input!(
+    particle::P,
+    target::PhotonTarget,
+    tf_vec::AbstractVector,
+    output) where {PT,DT,TT,ET,LT,PType,P<:Particle{PT,DT,TT,ET,LT,PType}}
+
+    particle_pos = particle.position
+    particle_dir = particle.direction
+    particle_energy = particle.energy
+    target_pos = target.shape.position
+
+    rel_pos = particle_pos .- target_pos
+    # TODO: Remove hardcoded max distance
+    dist = clamp(norm(rel_pos), 0., 200.)
+    normed_rel_pos = rel_pos ./ dist
+
+    output[:] .= [log(dist); log(particle_energy); particle_dir; normed_rel_pos]
+    #features, _ = preproc_labels(features, tf_vec)
+    apply_feature_transform!(output, tf_vec, output)[:]
+
+    return output
+end
+
+"""
+    _calc_flow_input!(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec, output)
+
+Mutating version. Flow input is written into output
+"""
+function _calc_flow_input!(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec, output)
+  
+
+    out_ix = LinearIndices((eachindex(particles), eachindex(targets)))
+    
+    for (p_ix, t_ix) in product(eachindex(particles), eachindex(targets))
+        particle = particles[p_ix]
+        target = targets[t_ix]
+
+        ix = out_ix[p_ix, t_ix]
+        _calc_flow_input!(particle, target, tf_vec, @view output[:, ix])
+        
+    end
+
+    return output
+end
+
+
 
 
 """
@@ -716,7 +780,7 @@ end
 
 
 """
-calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
+    calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
 
 For vectors of particles and targets, the resulting feature matrices for each combination
 are catted together.
@@ -734,41 +798,48 @@ function calc_flow_input(particles::AbstractVector{<:Particle}, targets::Abstrac
 end
 
 """
-calc_flow_input!(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec, output)
+    calc_flow_input!(particle::P, target::PhotonTarget, tf_vec::AbstractVector, output)
+Mutating version of `calc_flow_input`.
+"""
+function calc_flow_input!(particle::Particle, target::PhotonTarget, tf_vec::AbstractVector, output)
+    _calc_flow_input!(particle, target, tf_vec, @view output[1:8])
+    
+    n_pmt = get_pmt_count(target)
+    lev = 1:n_pmt
+    output[9:9+n_pmt-1, :] .= (lev .== permutedims(pmt_ixs))
+    return output
+end
+
+
+"""
+    calc_flow_input!(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec, output)
 
 Mutating version. Flow input is written into output
 """
 function calc_flow_input!(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec, output)
-    error("needs updating")
-    if size(output, 1) != 8 + 16
-        error("Output buffer gas wrong size")
-    end
-
     n_pmt = get_pmt_count(eltype(targets))
     out_ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
     
     for (p_ix, t_ix) in product(eachindex(particles), eachindex(targets))
         particle = particles[p_ix]
         target = targets[t_ix]
-        rel_pos = particle.position .- target.shape.position
-        # TODO: Remove hardcoded max distance
-        dist = clamp(norm(rel_pos), 0., 200.)
-        normed_rel_pos = rel_pos ./ dist
-      
-        @inbounds for pmt_ix in 1:n_pmt
 
+        for pmt_ix in 1:n_pmt
             ix = out_ix[pmt_ix, p_ix, t_ix]
-
-            output[1, ix] = log(dist)
-            output[2, ix] = log(particle.energy)
-            output[3:5, ix] = particle.direction
-            output[6:8, ix] = normed_rel_pos
-            output[9:24, ix] = (pmt_ix .== 1:16)
-
+            _calc_flow_input!(particle, target, tf_vec, @view output[1:8, ix])
         end
+
+        ix = out_ix[1:n_pmt, p_ix, t_ix]
+        output[9:9+n_pmt-1, ix] .= Matrix(one(eltype(output)) * I, n_pmt, n_pmt)
+
+        
     end
-    return apply_feature_transform!(output, tf_vec, output) 
+
+    return output
 end
+
+
+
 
 
 
@@ -804,7 +875,9 @@ function sample_multi_particle_event(particles, targets, model, c_n, rng=Random.
     log_expec_per_pmt, log_expec_per_src_pmt_rs = get_log_amplitudes(particles, targets, model; feat_buffer=feat_buffer)
 
     if !isnothing(feat_buffer)
-        input = calc_flow_input!(particles, targets, model.time_transformations, feat_buffer)
+        shape_buffer = @view feat_buffer[:, 1:length(particles)*length(targets)*n_pmt]
+        calc_flow_input!(particles, targets, model.time_transformations, shape_buffer)
+        input = shape_buffer
     else
         input = calc_flow_input(particles, targets, model.time_transformations)
     end
@@ -878,7 +951,7 @@ end
 """
 get_log_amplitudes(particles, targets, model::PhotonSurrogate; feat_buffer=nothing)
 
-Evaluate `model` for `particles` and ´targets`
+Evaluate `model` for `particles` and `targets`
 
 Returns:
     -log_expec_per_pmt: Log of expected photons per pmt. Shape: [n_pmt, 1, n_targets]
@@ -892,8 +965,11 @@ function get_log_amplitudes(particles, targets, model::PhotonSurrogate; feat_buf
     if isnothing(feat_buffer)
         input = _calc_flow_input(particles, targets, tf_vec)
     else
-        input = _calc_flow_input!(particles, targets, tf_vec, feat_buffer)
+        amp_buffer = @view feat_buffer[1:8, 1:length(targets)*length(particles)]
+        _calc_flow_input!(particles, targets, tf_vec, amp_buffer)
+        input = amp_buffer
     end
+
 
     input = permutedims(input)'
 
@@ -974,7 +1050,7 @@ function shape_llh(data; particles, targets, flow_params, rel_log_expec, model, 
             continue
         end
 
-        acc = zeros(T, this_data_len)
+        acc = fill(T(-Inf), this_data_len)
 
         for p_ix in eachindex(particles)
             # Mixture weights 
@@ -1011,6 +1087,7 @@ function evaluate_model(
     # Flattening log_expec_per_pmt with [:] will let the first dimension be the inner one
     poiss_llh = poisson_logpmf.(hits_per_target, log_expec_per_pmt[:])
 
+
     if isnothing(feat_buffer)
         input = calc_flow_input(particles, targets, model.time_transformations)
     else
@@ -1019,7 +1096,10 @@ function evaluate_model(
 
     flow_params::Matrix{eltype(input)} = cpu(model.time_model.embedding(gpu(input)))
 
-    sllh = shape_llh(data; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model.time_model, c_n=c_n)
+    #sllh = shape_llh(data; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model.time_model, c_n=c_n)
+    sllh = shape_llh_generator(data; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model.time_model, c_n=c_n)
+    
+    
     return poiss_llh, sllh, log_expec_per_pmt
 end
 
