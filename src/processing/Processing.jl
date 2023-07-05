@@ -19,6 +19,8 @@ const c_vac_m_ns = ustrip(u"m/ns", SpeedOfLightInVacuum)
 
 export calc_time_residual!, calc_tgeo, c_at_wl
 export calc_time_residual_tracks!, calc_tgeo_tracks
+export shift_to_closest_approach
+export closest_approach_distance
 
 
 calc_tgeo(distance, c_n::Number) = distance / c_n
@@ -28,13 +30,24 @@ function calc_tgeo(distance::Real, target::PhotonTarget{<:Spherical}, c_n_or_med
     return  calc_tgeo(distance - target.shape.radius, c_n_or_medium)
 end
 
-function calc_tgeo(particle::Particle, target, c_n_or_medium)
-    return calc_tgeo(norm(particle.position .- target.shape.position), target, c_n_or_medium)
-end
-
 
 function closest_approach_distance(p0, dir, pos)
     return norm(cross((pos .- p0), dir))
+end
+
+"""
+    closest_approach_distance(particle, target)
+Calculate closest approach distance for particle and target.
+
+For cascade-like particles, this is the distance between particle position and target position,
+for tracks this is the closest approach distance betwee track and target position
+"""
+function closest_approach_distance(particle, target)
+    if particle_shape(particle) == Track()
+        return closest_approach_distance(particle.position, particle.direction, target.shape.position)
+    elseif particle_shape(particle) == Cascade()
+        return norm(particle.position .- target.shape.position)
+    end
 end
 
 
@@ -46,6 +59,7 @@ function calc_tgeo_tracks(p0, dir, pos, n_ph, n_grp)
     return t_geo
 end
 
+
 function calc_tgeo_tracks(p0, dir, pos, medium::MediumProperties)
 
     wl = 800.0
@@ -54,6 +68,36 @@ function calc_tgeo_tracks(p0, dir, pos, medium::MediumProperties)
 
     return calc_tgeo_tracks(p0, dir, pos, n_ph, n_grp)
 end
+
+function calc_tgeo(particle::Particle, target, medium)
+    if particle_shape(particle) == Track()
+        return calc_tgeo_tracks(particle.position, particle.direction, target.shape.position, medium)
+    else
+        return calc_tgeo(norm(particle.position .- target.shape.position), target, medium)
+    end
+end
+
+
+
+
+function shift_to_closest_approach(particle::Particle, pos::AbstractVector)
+    p = particle.position
+    b = particle.direction
+
+    # Vector from pos to p
+    a = pos .- p
+
+    d = dot(a, b)
+
+    # Projection of a into particle direction
+    pos_along = p .+ d .* b
+
+    t = particle.time .+ d / c_vac_m_ns
+
+    return Particle(pos_along, particle.direction, t, particle.energy, particle.length, particle.type)
+end
+    
+
 
 function calc_time_residual_tracks!(df::AbstractDataFrame, setup::PhotonPropSetup)
 

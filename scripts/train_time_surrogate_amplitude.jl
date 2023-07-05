@@ -49,10 +49,10 @@ hparams = PoissonExpModel(
     batch_size=5000,
     mlp_layers = 2,
     mlp_layer_size = 512,
-    lr = 0.002,
+    lr = 0.001,
     lr_min = 1E-5,
     epochs = 100,
-    dropout = 0,
+    dropout = 0.2,
     non_linearity = "relu",
     seed = 31338,
     l2_norm_alpha = 0.0,
@@ -63,4 +63,4 @@ hparams = PoissonExpModel(
 
 
 
-kfold_train_model(data, outpath, model_name, tf_vec, 2, hparams)
+kfold_train_model(data, outpath, model_name, tf_vec, 5, hparams)

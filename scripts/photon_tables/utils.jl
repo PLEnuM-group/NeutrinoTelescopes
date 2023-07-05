@@ -1,3 +1,5 @@
+using StatsBase
+
 function make_setup(
     mode, pos, dir, energy, seed;
     g=0.99f0)
@@ -31,8 +33,24 @@ function make_setup(
             length,
             PMuMinus
         )
-        source = CherenkovTrackEmitter(particle, medium, wl_range)
-    else
+
+        source = CherenkovTrackEmitter(particle, medium, wl_range)    
+    elseif mode == :lightsabre_muon
+        length = 400f0
+        ppos = pos .- length/2 .* dir
+        
+        particle = Particle(
+            Float32.(ppos),
+            Float32.(dir),
+            0.0f0,
+            Float32(energy),
+            length,
+            PMuMinus
+        )
+
+        source = LightsabreMuonEmitter(particle, medium, wl_range)
+
+    elseif mode == :pointlike_cherenkov
         particle = Particle(
             pos,
             dir,
@@ -41,6 +59,8 @@ function make_setup(
             0.0f0,
             PEMinus)
         source = PointlikeChernekovEmitter(particle, medium, wl_range)
+    else
+        error("unknown mode $mode")
     end
 
     setup = PhotonPropSetup(source, target, medium, spectrum, seed)

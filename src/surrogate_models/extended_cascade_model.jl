@@ -27,6 +27,7 @@ using StructTypes
 using StaticArrays
 
 
+
 using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow
 using ...Processing
 
@@ -34,12 +35,14 @@ export ArrivalTimeSurrogate, RQSplineModel, PhotonSurrogate
 export kfold_train_model
 export get_log_amplitudes, unfold_energy_losses, t_first_likelihood
 export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_likelihood, track_likelihood_energy_unfolding
+export lightsabre_muon_likelihood
 export sample_cascade_event, evaluate_model, sample_multi_particle_event
 export create_pmt_table, preproc_labels, read_pmt_hits, fit_trafo_pipeline, log_likelihood_with_poisson, read_pmt_number_of_hits
 export calc_flow_input!, calc_flow_input
 export train_model!, RQNormFlowHParams, PoissonExpModel
 export setup_optimizer, setup_model, setup_dataloaders
 export Normalizer
+
 
 
 struct Normalizer{T}
@@ -108,6 +111,7 @@ function PhotonSurrogate(fname_amp, fname_time)
 end
 
 Flux.gpu(s::PhotonSurrogate) = PhotonSurrogate(gpu(s.amp_model), s.amp_transformations, gpu(s.time_model), s.time_transformations)
+Flux.cpu(s::PhotonSurrogate) = PhotonSurrogate(cpu(s.amp_model), s.amp_transformations, cpu(s.time_model), s.time_transformations)
 
 function create_mlp_embedding(;
     hidden_structure::AbstractVector{<:Integer},
@@ -482,7 +486,9 @@ end
 function apply_feature_transform!(m, tf_vec, output)
     # Mutating version...
     for (in_row, out_row, tf) in zip(eachrow(m), eachrow(output), tf_vec)
-        out_row[:] .= tf.(in_row)
+        for i in eachindex(in_row)
+            out_row[i] = tf(in_row[i])
+        end
     end
     return output
 end
@@ -656,9 +662,11 @@ read_hdf(fname::String, nsel, rng) = read_hdf([fname], nsel, rng)
 
 """
     _calc_flow_input(
-        particle::P,
-        target::PhotonTarget,
-        tf_vec::AbstractVector) where {PT,DT,TT,ET,LT,PType,P<:Particle{PT,DT,TT,ET,LT,PType}}
+        particle_pos,
+        particle_dir,
+        particle_energy,
+        target_pos,
+        tf_vec::AbstractVector)
 
 Transform a particle and a target into input features for a neural netork.
 
@@ -670,27 +678,43 @@ The resulting feature vector is then transformed item by item using the correspo
 included in `tf_vec`.
 """
 function _calc_flow_input(
-    particle::P,
-    target::PhotonTarget,
-    tf_vec::AbstractVector) where {PT,DT,TT,ET,LT,PType,P<:Particle{PT,DT,TT,ET,LT,PType}}
-
-    particle_pos = particle.position
-    particle_dir = particle.direction
-    particle_energy = particle.energy
-    target_pos = target.shape.position
+    particle_pos,
+    particle_dir,
+    particle_energy,
+    target_pos,
+    tf_vec::AbstractVector)
 
     rel_pos = particle_pos .- target_pos
     # TODO: Remove hardcoded max distance
     dist = clamp(norm(rel_pos), 0., 200.)
     normed_rel_pos = rel_pos ./ dist
 
-    T = promote_type(PT, DT, TT, ET, LT, typeof(dist))
+    T = promote_type(eltype(particle_pos), eltype(particle_dir), typeof(particle_energy), eltype(target_pos))
 
     features::Vector{T} = [log(dist); log(particle_energy); particle_dir; normed_rel_pos]
     #features, _ = preproc_labels(features, tf_vec)
     features = apply_feature_transform(features, tf_vec)[:]
     return features
 end
+
+"""
+    _calc_flow_input(particle::Particle, target::PhotonTarget, tf_vec::AbstractVector)
+
+    Extracts relavant quantities from particle / target structs. Checks particle shape and, if track, uses fixed
+    energy for input calculation
+"""
+function _calc_flow_input(particle::Particle, target::PhotonTarget, tf_vec::AbstractVector)
+
+    
+    if particle_shape(particle) == Track()
+        @show shifted
+        particle = shift_to_closest_approach(particle, target.shape.position)
+    end
+
+    return _calc_flow_input(particle.position, particle.direction, particle.energy, target.shape.position, tf_vec)
+end
+
+
 
 """
     _calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
@@ -700,36 +724,60 @@ the order particles, targets. The result is stacked horizontally
 """
 function _calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
 
-    res = mapreduce(
-        t -> _calc_flow_input(t[1], t[2], tf_vec),
-        hcat,
-        product(particles, targets))
+    res = mapreduce(hcat, product(particles, targets)) do pt
+
+        particle = pt[1]
+        target = pt[2]
+       
+        return _calc_flow_input(particle, target, tf_vec)       
+    end
     return res
 end
 
-
 function _calc_flow_input!(
-    particle::P,
-    target::PhotonTarget,
+    particle_pos,
+    particle_dir,
+    particle_energy,
+    target_pos,
     tf_vec::AbstractVector,
-    output) where {PT,DT,TT,ET,LT,PType,P<:Particle{PT,DT,TT,ET,LT,PType}}
-
-    particle_pos = particle.position
-    particle_dir = particle.direction
-    particle_energy = particle.energy
-    target_pos = target.shape.position
+    output)
 
     rel_pos = particle_pos .- target_pos
     # TODO: Remove hardcoded max distance
     dist = clamp(norm(rel_pos), 0., 200.)
     normed_rel_pos = rel_pos ./ dist
 
-    output[:] .= [log(dist); log(particle_energy); particle_dir; normed_rel_pos]
+    output[1] = log(dist)
+    output[2] = log(particle_energy)
+    output[3] = particle_dir[1]
+    output[4] = particle_dir[2]
+    output[5] = particle_dir[3]
+    output[6] = normed_rel_pos[1]
+    output[7] = normed_rel_pos[2]
+    output[8] = normed_rel_pos[3]
     #features, _ = preproc_labels(features, tf_vec)
     apply_feature_transform!(output, tf_vec, output)[:]
 
     return output
 end
+
+
+
+function _calc_flow_input!(
+    particle::Particle,
+    target::PhotonTarget,
+    tf_vec::AbstractVector,
+    output)
+
+    if particle_shape(particle) == Track()
+        particle = shift_to_closest_approach(particle, target.shape.position)
+    end
+
+    return _calc_flow_input!(particle.position, particle.direction, particle.energy, target.shape.position, tf_vec, output)
+    
+end
+
+
 
 """
     _calc_flow_input!(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec, output)
@@ -769,7 +817,7 @@ pmt index.
 The resulting feature matrix is then transformed column by column using the transformations
 included in `tf_vec`.
 """
-function calc_flow_input(particle::P, target::PhotonTarget, tf_vec::AbstractVector) where {PT,DT,TT,ET,LT,PType,P<:Particle{PT,DT,TT,ET,LT,PType}}
+function calc_flow_input(particle::Particle, target::PhotonTarget, tf_vec::AbstractVector) 
     f = _calc_flow_input(particle, target, tf_vec)
     n_pmt = get_pmt_count(target)
     features::Matrix{eltype(f)} = repeat(f, 1, n_pmt)
@@ -789,10 +837,13 @@ embedding structure: [(p_1, t_1), (p_2, t_1), ... (p_1, t_end), ... (p_end, t_en
 """
 function calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
 
-    res = mapreduce(
-        t -> calc_flow_input(t[1], t[2], tf_vec),
-        hcat,
-        product(particles, targets))
+    res = mapreduce(hcat, product(particles, targets)) do pt
+
+        particle = pt[1]
+        target = pt[2]
+        
+        return calc_flow_input(particle, target, tf_vec)       
+    end
 
     return res
 end
@@ -831,16 +882,11 @@ function calc_flow_input!(particles::AbstractVector{<:Particle}, targets::Abstra
 
         ix = out_ix[1:n_pmt, p_ix, t_ix]
         output[9:9+n_pmt-1, ix] .= Matrix(one(eltype(output)) * I, n_pmt, n_pmt)
-
         
     end
 
     return output
 end
-
-
-
-
 
 
 function poisson_logpmf(n, log_lambda)
@@ -864,15 +910,15 @@ function create_non_uniform_ranges(n_per_split::AbstractVector)
 end
 
 """
-    sample_multi_particle_event(particles, targets, model, c_n, rng=nothing; oversample=1)
+    sample_multi_particle_event(particles, targets, model, medium, rng=nothing; oversample=1)
 
 Sample arrival times at `targets` for `particles` using `model`.
 """
-function sample_multi_particle_event(particles, targets, model, c_n, rng=Random.default_rng(); oversample=1, feat_buffer=nothing)
+function sample_multi_particle_event(particles, targets, model, medium, rng=Random.default_rng(); oversample=1, feat_buffer=nothing, device=gpu)
 
     n_pmt = get_pmt_count(eltype(targets))
 
-    log_expec_per_pmt, log_expec_per_src_pmt_rs = get_log_amplitudes(particles, targets, model; feat_buffer=feat_buffer)
+    _, log_expec_per_src_pmt_rs = get_log_amplitudes(particles, targets, model; feat_buffer=feat_buffer, device=device)
 
     if !isnothing(feat_buffer)
         shape_buffer = @view feat_buffer[:, 1:length(particles)*length(targets)*n_pmt]
@@ -885,7 +931,7 @@ function sample_multi_particle_event(particles, targets, model, c_n, rng=Random.
     # The embedding for all the parameters is
     # [(p_1, t_1, pmt_1), (p_1, t_1, pmt_2), ... (p_2, t_1, pmt_1), ... (p_1, t_end, pmt_1), ... (p_end, t_end, pmt_end)]
 
-    flow_params::Matrix{Float32} = cpu(model.time_model.embedding(gpu(input)))
+    flow_params::Matrix{Float32} = cpu(model.time_model.embedding(device(input)))
     expec_per_source_rs = exp.(log_expec_per_src_pmt_rs) .* oversample
 
     n_hits_per_source_rs = pois_rand.(rng, Float64.(expec_per_source_rs))
@@ -896,8 +942,6 @@ function sample_multi_particle_event(particles, targets, model, c_n, rng=Random.
 
     # Only sample times for particle-target pairs that have at least one hit
     times = sample_flow(flow_params[:, mask], model.time_model.range_min, model.time_model.range_max, non_zero_hits, rng=rng)
-
-
 
     # Create range selectors into times for each particle-pmt pair
     selectors = reshape(
@@ -926,7 +970,7 @@ function sample_multi_particle_event(particles, targets, model, c_n, rng=Random.
             particle = particles[p_ix]
             this_n_hits = n_hits_per_source_rs[pmt_ix, p_ix, t_ix]
             if this_n_hits > 0
-                t_geo = calc_tgeo(norm(particle.position .- target.shape.position) - target.shape.radius, c_n)
+                t_geo = calc_tgeo(particle, target, medium)
                 times_sel = selectors[pmt_ix, p_ix, t_ix]
                 data_this_target[data_selectors[p_ix]] = times[times_sel] .+ t_geo .+ particle.time
             end
@@ -938,14 +982,14 @@ end
 
 
 """
-    sample_cascade_event(energy, dir_theta, dir_phi, position, time; targets, model, tf_vec, c_n, rng=nothing)
+    sample_cascade_event(energy, dir_theta, dir_phi, position, time; targets, model, tf_vec, medium, rng=nothing)
 Sample photon times at `targets` for a cascade.
 """
-function sample_cascade_event(energy, dir_theta, dir_phi, position, time; targets, model, c_n, rng=nothing)
+function sample_cascade_event(energy, dir_theta, dir_phi, position, time; targets, model, medium, rng=nothing)
 
     dir = sph_to_cart(dir_theta, dir_phi)
     particle = Particle(position, dir, time, energy, 0.0, PEMinus)
-    return sample_multi_particle_event([particle], targets, model, c_n, rng)
+    return sample_multi_particle_event([particle], targets, model, medium, rng)
 end
 
 """
@@ -957,7 +1001,7 @@ Returns:
     -log_expec_per_pmt: Log of expected photons per pmt. Shape: [n_pmt, 1, n_targets]
     -log_expec_per_src_pmt_rs: Log of expected photons per pmt and per particle. Shape [n_pmt, n_particles, n_targets]
 """
-function get_log_amplitudes(particles, targets, model::PhotonSurrogate; feat_buffer=nothing)
+function get_log_amplitudes(particles, targets, model::PhotonSurrogate; feat_buffer=nothing, device=gpu)
     n_pmt = get_pmt_count(eltype(targets))
 
     tf_vec = model.amp_transformations
@@ -970,10 +1014,9 @@ function get_log_amplitudes(particles, targets, model::PhotonSurrogate; feat_buf
         input = amp_buffer
     end
 
-
     input = permutedims(input)'
 
-    log_expec_per_src_trg::Matrix{eltype(input)} = cpu(model.amp_model(gpu(input)))
+    log_expec_per_src_trg::Matrix{eltype(input)} = cpu(model.amp_model(device(input)))
 
     log_expec_per_src_pmt_rs = reshape(
         log_expec_per_src_trg,
@@ -985,7 +1028,7 @@ function get_log_amplitudes(particles, targets, model::PhotonSurrogate; feat_buf
 end
 
 
-function shape_llh_generator(data; particles, targets, flow_params, rel_log_expec, model, c_n)
+function shape_llh_generator(data; particles, targets, flow_params, rel_log_expec, model, medium)
 
     n_pmt = get_pmt_count(eltype(targets))
     data_ix = LinearIndices((1:n_pmt, eachindex(targets)))
@@ -1002,7 +1045,7 @@ function shape_llh_generator(data; particles, targets, flow_params, rel_log_expe
                 rel_log_expec[pmt_ix, p_ix, t_ix] .+
                 # Returns vector of logl for each time in data
                 eval_transformed_normal_logpdf(
-                    data[data_ix[pmt_ix, t_ix]] .- calc_tgeo(particles[p_ix], targets[t_ix], c_n) .- particles[p_ix].time,
+                    data[data_ix[pmt_ix, t_ix]] .- calc_tgeo(particles[p_ix], targets[t_ix], medium) .- particles[p_ix].time,
                     flow_params[:, ix[pmt_ix, p_ix, t_ix]],
                     model.range_min,
                     model.range_max
@@ -1016,25 +1059,7 @@ function shape_llh_generator(data; particles, targets, flow_params, rel_log_expe
     return shape_llh_gen
 end
 
-#=
-function logsumexp_stream(X)
-    alpha = -Inf
-    r = 0.0
-    for x = X
-        if x <= alpha
-            r += exp(x - alpha)
-        else
-            r *= exp(alpha - x)
-            r += 1.0
-            alpha = x
-        end
-    end
-    log(r) + alpha
-end
-=#
-
-
-function shape_llh(data; particles, targets, flow_params, rel_log_expec, model, c_n)
+function shape_llh(data; particles, targets, flow_params, rel_log_expec, model, medium)
 
     n_pmt = get_pmt_count(eltype(targets))
     data_ix = LinearIndices((1:n_pmt, eachindex(targets)))
@@ -1058,7 +1083,7 @@ function shape_llh(data; particles, targets, flow_params, rel_log_expec, model, 
 
             # Mixture Pdf
             shape_pdf = eval_transformed_normal_logpdf(
-                    data[data_ix[pmt_ix, t_ix]] .- calc_tgeo(particles[p_ix], targets[t_ix], c_n) .- particles[p_ix].time,
+                    data[data_ix[pmt_ix, t_ix]] .- calc_tgeo(particles[p_ix], targets[t_ix], medium) .- particles[p_ix].time,
                     flow_params[:, ix[pmt_ix, p_ix, t_ix]],
                     model.range_min,
                     model.range_max
@@ -1077,27 +1102,29 @@ end
 
 function evaluate_model(
     particles::AbstractVector{<:Particle},
-    data, targets, model::PhotonSurrogate, c_n; feat_buffer=nothing)
+    data, targets, model::PhotonSurrogate, medium; feat_buffer=nothing, device=gpu)
 
-    
-    log_expec_per_pmt, log_expec_per_src_pmt_rs = get_log_amplitudes(particles, targets, model; feat_buffer=feat_buffer)
+    log_expec_per_pmt, log_expec_per_src_pmt_rs = get_log_amplitudes(particles, targets, model; feat_buffer=feat_buffer, device=device)
     rel_log_expec = log_expec_per_src_pmt_rs .- log_expec_per_pmt
 
     hits_per_target = length.(data)
     # Flattening log_expec_per_pmt with [:] will let the first dimension be the inner one
     poiss_llh = poisson_logpmf.(hits_per_target, log_expec_per_pmt[:])
 
+    npmt = get_pmt_count(eltype(targets))
+
 
     if isnothing(feat_buffer)
         input = calc_flow_input(particles, targets, model.time_transformations)
     else
-        input = calc_flow_input!(particles, targets, model.time_transformations, feat_buffer)
+        input = @view feat_buffer[:, 1:length(targets)*length(particles)*npmt]
+        calc_flow_input!(particles, targets, model.time_transformations, feat_buffer)
     end
 
-    flow_params::Matrix{eltype(input)} = cpu(model.time_model.embedding(gpu(input)))
+    flow_params::Matrix{eltype(input)} = cpu(model.time_model.embedding(device(input)))
 
-    #sllh = shape_llh(data; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model.time_model, c_n=c_n)
-    sllh = shape_llh_generator(data; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model.time_model, c_n=c_n)
+    #sllh = shape_llh(data; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model.time_model, medium=medium)
+    sllh = shape_llh_generator(data; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model.time_model, medium=medium)
     
     
     return poiss_llh, sllh, log_expec_per_pmt
@@ -1108,10 +1135,11 @@ function multi_particle_likelihood(
     particles::AbstractVector{<:Particle};
     data::AbstractVector{<:AbstractVector{<:Real}},
     targets::AbstractVector{<:PhotonTarget},
-    model::PhotonSurrogate, c_n, feat_buffer=nothing, amp_only=false)
+    model::PhotonSurrogate, medium, feat_buffer=nothing, amp_only=false, device=gpu)
+
     n_pmt = get_pmt_count(eltype(targets))
     @assert length(targets) * n_pmt == length(data)
-    pois_llh, shape_llh, _ = evaluate_model(particles, data, targets, model, c_n, feat_buffer=feat_buffer)
+    pois_llh, shape_llh, _ = evaluate_model(particles, data, targets, model, medium, feat_buffer=feat_buffer, device=device)
     if amp_only
         return sum(pois_llh)
     else
@@ -1125,19 +1153,36 @@ function single_cascade_likelihood(
     dir_theta::Real,
     dir_phi::Real,
     position::AbstractArray{<:Real},
-    time::Real; data, targets, model, c_n, feat_buffer=nothing)
+    time::Real; data, targets, model, medium, feat_buffer=nothing)
     
     T = promote_type(typeof(dir_theta), typeof(dir_phi))
     
     dir::SVector{3, T} = sph_to_cart(dir_theta, dir_phi)
     energy = 10. .^logenergy
     particles = [Particle(position, dir, time, energy, 0.0, PEMinus)]
-    return multi_particle_likelihood(particles, data=data, targets=targets, model=model, c_n=c_n, feat_buffer=feat_buffer)
+    return multi_particle_likelihood(particles, data=data, targets=targets, model=model, medium=medium, feat_buffer=feat_buffer)
 end
+
+function lightsabre_muon_likelihood(
+    logenergy::Real,
+    dir_theta::Real,
+    dir_phi::Real,
+    position::AbstractArray{<:Real},
+    time::Real; data, targets, model, medium, feat_buffer=nothing)
+    
+    T = promote_type(typeof(dir_theta), typeof(dir_phi))
+    
+    dir::SVector{3, T} = sph_to_cart(dir_theta, dir_phi)
+    energy = 10. .^logenergy
+    particles = [Particle(position, dir, time, energy, 100000, PMuMinus)]
+    return multi_particle_likelihood(particles, data=data, targets=targets, model=model, medium=medium, feat_buffer=feat_buffer)
+end
+
+
 
 function track_likelihood_fixed_losses(
     logenergy, dir_theta, dir_phi, position;
-    losses, muon_energy, data, targets, model, tf_vec, c_n, feat_buffer=nothing, amp_only=false)
+    losses, muon_energy, data, targets, model, tf_vec, medium, feat_buffer=nothing, amp_only=false)
 
     energy = 10^logenergy
     dir = sph_to_cart(dir_theta, dir_phi)
@@ -1152,11 +1197,11 @@ function track_likelihood_fixed_losses(
     new_losses = Particle.(new_loss_positions, [dir], times, new_loss_energies, 0.0, [PEMinus])
 
     return multi_particle_likelihood(
-        new_losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, feat_buffer=feat_buffer, amp_only=amp_only)
+        new_losses, data=data, targets=targets, model=model, tf_vec=tf_vec, medium=medium, feat_buffer=feat_buffer, amp_only=amp_only)
 end
 
 
-function t_first_likelihood(particles; data, targets, model, tf_vec, c_n, feat_buffer=nothing)
+function t_first_likelihood(particles; data, targets, model, tf_vec, medium, feat_buffer=nothing)
 
     log_expec_per_pmt, log_expec_per_src_pmt_rs, flow_params = get_log_amplitudes(particles, targets, model, tf_vec; feat_buffer=feat_buffer)
     rel_log_expec = log_expec_per_src_pmt_rs .- log_expec_per_pmt
@@ -1165,7 +1210,7 @@ function t_first_likelihood(particles; data, targets, model, tf_vec, c_n, feat_b
     t_first = [length(d) > 0 ? minimum(d) : -inf]
 
 
-    llh_tfirst = shape_llh_generator(t_first; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model, c_n=c_n)
+    llh_tfirst = shape_llh_generator(t_first; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model, medium=medium)
 
     upper = t_first .+ 200.0
 
@@ -1226,19 +1271,21 @@ function unfold_energy_losses(position, direction, time; data, targets, model, t
 end
 
 
-function track_likelihood_energy_unfolding(dir_theta, dir_phi, position, time; spacing, data, targets, model, tf_vec, c_n, amp_only=false)
+function track_likelihood_energy_unfolding(dir_theta, dir_phi, position, time; spacing, data, targets, model, tf_vec, medium, amp_only=false)
 
     dir = sph_to_cart(dir_theta, dir_phi)
     losses = unfold_energy_losses(position, dir, time; data=data, targets=targets, model=model, tf_vec=tf_vec, spacing=spacing)
     if length(losses) == 0
         return -Inf64
     end
-    return multi_particle_likelihood(losses, data=data, targets=targets, model=model, tf_vec=tf_vec, c_n=c_n, amp_only=amp_only)
+    return multi_particle_likelihood(losses, data=data, targets=targets, model=model, tf_vec=tf_vec, medium=medium, amp_only=amp_only)
 end
 
 function kfold_train_model(data, outpath, model_name, tf_vec, n_folds, hparams::HyperParams)
     
     logdir = joinpath(@__DIR__, "../../tensorboard_logs/$model_name")
+
+    model_stats = []
 
     for (model_num, (train_data, val_data)) in enumerate(kfolds(data; k=n_folds))
         lg = TBLogger(logdir)
@@ -1263,7 +1310,13 @@ function kfold_train_model(data, outpath, model_name, tf_vec, n_folds, hparams::
         model_path = joinpath(outpath, "$(model_name)_$(model_num)_FNL.bson")
         model = cpu(model)
         @save model_path model hparams tf_vec
+
+        push!(model_stats, (model_num=model_num, final_test_loss=final_test_loss))
     end
+
+    model_stats = DataFrame(model_stats)
+    return model_stats
+
 end
 
 

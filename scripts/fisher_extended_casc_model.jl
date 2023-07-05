@@ -31,11 +31,20 @@ model_path = joinpath(ENV["WORK"], "time_surrogate")
 
 models_casc = Dict(
     "A1S1" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
-    "A1S1" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
+    "A2S1" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
     "A1S2" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
     "A2S2" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
 
 )
+
+models_tracks = Dict(
+    "A1S1" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_1_FNL.bson")),
+    "A2S1" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_2_FNL.bson"), joinpath(model_path, "lightsabre/time_1_FNL.bson")),
+    "A1S2" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_2_FNL.bson")),
+    "A2S2" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_2_FNL.bson"), joinpath(model_path, "lightsabre/time_2_FNL.bson")),
+
+)
+
 
 targets_single = [POM(@SVector[-25.0, 0.0, -450.0], 1)]
 targets_line = make_detector_line(@SVector[-25.0, 0.0, 0.0], 20, 50, 1)
@@ -49,81 +58,9 @@ detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => tar
 medium = make_cascadia_medium_properties(0.95f0)
 
 
-
-function make_lh_func(;pos, time, data, targets, model, c_n)
-
-    function evaluate_lh(log_energy::Real, dir_theta::Real, dir_phi::Real)
-        return single_cascade_likelihood(log_energy, dir_theta, dir_phi, pos, time, data=data, targets=targets, model=model, c_n=c_n)
-    end
-
-    wrapped(pars::Vector{<:Real}) = evaluate_lh(pars...)
-
-    return evaluate_lh, wrapped
-end
-
-
-
-function calc_fisher_matrix(event::Event, detector::Detector, generator::SurrogateModelHitGenerator; use_grad=false, rng=rng=Random.GLOBAL_RNG, n_samples=100)
-
-    medium = get_detector_medium(d)
-    c_n = c_at_wl(800.0f0, medium)
-
-    matrices = []
-    for __ in 1:n_samples
-        times, range_mask = generate_hit_times(event, detector, generator, rng)
-        
-        if sum(length.(times)) == 0
-            return zeros(3, 3)
-        end
-
-        p = event[:particles][1]
-        dir = p.direction
-        dir_theta, dir_phi = cart_to_sph(dir)
-        logenergy = log10(p.energy)
-        pos = p.position
-
-        targets_range = get_detector_modules(detector)[range_mask]
-
-        f, fwrapped = make_lh_func(pos=pos, time=0., data=times, targets=targets_range, model=generator.model, c_n=c_n)
-       
-        if use_grad
-            logl_grad = collect(ForwardDiff.gradient(fwrapped, [logenergy, dir_theta, dir_phi]))
-            push!(matrices, logl_grad .* logl_grad')
-        else
-            logl_hessian =  ForwardDiff.hessian(fwrapped, [logenergy, dir_theta, dir_phi])
-            push!(matrices, .-logl_hessian)
-        end
-    end
-
-    fisher_matrix = mean(matrices)
-
-    fisher_matrix = 0.5 * (fisher_matrix + fisher_matrix')
-
-    return fisher_matrix
-
-end
-
-
-function calc_fisher(d::Detector, inj::Injector, g::SurrogateModelHitGenerator, n, n_samples; use_grad=false, rng=rng=Random.GLOBAL_RNG)
-    matrices = []
-    for _ in 1:n
-        event = rand(inj)
-        m = calc_fisher_matrix(event, d, g, use_grad=use_grad, rng=rng, n_samples=n_samples)
-
-        if any(m .> 0) 
-            push!(matrices, m)
-        end
-    end
-
-    averaged_fisher = mean(matrices)
-    #symmetrize
-    averaged_fisher = 0.5 * (averaged_fisher + averaged_fisher')
-    return averaged_fisher
-end
-
-targets = targets_single
+targets = targets_hex
 model_path = joinpath(ENV["WORK"], "time_surrogate")
-model = PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson"))
+model = models_tracks["A1S1"]
 model = gpu(model)
 
 c_n = c_at_wl(800.0f0, medium)
@@ -133,20 +70,22 @@ pos = SA[-25.0, 5.0, -460]
 dir_theta = 0.4
 dir_phi = 0.3
 dir = sph_to_cart(dir_theta, dir_phi)
-
-
 log_energy = 4.
 
-p = Particle(pos, dir, 0.0, 10^log_energy, 0.0, PEMinus)
+p = Particle(pos, dir, 0.0, 10^log_energy, 0.0, PMuMinus)
 rng = MersenneTwister(31338)
-samples = sample_cascade_event(10^log_energy, dir_theta, dir_phi, pos, 0.; targets=targets, model=model, rng=rng, c_n=c_n)
-f, fwrapped = make_lh_func(pos=pos, time=0., data=samples, targets=targets, model=model, c_n=c_n)
-logl_grad = collect(ForwardDiff.gradient(fwrapped, [log_energy, dir_theta, dir_phi]))
-g(dir_theta) = f(log_energy, dir_theta, dir_phi)
+samples = sample_multi_particle_event([p], targets, model, medium)
+
+
+
+f, fwrapped = make_lh_func(time=0., data=samples, targets=targets, model=model, medium=medium, diff_cache=nothing, ptype=p.type)
+g(dir_theta) = f(log_energy, dir_theta, dir_phi, pos[1], pos[2], pos[3])
 dir_thetas = 0:0.01:0.6
 log_energies = 3:0.05:5
 llhs = g.(dir_thetas)
 plot(dir_thetas, llhs)
+
+logl_grad = collect(ForwardDiff.gradient(fwrapped, [log_energy, dir_theta, dir_phi]))
 
 diffquot(f, ϵ, x0) = (f(x0+ϵ/2) .- f(x0-ϵ/2) ) ./ ϵ
 epss = -7:0.1:-2
@@ -160,9 +99,8 @@ hlines!(ax, logl_grad[1])
 fig
 
 
-f1 = calc_fisher_matrix(p, targets=targets, model=model, c_n=c_n, use_grad=true, rng=rng, n_samples=100)
-f2 = calc_fisher(4, 0.1, 0.3, 10, targets, model, c_n; use_grad=true, rng=rng, cyl_height=100, cyl_center=SA[-25, 0, -450])
-f3 = calc_fisher(4, 0.1, 0.3, 10, targets_line, model, c_n; use_grad=true, rng=rng, cyl_center=SA[-25, 0, -450])
+
+
 
 
 
@@ -176,14 +114,28 @@ ang_dist = UniformAngularDistribution()
 length_dist = Dirac(0.0)
 time_dist = Dirac(0.0)
 inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
+model = models_casc["A1S1"]
+model = gpu(model)
 hit_generator = SurrogateModelHitGenerator(model, 200.0, nothing)
+
+
 event = rand(inj)
-event[:particles]
-hits = generate_hit_times!(event, d, hit_generator)
+dets = []
+for n in 10:5:200    
+    m = calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=n)
+    push!(dets, tr(m))
+end
+
+dets = Vector{Float64}(dets)
+
+lines(dets, axis=(yscale=log10,))
+
+inv.(f)
 
 
-f = calc_fisher(d, inj, hit_generator, 10, 20, use_grad=true)
+f = calc_fisher(d, inj, hit_generator, 20, 30, use_grad=true)
 inv(f)
+det(f)
 
 ec = EventCollection(inj)
 
@@ -196,8 +148,7 @@ ec = EventCollection(inj)
 
 rng = MersenneTwister(31338)
 
-model = models_casc["A1S1"]
-model = gpu(model)
+
 
 logenergies = 2:1:5
 
@@ -206,7 +157,8 @@ logenergies = 2:1:5
 inv.(sds)
 
 
-model_res = Dict()
+
+covariances = Dict()
 for (mname, model) in models_casc
 
     model = gpu(model)
@@ -222,8 +174,11 @@ for (mname, model) in models_casc
 
     cov = inv.(sds)
 
-    @show cov
+    covariances[mname] = cov
+end
 
+model_res = Dict()
+for (mname, cov) in covariances
     sampled_sds = []
     for c in cov
 
@@ -243,11 +198,12 @@ end
 fig = Figure()
 ax = Axis(fig[1, 1], yscale=log10)
 for (mname, res) in model_res
-    CairoMakie.scatter!(ax, logenergies, Vector{Float64}(res))
+    CairoMakie.scatter!(ax, logenergies, Vector{Float64}(res), label=mname)
 end
-
+axislegend(ax)
 fig
 
+keys(models_casc)
 
 
 begin

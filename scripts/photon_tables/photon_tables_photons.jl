@@ -28,9 +28,10 @@ function run_sim(
 
     direction::SVector{3,Float32} = sph_to_cart(acos(dir_costheta), dir_phi)
 
-    if mode == :bare_infinite_track
+    if mode == :bare_infinite_track || mode == :lightsabre_muon
         r = direction[1] / direction[2]
         ppos = SA_F32[distance/sqrt(1 + r^2), -r*distance/sqrt(1 + r^2), 0]
+
     else
         ppos = SA_F32[0, 0, distance]
     end
@@ -111,7 +112,7 @@ function run_sims(parsed_args)
     dist_max = parsed_args["dist_max"]
     g = parsed_args["g"]
 
-    if mode == :extended
+    if mode == :extended || mode == :lightsabre_muon
         sobol = skip(
             SobolSeq(
                 [log10(e_min), log10(dist_min), -1, 0],
@@ -145,6 +146,7 @@ function run_sims(parsed_args)
 
             run_sim(energy, distance, dir_costheta, dir_phi, parsed_args["output"], i + n_skip, mode, g)
         end
+        
     else
         sobol = skip(
             SobolSeq([log10(dist_min), -1], [log10(dist_max), 1]),
@@ -164,7 +166,7 @@ end
 
 s = ArgParseSettings()
 
-mode_choices = ["extended", "bare_infinite_track", "pointlike"]
+mode_choices = ["extended", "bare_infinite_track", "pointlike_cherenkov", "lightsabre_muon"]
 
 @add_arg_table s begin
     "--output"
@@ -206,9 +208,9 @@ mode_choices = ["extended", "bare_infinite_track", "pointlike"]
     default = 150.0
     "--g"
     help = "Mean scattering angle"
-    arg_type = Float64
+    arg_type = Float32
     required = false
-    default = 0.95
+    default = 0.95f0
 end
 parsed_args = parse_args(ARGS, s)
 

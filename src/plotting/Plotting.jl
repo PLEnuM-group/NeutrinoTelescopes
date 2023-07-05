@@ -29,10 +29,9 @@ function compare_mc_model(
     ga = fig[1, 1] = GridLayout(4, 4)
 
 
-    samples = sample_multi_particle_event(particles, targets, first(models)[2], c_n; oversample=oversampling, feat_buffer=nothing)
+    samples = sample_multi_particle_event(particles, targets, gpu(first(models)[2]), medium; oversample=oversampling, feat_buffer=nothing)
 
-    t_geo = calc_tgeo(norm(particles[1].position - targets[1].shape.position) - targets[1].shape.radius, c_n)
-
+    t_geo = calc_tgeo(particles[1], targets[1], medium)
 
     for i in 1:16
         row, col = divrem(i - 1, 4)
@@ -45,16 +44,16 @@ function compare_mc_model(
 
     n_pmt = get_pmt_count(eltype(targets))
 
-    t_geos = repeat([calc_tgeo(norm(particles[1].position - t.shape.position) - t.shape.radius, c_n) for t in targets], n_pmt)
+    t_geos = repeat([calc_tgeo(particles[1], t, medium) for t in targets], n_pmt)
     t0 = particles[1].time
 
     times = -20:bin_width:100
     for (mname, model) in models
-
+        model = gpu(model)
         shape_lhs = []
         local log_expec
         for t in times
-            _, shape_lh, log_expec = SurrogateModels.evaluate_model(particles, Vector.(eachrow(t .+ t_geos .+ t0)), targets, model, c_n)
+            _, shape_lh, log_expec = SurrogateModels.evaluate_model(particles, Vector.(eachrow(t .+ t_geos .+ t0)), targets, model, medium)
             push!(shape_lhs, collect(shape_lh))
         end
 

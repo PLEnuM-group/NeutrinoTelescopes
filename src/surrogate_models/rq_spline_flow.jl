@@ -185,8 +185,8 @@ function constrain_spline_params(params, range_min::Real, range_max::Real, min_b
 
     T = eltype(params)
 
-    x_pos::Matrix{T} = range_min .+ cumsum(bin_widths[1:end-1, :], dims=1)
-    y_pos::Matrix{T} = range_min .+ cumsum(bin_heights[1:end-1, :], dims=1)
+    x_pos = range_min .+ cumsum(bin_widths[1:end-1, :], dims=1)
+    y_pos = range_min .+ cumsum(bin_heights[1:end-1, :], dims=1)
 
     if ndims(params) == 1
         pad_shape = (1,)
@@ -210,9 +210,8 @@ function constrain_spline_params(params, range_min::Real, range_max::Real, min_b
     # Use identify outside of boundary
 
     ones_a = ones_like(x_pos, pad_shape)
+    # @show size(knot_slopes) size(ones_a) size(params)
     knot_slopes = vcat(ones_a, knot_slopes[2:end-1, :], ones_a)
-
-
 
     return x_pos, y_pos, knot_slopes
 
@@ -396,14 +395,14 @@ function inv_rqs_univariate(x_pos::AbstractMatrix, y_pos::AbstractMatrix, knot_s
     # Solve quadratic to obtain z and then x.
     z = safe_quadratic_root.(a, b, c)
     z = clamp.(z, 0.0, 1.0)  # Ensure z is in [0, 1].
-    x::Vector{T} = bin_width .* z .+ x_pos_bin[1]
+    x = bin_width .* z .+ x_pos_bin[1]
 
     # Compute log det Jacobian.
     sq_z = z .^ 2
     z1mz = z .- sq_z  # z(1-z)
     sq_1mz = (1.0 .- z) .^ 2
     denominator = bin_slope .+ slopes_term .* z1mz
-    logdet::Vector{T} = -2.0 .* log.(bin_slope) .- log.(
+    logdet = -2.0 .* log.(bin_slope) .- log.(
         knot_slopes_bin[2] .* sq_z .+ 2.0 .* bin_slope .* z1mz .+
         knot_slopes_bin[1] .* sq_1mz) .+ 2.0 .* log.(denominator)
 

@@ -16,5 +16,21 @@ Base.push!(e::EventCollection, v) = push!(e.events, v)
 Base.size(e::EventCollection) = size(e.events)
 Base.iterate(e::EventCollection) = iterate(e.events)
 Base.iterate(e::EventCollection, state) = iterate(e.events, state)
+Base.length(e::EventCollection) = length(e.events)
+
+
+function Base.vcat(ecs::Vararg{<:EventCollection})
+
+    ij0 = first(ecs).injector
+    for ec in ecs
+        if ec.injector != ij0
+            error("All injectors have to be identical for combination")
+        end
+    end
+    combined_events = mapreduce(ec -> getproperty(ec, :events), vcat, ecs)
+
+    return EventCollection(combined_events, ij0)
+end
+
 
 StructTypes.StructType(::Type{<:EventCollection}) = StructTypes.Struct()

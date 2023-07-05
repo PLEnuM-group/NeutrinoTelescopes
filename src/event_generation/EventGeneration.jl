@@ -13,10 +13,5 @@ export EventCollection
 @reexport using .Detectors
 @reexport using .PMTHits
 
-try
-    include("proposal_interface.jl")
-    @reexport using .ProposalInterface
-catch y
-    @warn "Could not load proposal interface."
-end
+
 end
