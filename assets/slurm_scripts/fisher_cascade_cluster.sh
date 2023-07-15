@@ -2,13 +2,13 @@
 #SBATCH -N 1
 #SBATCH --job-name=fisher
 #SBATCH --ntasks=1
-#SBATCH --time=12:00:00
+#SBATCH --time=4:00:00
 #SBATCH --gres=gpu:1
-#SBATCH -o logs/fisher_%A-%a.out
-#SBATCH -e logs/fisher_%A-%a.err
+#SBATCH -o logs/fisher_cascade_%A-%a.out
+#SBATCH -e logs/fisher_cascade_%A-%a.err
 
-type=track
-det=full
+type=cascade
+det=cluster
 start=$(date +%s)
 n_sims=20
 out_folder=$WORK/fisher

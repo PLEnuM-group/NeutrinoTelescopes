@@ -704,13 +704,9 @@ end
     energy for input calculation
 """
 function _calc_flow_input(particle::Particle, target::PhotonTarget, tf_vec::AbstractVector)
-
-    
     if particle_shape(particle) == Track()
-        @show shifted
         particle = shift_to_closest_approach(particle, target.shape.position)
     end
-
     return _calc_flow_input(particle.position, particle.direction, particle.energy, target.shape.position, tf_vec)
 end
 

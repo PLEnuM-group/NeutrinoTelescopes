@@ -29,7 +29,7 @@ function run_sim(
     direction::SVector{3,Float32} = sph_to_cart(acos(dir_costheta), dir_phi)
 
     if mode == :bare_infinite_track || mode == :lightsabre_muon
-        r = direction[1] / direction[2]
+        r = direction[2] > 0 ? direction[1] / direction[2] : zero(direction[1])
         ppos = SA_F32[distance/sqrt(1 + r^2), -r*distance/sqrt(1 + r^2), 0]
 
     else
@@ -65,7 +65,6 @@ function run_sim(
         end
 
         setup.sources[1] = oversample_source(prop_source, 10)
-        println(format("distance {:.2f} photons: {:d}", distance, setup.sources[1].photons))
         base_weight /= 10.0
 
     end

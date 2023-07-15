@@ -38,7 +38,7 @@ function make_lh_func(;time, data, targets, model, medium, diff_cache, ptype, de
         length = particle_shape(ptype) == Track() ? T(10000.) : T(0.)
         
         direction = sph_to_cart(dir_theta, dir_phi)
-        p = Particle(pos, direction, T(time), 10^log_energy, length, ptype)
+        p = Particle(T.(pos), T.(direction), T(time), T(10^log_energy), T(length), ptype)
 
         return multi_particle_likelihood([p], data=data, targets=targets, model=model, medium=medium, feat_buffer=cache, amp_only=false, device=device)
 
@@ -56,7 +56,6 @@ function make_lh_func(;time, data, targets, model, medium, diff_cache, ptype, de
 
     return evaluate_lh, wrapped
 end
-
 
 
 function calc_fisher_matrix(

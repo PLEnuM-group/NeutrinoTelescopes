@@ -13,8 +13,10 @@ using LinearAlgebra
 using ...Processing
 using DataFrames
 
+
 export compare_mc_model
 export plot_hits_on_module
+
 
 function compare_mc_model(
     particles::AbstractVector{<:Particle},
@@ -23,9 +25,9 @@ function compare_mc_model(
     medium::MediumProperties,
     hits; oversampling=1, bin_width=2)
 
-    c_n = c_at_wl(800.0f0, medium)
-
     fig = Figure(resolution=(1500, 1000))
+    fig2 = Figure()
+    ax2= Axis(fig2[1, 1], xlabel="Time (ns)", ylabel="Hit density (1/ns)", yscale=Makie.pseudolog10, yminorticksvisible=true, yminorticks=IntervalsBetween(5))
     ga = fig[1, 1] = GridLayout(4, 4)
 
 
@@ -42,12 +44,21 @@ function compare_mc_model(
         hist!(ax, samples[i] .- t_geo .- particles[1].time, bins=-20:3:100, color=:slateblue, normalization=:density, weights=fill(1/oversampling, length(samples[i])))
     end
 
+    bins = -5:1:20
+    hits_per_pmt = combine(groupby(hits, :pmt_id), nrow)
+    max_pmt = Int64(sort(hits_per_pmt, :nrow, rev=true)[1, :pmt_id])
+    mask = hits[:, :pmt_id] .== max_pmt
+    hist!(ax2, hits[mask, :tres], bins=bins, normalization=:density, weights=fill(1/oversampling, sum(mask)), label="MC Photon Propagation", color=(Makie.wong_colors()[1], 0.5))
+    #hist!(ax2, samples[max_pmt] .- t_geo .- particles[1].time, bins=bins, normalization=:density, weights=fill(1/oversampling, length(samples[max_pmt])), color=(colors[2], 0.7))
+
+
     n_pmt = get_pmt_count(eltype(targets))
 
     t_geos = repeat([calc_tgeo(particles[1], t, medium) for t in targets], n_pmt)
     t0 = particles[1].time
 
-    times = -20:bin_width:100
+    times = -5:0.05:20
+ 
     for (mname, model) in models
         model = gpu(model)
         shape_lhs = []
@@ -64,9 +75,14 @@ function compare_mc_model(
             lines!(ga[col+1, row+1], times, exp.(shape_lh[i, :] .+ log_expec[i]), label=mname)
 
         end
+        lines!(ax2, times, exp.(shape_lh[max_pmt, :] .+ log_expec[max_pmt]), label=mname, linewidth=3)
     end
 
-    fig
+    axislegend(ax2)
+    ylims!(ax2, 0, 50)
+  
+
+    fig, fig2
 end
 
 compare_mc_model(particles, targets, models) = compare_mc_model(particles, targets, models, medium, mc_expectation(particles, targets))

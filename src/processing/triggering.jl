@@ -75,8 +75,10 @@ function count_coinc_in_tw(sorted_hits, time_window)
     end
 
     return length.(values(window_cnt))
-
 end
+
+
+
 
 
 end

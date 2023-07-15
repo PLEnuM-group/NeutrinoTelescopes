@@ -25,19 +25,16 @@ function run(args)
 
     model_path = joinpath(ENV["WORK"], "time_surrogate")
     models_casc = Dict(
-        "A1S1" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
-        "A2S1" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
-        "A1S2" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
-        "A2S2" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
+        "Model A" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
+        "Model B" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
+        "Model C" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_3_FNL.bson"), joinpath(model_path, "extended/time_4_FNL.bson")),
 
     )
 
-
-    models_tracks = Dict(
-        "A1S1" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_1_FNL.bson")),
-        "A2S1" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_2_FNL.bson"), joinpath(model_path, "lightsabre/time_1_FNL.bson")),
-        "A1S2" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_2_FNL.bson")),
-        "A2S2" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_2_FNL.bson"), joinpath(model_path, "lightsabre/time_2_FNL.bson")),
+    models_track = Dict(
+        "Model A" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_1_FNL.bson")),
+        "Model B" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_2_FNL.bson"), joinpath(model_path, "lightsabre/time_2_FNL.bson")),
+        "Model C" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_3_FNL.bson"), joinpath(model_path, "lightsabre/time_4_FNL.bson")),
 
     )
 
@@ -52,7 +49,7 @@ function run(args)
         pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
         ang_dist = LowerHalfSphere()
         length_dist = Dirac(10000.)
-        models = models_tracks
+        models = models_track
     else
         pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
         ang_dist = UniformAngularDistribution()
@@ -61,17 +58,17 @@ function run(args)
     end
    
     time_dist = Dirac(0.0)
-    logenergies = 2:0.5:5
-    spacings = SobolSeq(30, 200)
+    logenergies = 2:0.5:6
+    spacings = 30:10:200
 
     n_samples = 30
     n_events = args["nevents"]
 
     results = []
 
-    for i in 1:10
+    for spacing in spacings
 
-        spacing = next!(spacings)[1]
+        #spacing = next!(spacings)[1]
 
         targets = nothing
         if args["det"] == "cluster"

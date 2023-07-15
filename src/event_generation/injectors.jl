@@ -6,6 +6,7 @@ using Distributions
 using PhysicsTools
 using UUIDs
 using StructTypes
+using Rotations
 import Base.rand
 import ..Event
 
@@ -18,6 +19,11 @@ export ParticleTypeDistribution
 export AngularDistribution, UniformAngularDistribution
 export LowerHalfSphere
 export get_intersection
+export sample_uniform_ray
+export maximum_proj_area, projected_area
+export get_volume
+export is_volume, is_surface
+
 
 """
     VolumeType
@@ -56,6 +62,11 @@ Base.:(==)(a::Cuboid, b::Cuboid) = (a.l_x == b.l_x) && (a.l_y == b.l_y) && (a.l_
 
 StructTypes.StructType(::Type{<:Cuboid}) = StructTypes.Struct()
 
+"""
+    FixedPosition{T} <: VolumeType
+
+Dummy type representing a fixed point. Used for sampling a 3D-Delta Distribution
+"""
 struct FixedPosition{T} <: VolumeType
     position::SVector{3,T}
 end
@@ -63,6 +74,7 @@ end
 Base.:(==)(a::FixedPosition, b::FixedPosition) = all(a.position .== b.position)
 
 StructTypes.StructType(::Type{<:FixedPosition}) = StructTypes.Struct()
+
 """
     rand(::VolumeType)
 
@@ -71,6 +83,11 @@ Sample a random point in volume
 rand(::VolumeType) = error("Not implemented")
 rand(vol::FixedPosition) = vol.position
 
+"""
+    rand(vol::Cylinder{T}) where {T}
+
+Sample a random point in Cylinder.
+"""
 function rand(vol::Cylinder{T}) where {T}
     uni = Uniform(-vol.height / 2, vol.height / 2)
     rng_z = rand(uni)
@@ -84,6 +101,11 @@ function rand(vol::Cylinder{T}) where {T}
 
 end
 
+"""
+    rand(vol::Cylinder{T}) where {T}
+
+Sample a random point in Cuboid.
+"""
 function rand(vol::Cuboid{T}) where {T}
     uni_x = Uniform(-vol.l_x / 2, vol.l_x / 2)
     uni_y = Uniform(-vol.l_y / 2, vol.l_y / 2)
@@ -92,9 +114,24 @@ function rand(vol::Cuboid{T}) where {T}
 
 end
 
+"""
+    get_volume(::VolumeType)
+Calculate volume.
+"""
+get_volume(::VolumeType) = error("not implemented")
+get_volume(c::Cylinder) = c.radius^2 * π * c.height
+get_volume(c::Cuboid) = c.l_x * c.l_y * c.l_z
 
-
+"""
+SurfaceType
+    Abstract type for surfaces
+"""
 abstract type SurfaceType end
+
+"""
+    CylinderSurface{T} <: SurfaceType
+Type for cylinder surfaces
+"""
 struct CylinderSurface{T} <: SurfaceType
     center::SVector{3,T}
     height::T
@@ -103,9 +140,24 @@ end
 
 Base.:(==)(a::CylinderSurface, b::CylinderSurface) = (a.center == b.center) && (a.height == b.height) && (a.radius == b.radius)
 
+"""
+    CylinderSurface(c::Cylinder)
+Create a cylinder surface from cylinder
+"""
 CylinderSurface(c::Cylinder) = CylinderSurface(c.center, c.height, c.radius)
+
+"""
+    Cylinder(c::CylinderSurface)
+Create a cylinder from cylinder surface
+"""
 Cylinder(c::CylinderSurface) = Cylinder(c.center, c.height, c.radius)
 
+"""
+    Base.rand(c::CylinderSurface{T}) where {T}
+
+Uniformly sample a point on the cylinder surface. Note that this does not sample impact points
+for rays from a uniform flux (see `sample_uniform_ray`).
+"""
 function Base.rand(c::CylinderSurface{T}) where {T}
 
     cap_area = π*c.radius^2
@@ -149,6 +201,11 @@ function get_surface_normal(c::CylinderSurface{T}, pos) where {T <: Real}
     end
 end
 
+is_surface(::Any) = false
+is_surface(::SurfaceType) = true
+
+is_volume(::Any) = false
+is_volume(::VolumeType) = true
 
 mutable struct Intersection{T}
     first::Union{Nothing, T}
@@ -169,7 +226,18 @@ mutable struct Intersection{T}
     end
 end
 
-get_intersection(::VolumeType, position) = error("Not implemented")
+"""
+    get_intersection(::VolumeType, position, direction) = error("Not implemented")
+Calculate intersection of a line x : position + t*direction with volume
+"""
+get_intersection(::VolumeType, position, direction) = error("Not implemented")
+
+"""
+    get_intersection(c::Cylinder{T}, position, direction) where {T <: Real}
+    Calculate intersection with cylinder.
+
+    Code adapted from Jakob van Santen.
+"""
 function get_intersection(c::Cylinder{T}, position, direction) where {T <: Real}
     
     x, y, z = position .- c.center
@@ -228,8 +296,73 @@ end
 get_intersection(c::CylinderSurface, position, direction) = get_intersection(Cylinder(c), position, direction)
 get_intersection(volume::VolumeType, particle::Particle) = get_intersection(volume, particle.position, particle.direction)
 
+projected_area(::VolumeType, direction) = error("not implemented")
+function projected_area(c::Cylinder, direction::AbstractArray)
+    projected_area(c, cos(cart_to_sph(direction)[1]))
+	
+end
+
+function projected_area(c::Cylinder, cos_theta::Real)
+    cap = π*c.radius^2
+	sides = 2*c.radius*c.height
+	return cap*abs(cos_theta) + sides*sqrt(1 - cos_theta^2)
+end
+
+maximum_proj_area(::VolumeType) = error("not implemented")
+maximum_proj_area(c::Cylinder) = projected_area(c, cos(atan(2*c.height/(π*c.radius))))
 
 
+sample_uniform_ray(::SurfaceType) = error("not defined")
+
+"""
+    sample_uniform_ray(c::CylinderSurface, cos_range)
+
+    Sample intersection position and direction for rays from a uniform flux passing through the surface
+
+    Code adapted from Jakob van Santen.
+"""
+function sample_uniform_ray(c::CylinderSurface, cos_range)
+    
+    cyl = Cylinder(c)
+    max_area = maximum_proj_area(cyl)
+    uni_costheta = Uniform(cos_range...)
+    uni_maxarea = Uniform(0, max_area)
+    
+    cos_theta = 0.
+    while true
+        cos_theta = rand(uni_costheta)
+        if rand(uni_maxarea) <= projected_area(cyl, cos_theta)
+            break
+        end
+    end
+
+    phi =  rand()*2*π
+    theta = acos(cos_theta)
+    direction = sph_to_cart(acos(cos_theta), phi)
+
+	a = sin(theta)*c.height/2.
+    b = abs(cos(theta))*c.radius
+    
+    uni_x = Uniform(-c.radius, c.radius)
+    uni_y = Uniform(-(a+b), a+b)
+    x = 0.
+    y = 0.
+    while true
+        x = rand(uni_x)
+        y = rand(uni_y)
+
+        if abs(y) <= (a + b*sqrt(1 - x^2/(c.radius^2)))
+            break
+        end
+    end
+    
+    pos = SA[y, x, 0]
+    pos =  (AngleAxis(phi, 0., 0., 1.) * AngleAxis(theta, 0., 1., 0.)) * pos .+ c.center
+
+    isec = get_intersection(c, pos, direction)
+    pos = pos .+ direction .* isec.first
+    return pos, direction
+end
 
 abstract type AngularDistribution end
 abstract type HalfSphereAngularDistribution  <: AngularDistribution end
@@ -284,13 +417,12 @@ end
 
 
 function Base.rand(inj::VolumeInjector)
-    pos = rand(inj.volume)
     energy = rand(inj.e_dist)
     ptype = rand(inj.type_dist)
-    dir = rand(inj.angular_dist)
     length = rand(inj.length_dist)
     time = rand(inj.time_dist)
-
+    pos = rand(inj.volume)
+    dir = rand(inj.angular_dist)
     event = Event()
     event[:particles] = [Particle(pos, dir, time, energy, length, ptype)]
 
@@ -334,11 +466,7 @@ function Base.rand(inj::SurfaceInjector)
 
     # This draws a direction uniformly on a half sphere. Need to rotate z-axis of half sphere onto cylinder tangent plane
 
-    in_surface_normal = get_surface_normal(inj.surface, pos)
-
-    dir = rand(inj.angular_dist)
-
-    dir = rot_from_ez_fast(in_surface_normal, dir)
+    pos, dir = sample_uniform_ray(inj.surface, (-1., 1.))
     
     event = Event()
     event[:particles] = [Particle(pos, dir, time, energy, length, ptype)]
@@ -346,5 +474,9 @@ function Base.rand(inj::SurfaceInjector)
     return event
 
 end
+
+
+is_volume(::VolumeInjector) = true
+is_surface(::SurfaceInjector) = true
 
 end

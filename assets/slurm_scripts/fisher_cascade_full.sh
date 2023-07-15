@@ -4,10 +4,10 @@
 #SBATCH --ntasks=1
 #SBATCH --time=12:00:00
 #SBATCH --gres=gpu:1
-#SBATCH -o logs/fisher_%A-%a.out
-#SBATCH -e logs/fisher_%A-%a.err
+#SBATCH -o logs/fisher_cascade_%A-%a.out
+#SBATCH -e logs/fisher_cascade_%A-%a.err
 
-type=track
+type=cascade
 det=full
 start=$(date +%s)
 n_sims=20

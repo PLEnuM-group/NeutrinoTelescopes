@@ -25,7 +25,7 @@ function get_bounding_cylinder(d::Detector; padding_top=50., padding_side=50.)
     positions = reduce(hcat, [m.shape.position for m in modules])
     center_xyz = mean(positions, dims=2)[:]
     radius = maximum(norm.(positions[1:2, :] .- center_xyz[1:2]))
-    height = maximum(abs.(extrema(positions[3, :] .- center_xyz[3])))
+    height = first(diff(collect(extrema(positions[3, :] .- center_xyz[3]))))
     return Cylinder(SVector{3, Float64}(center_xyz), height.+padding_top, radius.+padding_side)
 end
 

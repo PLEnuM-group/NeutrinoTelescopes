@@ -78,19 +78,20 @@ function calc_tgeo(particle::Particle, target, medium)
 end
 
 
-
-
-function shift_to_closest_approach(particle::Particle, pos::AbstractVector)
-    p = particle.position
-    b = particle.direction
+function closest_approach_param(p0, dir, pos)
 
     # Vector from pos to p
-    a = pos .- p
+    a = pos .- p0
 
-    d = dot(a, b)
+    d = dot(a, dir)
+    return d
+end
+
+function shift_to_closest_approach(particle::Particle, pos::AbstractVector)
+    d = closest_approach_param(particle.position, particle.direction, pos)
 
     # Projection of a into particle direction
-    pos_along = p .+ d .* b
+    pos_along = particle.position .+ d .* particle.direction
 
     t = particle.time .+ d / c_vac_m_ns
 

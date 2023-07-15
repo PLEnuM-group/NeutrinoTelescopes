@@ -54,11 +54,12 @@ targets_three_l = [
     make_detector_line(@SVector[0.0, sqrt(50^2 - 25^2), 0.0], 20, 50, 41)]
 targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
 
-detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => targets_three_l, "Hex" => targets_hex)
+targets_full = make_n_hex_cluster_detector(7, 70, 20, 50)
+detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => targets_three_l, "Hex" => targets_hex, "full" => targets_full)
 medium = make_cascadia_medium_properties(0.95f0)
 
 
-targets = targets_hex
+targets = targets_full
 model_path = joinpath(ENV["WORK"], "time_surrogate")
 model = models_tracks["A1S1"]
 model = gpu(model)
@@ -74,18 +75,22 @@ log_energy = 4.
 
 p = Particle(pos, dir, 0.0, 10^log_energy, 0.0, PMuMinus)
 rng = MersenneTwister(31338)
-samples = sample_multi_particle_event([p], targets, model, medium)
+
+range_mask = get_modules_in_range([p], targets, 200)
+targets_range = targets[range_mask]
+
+samples = sample_multi_particle_event([p], targets_range, model, medium)
 
 
 
-f, fwrapped = make_lh_func(time=0., data=samples, targets=targets, model=model, medium=medium, diff_cache=nothing, ptype=p.type)
+f, fwrapped = make_lh_func(time=0., data=samples, targets=targets_range, model=model, medium=medium, diff_cache=nothing, ptype=p.type)
 g(dir_theta) = f(log_energy, dir_theta, dir_phi, pos[1], pos[2], pos[3])
 dir_thetas = 0:0.01:0.6
 log_energies = 3:0.05:5
 llhs = g.(dir_thetas)
 plot(dir_thetas, llhs)
 
-logl_grad = collect(ForwardDiff.gradient(fwrapped, [log_energy, dir_theta, dir_phi]))
+logl_grad = collect(ForwardDiff.gradient(fwrapped, [log_energy, dir_theta, dir_phi, pos[1], pos[2], pos[3]]))
 
 diffquot(f, ϵ, x0) = (f(x0+ϵ/2) .- f(x0-ϵ/2) ) ./ ϵ
 epss = -7:0.1:-2

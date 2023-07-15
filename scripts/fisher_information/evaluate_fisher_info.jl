@@ -8,25 +8,18 @@ using LinearAlgebra
 using Formatting
 using Glob
 
-outdir = joinpath(ENV["WORK"], "fisher")
-
-df = load(joinpath(outdir, "fisher_ext_casc_hex.jld2"), "results")
-df = load(joinpath(outdir, "fisher_muon_hex.jld2"), "results")
-
-files = glob("fisher_track*.jld2", outdir )
-
-df = mapreduce(f -> load(f)["results"], vcat,  files)
-#df = load(joinpath(outdir, "fisher_muon_full.jld2"), "results")
-
-
 function unwrap_row(row)
     matrices = row[:matrices]
     events = row[:event_collection]
-    cyl = events.injector.surface
+    if is_surface(events.injector)
+        cyl = events.injector.surface
+    else
+        cyl = events.injector.volume
+    end
     out = []
     for (m, e) in zip(matrices, events)
         p = e[:particles][1]
-        dir_theta, dir_phi = sph_to_cart(p.direction)
+        dir_theta, dir_phi = cart_to_sph(p.direction)
         pos_x, pos_y, pos_z = p.position
 
         intersection = get_intersection(cyl, p.position, p.direction)
@@ -39,12 +32,6 @@ function unwrap_row(row)
     return DataFrame(out)
 end
 
-new_rows = []
-for row in eachrow(df)
-    push!(new_rows, unwrap_row(row))
-end
-df =  reduce(vcat, new_rows)
-
 
 function calc_ang_std(fisher, dir_theta, dir_phi)
     try
@@ -55,7 +42,6 @@ function calc_ang_std(fisher, dir_theta, dir_phi)
     dir_sp = [dir_theta, dir_phi]
     dir_cart = sph_to_cart(dir_sp)
 
-    
         dist = MvNormal(dir_sp, cov_za)
         rdirs = rand(dist, 1000)
 
@@ -66,54 +52,42 @@ function calc_ang_std(fisher, dir_theta, dir_phi)
     end
 end
 
-df = transform(df, Cols(:fisher, :dir_theta, :dir_phi) => ByRow(calc_ang_std) => :dir_uncert)
-
-
-fig = Figure()
-ax = Axis(fig[1, 1], yscale=log10)
-
-for (col, (gname, group)) in zip(Makie.wong_colors(), pairs(groupby(df, (:spacing))))
-
-    for (gname, group2) in pairs(groupby(group, (:model)))
-        scatter!(ax, Float64.(group2[:, :log_energy]), group2[:, :dir_uncert], color=col)  
+function proc_data(files)
+    df = mapreduce(f -> load(f)["results"], vcat,  files)
+    new_rows = []
+    for row in eachrow(df)
+        push!(new_rows, unwrap_row(row))
     end
+    df =  reduce(vcat, new_rows)
+    df = transform(df, Cols(:fisher, :dir_theta, :dir_phi) => ByRow(calc_ang_std) => :dir_uncert)
 end
-fig
 
-fig = Figure()
-ax = Axis(fig[1, 1], xlabel="Spacing (m)", ylabel="Angular Resolution (deg)",
-    title="100 TeV Lightsabre")
-for (gname, group) in pairs(groupby(df[df[:, :log_energy] .== 5, :], (:model)))
+df_casc[:, :log_energy]
 
-    sorted_g = sort(group, :spacing)
+mask = ( df_casc[:, :log_energy] .==5.0) 
+df_sel = df_casc[mask, :]
 
-    lines!(ax, Float64.(sorted_g[:, :spacing]), sorted_g[:, :dir_uncert], label=gname[1])  
-end
-axislegend("Model", position=:lt)
-fig
+hexbin(cos.(df_sel[:, :dir_theta]), df_sel[:, :dir_uncert])
+
+df_comb = combine(groupby(df_sel, [:spacing, :model]), :dir_uncert => (x -> mean(skipmissing(x))) => :dir_uncert_mean)
 
 
-fontsize_theme = Theme(fontsize = 20)
-set_theme!(fontsize_theme)
 
-
-function make_resolution_plot(length_cut = 0)
-    energies = [3, 4, 5]
+function make_resolution_plot(df; length_cut = 0)
+    energies = [3, 4, 5, 6]
     fig = Figure()
     ax = Axis(fig[1, 1],
             xlabel="Spacing (m)", ylabel="Angular Resolution (deg)",
-            title="Lightsabre Muon", yscale=log10,
+            yscale=log10,
             
             yminorticksvisible=true,
             yminorticks = IntervalsBetween(10),
             #yticks = [1E-3, 1E-2, 1E-1, 1]
             )
 
-    for (e, col, ls) in zip(energies, Makie.wong_colors(), [:solid, :dash, :dashdot])
+    for (e, col) in zip(energies, Makie.wong_colors())
         mask = ( df[:, :log_energy] .== e) .&& (df[:, :length_in] .> length_cut)
         df_sel = df[mask, :]
-
-
 
         df_comb = combine(groupby(df_sel, [:spacing, :model]), :dir_uncert => (x -> mean(skipmissing(x))) => :dir_uncert_mean)
 
@@ -129,21 +103,75 @@ function make_resolution_plot(length_cut = 0)
             grp_srt = sort(group, :spacing)
             lines!(grp_srt[:, :spacing], grp_srt[:, :dir_uncert_mean], color=col, label=format("{:.0d} TeV", 10^e / 1000), )#linestyle=ls)
         end
-        @show ls
-
 
     end
     axislegend("Energy", position=:lt, merge=true)
-    ylims!(1E-3, 1)
     fig
 end
 
+function make_resolution_plot_zenith_split(df; length_cut = 0)
+    energies = [3, 4, 5, 6]
+    fig = Figure()
+    ax = Axis(fig[1, 1],
+            xlabel="Spacing (m)", ylabel="Angular Resolution (deg)",
+            yscale=log10,
+            
+            yminorticksvisible=true,
+            yminorticks = IntervalsBetween(10),
+            #yticks = [1E-3, 1E-2, 1E-1, 1]
+            )
 
-make_resolution_plot()
+    for (e, col) in zip(energies, Makie.wong_colors())
+        mask = ( df[:, :log_energy] .== e) .&& (df[:, :length_in] .> length_cut)
 
-make_resolution_plot(700)
+        horizontal = mask .&& (df[:, :dir_theta] .> deg2rad(70)) .&& (df[:, :dir_theta] .< deg2rad(110))
+        vertical = mask .&& ((df[:, :dir_theta] .< deg2rad(70)) .|| (df[:, :dir_theta] .> deg2rad(110)))
 
 
+
+        df_comb_horz = combine(groupby( df[horizontal, :], [:spacing]), :dir_uncert => (x -> mean(skipmissing(x))) => :dir_uncert_mean)
+        df_comb_vert = combine(groupby( df[vertical, :], [:spacing]), :dir_uncert => (x -> mean(skipmissing(x))) => :dir_uncert_mean)
+
+        sort!(df_comb_horz, :spacing)
+        sort!(df_comb_vert, :spacing)
+
+        lines!(df_comb_horz[:, :spacing], df_comb_horz[:, :dir_uncert_mean], color=col, label=format("{:.0d} TeV horiz.", 10^e / 1000), )
+        lines!(df_comb_vert[:, :spacing], df_comb_vert[:, :dir_uncert_mean], color=col, label=format("{:.0d} TeV vert.", 10^e / 1000), linestyle=:dash)
+
+
+    end
+    egroup = [LineElement(color = c, linestyle = nothing) for c in Makie.wong_colors()[1:length(energies)]]
+    ori_grp = [LineElement(color = :black, linestyle = :solid), LineElement(color = :black, linestyle = :dash)]
+
+    l = Legend(fig[1, 2], [egroup, ori_grp],  [[format("{:.0d} TeV", round(10^e/1000)) for e in energies], ["Horizontal", "Vertical"]], ["Energy", "Direction"])
+    fig
+end
+
+outdir = joinpath(ENV["WORK"], "fisher")
+files = glob("fisher_track*.jld2", outdir )
+
+df_track = proc_data(glob("fisher_track*.jld2", outdir ))
+df_casc = proc_data(glob("fisher_casc*.jld2", outdir ))
+
+
+fontsize_theme = Theme(fontsize = 20)
+set_theme!(fontsize_theme)
+
+
+PLOT_DIR = joinpath(pkgdir(NeutrinoTelescopes), "figures")
+fig = make_resolution_plot(df_track)
+save(joinpath(PLOT_DIR, "lightsabre_resolution_all.png"), fig)
+
+fig = make_resolution_plot(df_casc)
+save(joinpath(PLOT_DIR, "cascade_resolution_all.png"), fig)
+
+fig = make_resolution_plot(df_casc, length_cut=700)
+save(joinpath(PLOT_DIR, "lightsabre_resolution_700.png"), fig)
+
+
+fig = make_resolution_plot_zenith_split(df_track)
+save(joinpath(PLOT_DIR, "lightsabre_resolution_split.png"), fig)
+make_resolution_plot_zenith_split(df_casc)
 
 reso_jp = [1643.6006004398953  0.10077652031633488
 3033.7180683525303  0.09920507226615771
@@ -177,8 +205,8 @@ for length in lengths
     lines!(ax, df_comb[:, :log_energy], df_comb[:, :dir_uncert_mean], label=format("Track length > {:.0d}m", length))
 end
 lines!(ax, reso_jp, color=:black)
-xlims!(ax, 3, 5)
-ylims!(ax, 0, 0.15)
+xlims!(ax, 3, 6)
+ylims!(ax, 0, 0.4)
 
 axislegend(gridshalign=:left)
 fig
@@ -188,3 +216,18 @@ unique(df[:, :spacing])
 
 
 lines( reso_jp')
+
+
+fig = Figure()
+ax = Axis(fig[1, 1], xlabel="Log10(Track Energy / GeV)", ylabel="Angular Resolution (deg)")
+
+
+pos = make_n_hex_cluster_detector(7, 50, 20, 50)
+d = Detector(pos, make_cascadia_medium_properties(0.95))
+cyl = get_bounding_cylinder(d)
+
+
+
+xy = make_n_hex_cluster_positions(7, 50)
+
+fig, ax = scatter(xy)

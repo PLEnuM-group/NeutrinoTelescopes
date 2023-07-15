@@ -36,19 +36,25 @@ end
 
 
 """
-    get_modules_in_range(particles, detector, generator)
+    get_modules_in_range(particles, modules, generator)
 
 Return a BitMask of modules that are in range of at least one particle
 """
-function get_modules_in_range(particles, detector::Detector{T, <:MediumProperties}, max_valid_distance) where {T}
-
-    modules::Vector{T} = get_detector_modules(detector)
+function get_modules_in_range(particles, modules::AbstractVector{<:PhotonTarget}, max_valid_distance)
     closest_d = reshape(mapreduce(((p, t),) -> closest_approach_distance(p, t), vcat, product(particles, modules)), length(particles), length(modules))
 
     modules_range_mask::Vector{Bool} = any(closest_d .<= max_valid_distance, dims=1)[:]
 
    return modules_range_mask
 end
+
+function get_modules_in_range(particles, detector::Detector{T, <:MediumProperties}, max_valid_distance) where {T}
+    modules::Vector{T} = get_detector_modules(detector)
+    return get_modules_in_range(particles, modules, max_valid_distance)
+end
+
+
+
 
 function generate_hit_times(particles::Vector{<:Particle}, detector::Detector, generator::SurrogateModelHitGenerator, rng=Random.GLOBAL_RNG; device=gpu)
     modules = get_detector_modules(detector)
