@@ -62,16 +62,6 @@ function proc_data(files)
     df = transform(df, Cols(:fisher, :dir_theta, :dir_phi) => ByRow(calc_ang_std) => :dir_uncert)
 end
 
-df_casc[:, :log_energy]
-
-mask = ( df_casc[:, :log_energy] .==5.0) 
-df_sel = df_casc[mask, :]
-
-hexbin(cos.(df_sel[:, :dir_theta]), df_sel[:, :dir_uncert])
-
-df_comb = combine(groupby(df_sel, [:spacing, :model]), :dir_uncert => (x -> mean(skipmissing(x))) => :dir_uncert_mean)
-
-
 
 function make_resolution_plot(df; length_cut = 0)
     energies = [3, 4, 5, 6]
