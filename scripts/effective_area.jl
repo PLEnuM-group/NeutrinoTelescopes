@@ -1,10 +1,10 @@
 using NeutrinoTelescopes
 using PyCall
 using CairoMakie
+using PhysicsTools
 
 PKGDIR = pkgdir(NeutrinoTelescopes)
 
-# NuE!!!
 weighter = WeighterPySpline(joinpath(PKGDIR, "assets/transm_inter_splines.pickle"))
 
 es = 2:0.1:10
@@ -12,11 +12,15 @@ es = 2:0.1:10
 fig = Figure()
 ax = Axis(fig[1, 1], yscale=log10)
 
-lines!(ax, es, get_xsec.(Ref(weighter), es),)
+lines!(ax, es, get_total_xsec.(Ref(weighter), :NU_CC, es),)
 fig
 
 
 lines(es, get_transmission_prob.(Ref(weighter), es, Ref(-1)))
+
+
+get_total_prob(weighter, PNuE(), :NU_CC, 4., 0.2, 100)
+
 
 
 np = pyimport("numpy")

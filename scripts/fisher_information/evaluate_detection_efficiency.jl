@@ -12,7 +12,7 @@ using LinearAlgebra
 using Polyhedra
 import GLPK
 using Distributions
-
+using CSV
 
 function get_polyhedron(spacing)
     targets = make_n_hex_cluster_detector(7, spacing, 20, 50)
@@ -45,7 +45,14 @@ end
 function get_geo_proj_area(p, direction)
     basis = hcat(orthonormal_basis(direction)...)
     p2 = project(p, basis)
-    return Polyhedra.volume(polyhedron(hrep(p2)))
+    vol = 0.
+    try
+        vol = Polyhedra.volume(polyhedron(hrep(p2)))
+    catch y
+        @show p2, hrep(p2), direction
+        vol = missing
+    end
+    return vol
 end
 
 function get_average_geo_proj_area(p)
@@ -55,13 +62,19 @@ function get_average_geo_proj_area(p)
 
     directions = sph_to_cart.(thetas, phis)
 
-    return mean(get_geo_proj_area.(Ref(p), directions))
+    return mean(skipmissing(get_geo_proj_area.(Ref(p), directions)))
 end
 
 function effective_area(above_thrsh, proj_area)
     eff_area = sum(proj_area[above_thrsh]) / length(above_thrsh)
     return eff_area
 end
+
+function neutrino_effective_area(above_thrsh, proj_area, total_prob)
+    eff_area = sum(proj_area[above_thrsh] .* total_prob[above_thrsh]) / length(above_thrsh)
+    return eff_area
+end
+
 
 function effective_volume(above_thrsh, eff_volume)
     return eff_volume[1] * sum(above_thrsh) / length(above_thrsh)
@@ -104,7 +117,7 @@ end
 function plot_effective_volume(df; n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_two, add_colorbar=true)
 
     fig = Figure()
-    ax = Axis(fig[1, 1], xlabel="Spacing (m)", ylabel="Cascade Effective Volume (km^3)",
+    ax = Axis(fig[1, 1], xlabel="Spacing (m)", ylabel="Cascade Effective Volume (km³)",
               yscale=log10
               )
 
@@ -161,14 +174,17 @@ end
 
 function plot_effective_area(df; n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_two, add_colorbar=true)
 
+    logenergies = unique(df[:, :log_energy])
+    @show length(logenergies)
     fig = Figure()
-    ax = Axis(fig[1, 1], xlabel="Spacing (m)", ylabel="Track Effective Area (km^2)", yscale=log10)
+    ax = Axis(fig[1, 1], xlabel="Spacing (m)", ylabel="Track Effective Area (km²)", yscale=log10)
 
     _plot_effective_area!(ax, df, n_mod_thresh=n_mod_thresh, pmt_thresh=pmt_thresh)
 
     tick_labels = Dict(3 => "1 TeV", 4 => "10 TeV", 5=> "100 TeV", 6 => "1 PeV")
 
     if add_colorbar
+        cmap = cgrad(:viridis, length(logenergies)-1, categorical = true)
         Colorbar(fig[1, 2], limits = (minimum(logenergies), maximum(logenergies)), colormap = cmap,
             flipaxis = false, ticks=[3, 4, 5, 6], tickformat= xs -> [tick_labels[x] for x in xs])
     end
@@ -181,8 +197,8 @@ end
 function plot_effective_area_and_volume(df_track, df_casc; n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_two, add_colorbar=true)
 
     fig = Figure(resolution=(1200, 600))
-    ax = Axis(fig[1, 1], xlabel="Spacing (m)", ylabel="Track Effective Area (km^2)", yscale=log10)
-    ax2 = Axis(fig[1, 2], xlabel="Spacing (m)", ylabel="Cascade Effective Volume (km^3)",
+    ax = Axis(fig[1, 1], xlabel="Spacing (m)", ylabel="Track Effective Area (km²)", yscale=log10)
+    ax2 = Axis(fig[1, 2], xlabel="Spacing (m)", ylabel="Cascade Effective Volume (km³)",
               yscale=log10
               )
 
@@ -228,6 +244,76 @@ function plot_max_eff_v_spacing(df)
 end
 
 
+function _calc_neutrino_effective_area(df; n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_two, cos_zenith_bins=[-1, 1])
+    
+    is_above_thresh = df[:, pmt_thresh] .>= n_mod_thresh
+    df[!, :is_above_thresh] = is_above_thresh
+    groups = groupby(df, :log_energy)
+    dfs = []
+
+    for (groupn, group) in pairs(groups)
+
+        for zbix in 1:(length(cos_zenith_bins) - 1)
+            ct = cos.(group[:, :dir_theta])
+            lower = cos_zenith_bins[zbix]
+            upper = cos_zenith_bins[zbix+ 1] 
+            mask = (ct .>= lower) .&& (ct .< upper)
+            grpmsk = group[mask, :]
+            eff = combine(groupby(grpmsk, :spacing), [:is_above_thresh, :proj_area, :total_prob] => neutrino_effective_area => :effective_area)
+            eff[!, :log10_energy] .= groupn[1]
+            eff[!, :cos_theta] .= (upper+lower)/2
+            push!(dfs, eff)
+        end
+
+    end
+    
+    return reduce(vcat, dfs)
+end
+
+function _plot_neutrino_effective_area!(ax, df; n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_two)
+    
+    logenergies = unique(df[:, :log_energy])
+    eff_a = _calc_neutrino_effective_area(df, n_mod_thresh=n_mod_thresh, pmt_thresh=pmt_thresh)
+    groups = groupby(eff_a, :log10_energy)
+
+    cmap = cgrad(:viridis, length(groups)-1, categorical = true)
+
+    for (groupn, group) in pairs(groups)
+      
+        grp = sort(group, :spacing)
+
+        mask = grp[:, :effective_area] .!= 0
+        x_vals = grp[mask, :spacing]
+        y_vals = grp[mask, :effective_area]
+
+        lines!(ax, x_vals, y_vals, label=format("{:.0d} TeV", round(10. ^groupn[1] / 1000)),
+            color=groupn[1], colorrange=(minimum(logenergies), maximum(logenergies)), colormap=cmap)
+    end
+    return ax
+end
+
+
+function plot_neutrino_effective_area(df; n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_two, add_colorbar=true)
+
+    fig = Figure()
+    ax = Axis(fig[1, 1], xlabel="Spacing (m)", ylabel="Neutrino Effective Area (m^2)", yscale=log10)
+
+    _plot_neutrino_effective_area!(ax, df, n_mod_thresh=n_mod_thresh, pmt_thresh=pmt_thresh)
+
+    tick_labels = Dict(3 => "1 TeV", 4 => "10 TeV", 5=> "100 TeV", 6 => "1 PeV")
+
+    logenergies = unique(df[:, :log_energy])
+
+    cmap = cgrad(:viridis, length(logenergies)-1, categorical = true)
+
+    if add_colorbar
+        Colorbar(fig[1, 2], limits = (minimum(logenergies), maximum(logenergies)), colormap = cmap,
+            flipaxis = false, ticks=[3, 4, 5, 6], tickformat= xs -> [tick_labels[x] for x in xs])
+    end
+
+    ylims!(ax, 1E-2, 100)
+    fig
+end
 
 PLOT_DIR = joinpath(pkgdir(NeutrinoTelescopes), "figures")
 
@@ -235,19 +321,49 @@ data_dir = joinpath(ENV["WORK"], "fisher")
 data_tracks = load(joinpath(data_dir, "det_eff_track_full.jld2"), "results")
 data_cascades = load(joinpath(data_dir, "det_eff_cascade_full.jld2"), "results")
 
-fontsize_theme = Theme(fontsize = 20)
-set_theme!(fontsize_theme)
-
+poster_theme = Theme(
+        fontsize = 30, linewidth=3,
+        Axis=(xlabelsize=35, ylabelsize=35))
+paper_theme = Theme(
+    fontsize = 25, linewidth=2,
+    #Axis=(xlabelsize=35, ylabelsize=35)
+    )
+set_theme!(paper_theme)
 fig = plot_effective_area_and_volume(data_tracks, data_cascades; n_mod_thresh=3, pmt_thresh=:n_mod_thrsh_two, add_colorbar=true)
+ax = contents(fig[1, 1])[1]
+text!(ax, 0, 1,  space = :relative, text="PONE Preliminary",
+    align=(:left, :top), offset=(4, -2))
+fig
 save(joinpath(PLOT_DIR, "aeff_veff.png"), fig)
-fig = plot_effective_area(data_tracks; n_mod_thresh=3, pmt_thresh=:n_mod_thrsh_two, add_colorbar=false)
+save(joinpath(PLOT_DIR, "aeff_veff.svg"), fig)
+
+
+fig = plot_effective_area(data_tracks; n_mod_thresh=3, pmt_thresh=:n_mod_thrsh_two, add_colorbar=true)
 #plot_effective_area(data_tracks; n_mod_thresh=3, pmt_thresh=:n_mod_thrsh_three)
-save(joinpath(PLOT_DIR, "lightsabre_eff_area.png"), fig)
+save(joinpath(PLOT_DIR, "lightsabre_eff_area.svg"), fig)
 
 fig = plot_effective_volume(data_cascades; n_mod_thresh=3, pmt_thresh=:n_mod_thrsh_two)
 save(joinpath(PLOT_DIR, "cascade_eff_volume.png"), fig)
 plot_max_eff_v_spacing(data_cascades)
 
+#data_cascades_new = load(joinpath(data_dir, "det_eff_cascade_full_new.jld2"), "results")
+plot_neutrino_effective_area(data_cascades)
+
+cos_zen_bins = -1:0.1:1
+aeff = _calc_neutrino_effective_area(data_cascades, n_mod_thresh=3, cos_zenith_bins=cos_zen_bins)
+
+aeff |> CSV.write(joinpath(PLOT_DIR, "aeff_cc_casc.csv"))
+
+sel = groupby(aeff, :spacing)[1]
+
+
+fig = plot_effective_area(data_tracks; n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_three)
+fig = plot_effective_area(data_tracks; n_mod_thresh=3, pmt_thresh=:n_mod_thrsh_two)
+
+
+p = Particle(SA[0., 0., 0.], [0., 0., 1.], 0., 1E4, )
+
+propagate_muon()
 
 
 

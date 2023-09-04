@@ -79,7 +79,7 @@ function compare_mc_model(
     end
 
     axislegend(ax2)
-    ylims!(ax2, 0, 50)
+    ylims!(ax2, 0, 100)
   
 
     fig, fig2

@@ -1,6 +1,7 @@
 module Weighting
 
-export get_total_prob, get_transmission_prob, get_interaction_prob, get_xsec
+export get_total_prob, get_transmission_prob, get_interaction_prob, get_xsec, get_total_xsec
+export get_interaction_coeff
 export WeighterPySpline
 
 using PyCall
@@ -46,8 +47,8 @@ function WeighterPySpline(fname::String)
     return WeighterPySpline(
         tprob["nue"], tprob["numu"], tprob["nutau"],
         tprob["nuebar"], tprob["numubar"], tprob["nutaubar"],
-        xsec["nu_cc"], xsec["nu_nc"], xsec["nubar_cc"], xsec["nubar_nc"],
-        xsec["nu_cc_total"], xsec["nu_nc_total"], xsec["nubar_cc_total"], xsec["nubar_nc_total"])
+        xsec["nu_CC"], xsec["nu_NC"], xsec["nubar_CC"], xsec["nubar_NC"],
+        xsec["nu_CC_total"], xsec["nu_NC_total"], xsec["nubar_CC_total"], xsec["nubar_NC_total"])
 end
 
 function get_total_xsec(w::Weighter, int_type::Symbol, log10_energy)
@@ -66,8 +67,27 @@ function get_total_xsec(w::Weighter, int_type::Symbol, log10_energy)
     return 10^(first(xsec(log10_energy))) * 1E-4 # m^2
 end
 
+function get_xsec(w::Weighter, int_type::Symbol, energy_lepton, energy_neutrino)
+    if int_type == :NU_CC
+        xsec = w.xsec_nu_CC
+    elseif int_type == :NU_NC
+        xsec = w.xsec_nu_NC
+    elseif int_type == :NUBAR_CC
+        xsec = w.xsec_nubar_CC
+    elseif int_type == :NUBAR_NC
+        xsec = w.xsec_nuvar_NC
+    else
+        error("Unknown interaction type $int_type")
+    end
 
-function get_interaction_prob(w::Weighter, int_type::Symbol, log10_energy, length)
+    min_e = 10.
+    z = (energy_lepton - min_e) / (energy_neutrino - min_e)
+
+    return 10^xsec(energy_neutrino, z)
+end
+
+
+function get_interaction_coeff(w::Weighter, int_type::Symbol, log10_energy)
     molar_mass_water = 18.01528 # g / mol
     density = 1000 # kg / m^3
     na = 6.02214076E23 # 1 / mol
@@ -76,13 +96,17 @@ function get_interaction_prob(w::Weighter, int_type::Symbol, log10_energy, lengt
     xs = get_total_xsec(w, int_type, log10_energy)
 
     interaction_coeff = xs * n_nucleons
+end
 
+function get_interaction_prob(w::Weighter, int_type::Symbol, log10_energy, length)
+    
+    interaction_coeff = get_interaction_coeff(w, int_type, log10_energy)
     #taylor: 1 - exp(-x) ~ x
     int_prob = interaction_coeff * length
     return int_prob
 end
 
-function get_transmission_prob(w::Weighter, ::T, log10_energy, cos_theta) where {T <:ParticleType}
+function get_transmission_prob(w::Weighter, ::Type{T}, log10_energy, cos_theta) where {T <:ParticleType}
     if T <: PNuE
         tprob = w.tprob_nue
     elseif T <: PNuEBar
@@ -103,7 +127,5 @@ function get_transmission_prob(w::Weighter, ::T, log10_energy, cos_theta) where 
 end
 
 get_total_prob(w, ptype, int_type, log10_energy, cos_theta, length)  = get_transmission_prob(w, ptype, log10_energy, cos_theta) * get_interaction_prob(w, int_type, log10_energy, length)
-    
-
 
 end

@@ -23,38 +23,22 @@ using ArgParse
 
 function run(args)
 
-    model_path = joinpath(ENV["WORK"], "time_surrogate")
-    models_casc = Dict(
-        "Model A" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
-        "Model B" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
-        "Model C" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_3_FNL.bson"), joinpath(model_path, "extended/time_4_FNL.bson")),
-
-    )
-
-    models_track = Dict(
-        "Model A" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_1_FNL.bson")),
-        "Model B" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_2_FNL.bson"), joinpath(model_path, "lightsabre/time_2_FNL.bson")),
-        "Model C" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_3_FNL.bson"), joinpath(model_path, "lightsabre/time_4_FNL.bson")),
-
-    )
-
+    model = PhotonSurrogate(args["model_path_amp"], args["model_path_time"])
+    model = gpu(model)
     medium = make_cascadia_medium_properties(0.95f0)
 
     pdist = nothing
     ang_dist = nothing
     length_dist = nothing
-    models = nothing
-
+ 
     if args["type"] == "track"
         pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
         ang_dist = LowerHalfSphere()
         length_dist = Dirac(10000.)
-        models = models_track
     else
         pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
         ang_dist = UniformAngularDistribution()
         length_dist = Dirac(0.)
-        models = models_casc
     end
    
     time_dist = Dirac(0.0)
@@ -83,26 +67,21 @@ function run(args)
 
         buffer = (create_input_buffer(d, 1))
         diff_cache = FixedSizeDiffCache(buffer, 6)
-
-        for (mname, model) in models
-
-            model = gpu(model)
-            hit_generator = SurrogateModelHitGenerator(model, 200.0, hit_buffer)
-            
-            for le in logenergies
-                edist = Dirac(10^le)
-                if args["type"] == "track"
-                    inj = SurfaceInjector(surface, edist, pdist, ang_dist, length_dist, time_dist)
-                else
-                    inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
-                end
-                
-                matrices, ec = calc_fisher(d, inj, hit_generator, n_events, n_samples, use_grad=true, cache=diff_cache)
-                #push!(sds, f)
-            
-                push!(results, (matrices=matrices, spacing=spacing, log_energy=le, model=mname, event_collection=ec))
-
+           
+        hit_generator = SurrogateModelHitGenerator(model, 200.0, hit_buffer)
+        
+        for le in logenergies
+            edist = Dirac(10^le)
+            if args["type"] == "track"
+                inj = SurfaceInjector(surface, edist, pdist, ang_dist, length_dist, time_dist)
+            else
+                inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
             end
+            
+            matrices, ec = calc_fisher(d, inj, hit_generator, n_events, n_samples, use_grad=true, cache=diff_cache)
+            #push!(sds, f)
+        
+            push!(results, (matrices=matrices, spacing=spacing, log_energy=le, event_collection=ec))
 
         end
     end
@@ -120,12 +99,20 @@ det_choices = ["cluster", "full"]
     help = "Output filename"
     arg_type = String
     required = true
+    "--model_path_amp"
+    help = "Amplitude model"
+    arg_type = String
+    required = true
+    "--model_path_time"
+    help = "Time model"
+    arg_type = String
+    required = true
     "--type"
-    help = "Particle Tpe;  must be one of " * join(type_choices, ", ", " or ")
+    help = "Particle Type;  must be one of " * join(type_choices, ", ", " or ")
     range_tester = (x -> x in type_choices)
     default = "cascade"
     "--det"
-    help = "Particle Tpe;  must be one of " * join(det_choices, ", ", " or ")
+    help = "Detector Type;  must be one of " * join(det_choices, ", ", " or ")
     range_tester = (x -> x in det_choices)
     default = "cluster"
     "--nevents"

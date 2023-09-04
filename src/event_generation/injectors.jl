@@ -153,25 +153,25 @@ Create a cylinder from cylinder surface
 Cylinder(c::CylinderSurface) = Cylinder(c.center, c.height, c.radius)
 
 """
-    Base.rand(c::CylinderSurface{T}) where {T}
+    Base.rand([rng::AbstractRNG=default_rng()], c::CylinderSurface{T}) where {T}
 
 Uniformly sample a point on the cylinder surface. Note that this does not sample impact points
 for rays from a uniform flux (see `sample_uniform_ray`).
 """
-function Base.rand(c::CylinderSurface{T}) where {T}
+function Base.rand(rng::AbstractRNG, c::CylinderSurface{T}) where {T}
 
     cap_area = π*c.radius^2
     mantle_area = 2*π*c.radius*c.height
 
     cap_prob = cap_area / (cap_area + mantle_area)
 
-    if rand() < cap_prob
+    if rand(rng) < cap_prob
         
         # Uniform in one of the caps
-        pos_z = c.center[3] + rand([-1, 1]) * c.height/2
+        pos_z = c.center[3] + rand(rng, [-1, 1]) * c.height/2
 
-        radius = sqrt(rand()*c.radius^2)
-        phi = rand(Uniform(0, 2*π))
+        radius = sqrt(rand(rng)*c.radius^2)
+        phi = rand(rng, Uniform(0, 2*π))
         pos_x = cos(phi) * radius
         pos_y = sin(phi) * radius
 
@@ -179,14 +179,16 @@ function Base.rand(c::CylinderSurface{T}) where {T}
 
     else
         # Mantle
-        pos_z = rand(Uniform(-c.height/2, c.height/2)) + c.center[3]
-        phi = rand(Uniform(0, 2 * π))
+        pos_z = rand(rng, Uniform(-c.height/2, c.height/2)) + c.center[3]
+        phi = rand(rng, Uniform(0, 2 * π))
         pos_x = c.radius * cos(phi)
         pos_y = c.radius * sin(phi)
         return SA{T}[pos_x, pos_y, pos_z]
     end
 
 end
+
+Base.rand(c::CylinderSurface) = rand(default_rng(), c)
 
 get_surface_normal(::SurfaceType, pos) = error("Not defined")
 
@@ -321,7 +323,7 @@ sample_uniform_ray(::SurfaceType) = error("not defined")
 
     Code adapted from Jakob van Santen.
 """
-function sample_uniform_ray(c::CylinderSurface, cos_range)
+function sample_uniform_ray(rng::AbstractRNG, c::CylinderSurface, cos_range)
     
     cyl = Cylinder(c)
     max_area = maximum_proj_area(cyl)
@@ -330,13 +332,13 @@ function sample_uniform_ray(c::CylinderSurface, cos_range)
     
     cos_theta = 0.
     while true
-        cos_theta = rand(uni_costheta)
-        if rand(uni_maxarea) <= projected_area(cyl, cos_theta)
+        cos_theta = rand(rng, uni_costheta)
+        if rand(rng, uni_maxarea) <= projected_area(cyl, cos_theta)
             break
         end
     end
 
-    phi =  rand()*2*π
+    phi =  rand(rng)*2*π
     theta = acos(cos_theta)
     direction = sph_to_cart(acos(cos_theta), phi)
 
@@ -348,8 +350,8 @@ function sample_uniform_ray(c::CylinderSurface, cos_range)
     x = 0.
     y = 0.
     while true
-        x = rand(uni_x)
-        y = rand(uni_y)
+        x = rand(rng, uni_x)
+        y = rand(rng, uni_y)
 
         if abs(y) <= (a + b*sqrt(1 - x^2/(c.radius^2)))
             break
@@ -364,6 +366,8 @@ function sample_uniform_ray(c::CylinderSurface, cos_range)
     return pos, direction
 end
 
+sample_uniform_ray(c::CylinderSurface, cos_range) = sample_uniform_ray(default_rng(), c, cos_range)
+
 abstract type AngularDistribution end
 abstract type HalfSphereAngularDistribution  <: AngularDistribution end
 struct UniformAngularDistribution <: AngularDistribution end
@@ -374,11 +378,13 @@ struct LowerHalfSphere <: HalfSphereAngularDistribution end
 
 StructTypes.StructType(::Type{UniformAngularDistribution}) = StructTypes.Struct()
 
-function Base.rand(::UniformAngularDistribution)
-    phi = rand() * 2 * π
-    theta = acos(2 * rand() - 1)
+function Base.rand(rng::AbstractRNG, ::UniformAngularDistribution)
+    phi = rand(rng) * 2 * π
+    theta = acos(2 * rand(rng) - 1)
     return sph_to_cart(theta, phi)
 end
+
+Base.rand(u::UniformAngularDistribution) = rand(default_rng(), u)
 
 function Base.rand(::LowerHalfSphere)
     phi = rand() * 2 * π
@@ -416,19 +422,21 @@ function Base.:(==)(a::VolumeInjector, b::VolumeInjector)
 end
 
 
-function Base.rand(inj::VolumeInjector)
-    energy = rand(inj.e_dist)
-    ptype = rand(inj.type_dist)
-    length = rand(inj.length_dist)
-    time = rand(inj.time_dist)
-    pos = rand(inj.volume)
-    dir = rand(inj.angular_dist)
+function Base.rand(rng::AbstractRNG, inj::VolumeInjector)
+    energy = randrng, (inj.e_dist)
+    ptype = rand(rng, inj.type_dist)
+    length = rand(rng, inj.length_dist)
+    time = rand(rng, inj.time_dist)
+    pos = rand(rng, inj.volume)
+    dir = rand(rng, inj.angular_dist)
     event = Event()
     event[:particles] = [Particle(pos, dir, time, energy, length, ptype)]
 
     return event
 
 end
+
+Base.rand(inj::VolumeInjector) = rand(default_rng(), inj)
 
 
 struct SurfaceInjector{
@@ -457,16 +465,16 @@ function Base.:(==)(a::SurfaceInjector, b::SurfaceInjector)
 end
 
 
-function Base.rand(inj::SurfaceInjector)
-    pos = rand(inj.surface)
-    energy = rand(inj.e_dist)
-    ptype = rand(inj.type_dist)
-    length = rand(inj.length_dist)
-    time = rand(inj.time_dist)
+function Base.rand(rng::AbstractRNG, inj::SurfaceInjector)
+    pos = rand(rng, inj.surface)
+    energy = rand(rng, inj.e_dist)
+    ptype = rand(rng, inj.type_dist)
+    length = rand(rng, inj.length_dist)
+    time = rand(rng, inj.time_dist)
 
     # This draws a direction uniformly on a half sphere. Need to rotate z-axis of half sphere onto cylinder tangent plane
 
-    pos, dir = sample_uniform_ray(inj.surface, (-1., 1.))
+    pos, dir = sample_uniform_ray(rng, inj.surface, (-1., 1.))
     
     event = Event()
     event[:particles] = [Particle(pos, dir, time, energy, length, ptype)]

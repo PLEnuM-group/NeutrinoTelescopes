@@ -70,22 +70,20 @@ function calc_fisher_matrix(
 
     medium = get_detector_medium(detector)
 
-    modules::Vector{T} = get_detector_modules(detector)
+    p::Particle = event[:particles][1]
+    dir = p.direction
+    dir_theta, dir_phi = cart_to_sph(dir)
+    logenergy = log10(p.energy)
+    pos = p.position
 
-    matrices = []
+    matrices = Matrix[]
     for __ in 1:n_samples
         times, range_mask = generate_hit_times(event, detector, generator, rng, device=device)
         
         if sum(length.(times)) == 0
             continue
         end
-
-        p::Particle = event[:particles][1]
-        dir = p.direction
-        dir_theta, dir_phi = cart_to_sph(dir)
-        logenergy = log10(p.energy)
-        pos = p.position
-
+       
         targets_range = get_detector_modules(detector)[range_mask]
 
         f, fwrapped = make_lh_func(time=0., data=times, targets=targets_range, model=generator.model, medium=medium, diff_cache=cache, ptype=p.type, device=device)
@@ -117,7 +115,7 @@ function calc_fisher(
     g::SurrogateModelHitGenerator,
     n_events::Integer,
     n_samples::Integer; use_grad=false, rng=rng=Random.GLOBAL_RNG, cache=nothing, device=gpu)
-    matrices = []
+    matrices = Matrix[]
     ec = EventCollection(inj)
     for _ in 1:n_events
         event = rand(inj)

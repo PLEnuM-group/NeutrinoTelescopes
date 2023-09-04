@@ -15,10 +15,72 @@ using ProgressLogging
 using TerminalLoggers
 using PreallocationTools
 using ArgParse
+using Glob
+
 global_logger(TerminalLogger(right_justify=120))
 
+function calc_trigger_stats(log_exp_per_pmt)
+    pmt_hits = exp.(log_exp_per_pmt) .>= 1
+
+    distinct_pmts = sum(pmt_hits, dims=1)[1, 1, :]
+    atleast_two_distinct = distinct_pmts .>= 2
+    atleast_three_distinct = distinct_pmts .>= 3
+    n_mod_thrsh_two = sum(atleast_two_distinct)
+    n_mod_thrsh_three = sum(atleast_three_distinct)
+    return n_mod_thrsh_two, n_mod_thrsh_three
+end
+
+function estimate_dir_variance(log_exp_per_pmt, modules_range)
+    exp_per_mod = sum(exp.(log_exp_per_pmt), dims=1)[:]
+    m_positions = [m.shape.position for m in modules_range]
+
+    hit_positions = m_positions[exp_per_mod .> 1]
+    max_lhit = 0
+    if length(hit_positions) > 0
+        hit_positions = reduce(hcat, m_positions[exp_per_mod .> 1])
+        dists = norm.(eachslice(hit_positions .- reshape(hit_positions, 3, 1, size(hit_positions, 2)), dims=(2, 3)))
+        max_lhit = maximum(dists)
+    end
+    weighted_mean = mean(m_positions, weights(exp_per_mod))
+
+    rel_pos = m_positions .- Ref(weighted_mean)
+    nrelpossq = norm.(rel_pos).^2
+    variance_est = 1/sum((nrelpossq .* exp_per_mod))
+
+    return variance_est, max_lhit, nrelpossq
+end
+
+
+function calc_hit_stats(particles, model, detector; feat_buffer)
+    
+    modules = get_detector_modules(detector)
+    modules_range_mask = get_modules_in_range(particles, detector, 200)
+    modules_range = (modules[modules_range_mask])
+    # npmt, 1, ntargets
+    log_exp_per_pmt, _ = get_log_amplitudes(particles, modules_range, gpu(model); feat_buffer=feat_buffer)
+
+    n_mod_thrsh_two, n_mod_thrsh_three = calc_trigger_stats(log_exp_per_pmt)
+    n_total = sum(exp.(log_exp_per_pmt))
+    stats = (
+        n_mod_thrsh_two=n_mod_thrsh_two,
+        n_mod_thrsh_three=n_mod_thrsh_three,
+        n_total=n_total)
+    return stats
+end
+
+function calc_geo_stats(particles, cylinder)
+    particle = first(particles)
+    isec = get_intersection(cylinder, particle)
+    length_in = isec.second - isec.first
+    proj_area = projected_area(cylinder, particle.direction)
+    return (proj_area=proj_area, length_in=length_in)
+end
 
 function calculate_efficiencies(args)
+
+    PKGDIR = pkgdir(NeutrinoTelescopes)
+
+    weighter = WeighterPySpline(joinpath(PKGDIR, "assets/transm_inter_splines.pickle"))
 
     model_path = joinpath(ENV["WORK"], "time_surrogate")
     models_casc = Dict(
@@ -97,62 +159,117 @@ function calculate_efficiencies(args)
 
             @progress name ="events" for i in 1:args["nevents"]
                 ev = rand(inj)
-                isec = get_intersection(cylinder, ev[:particles][1])
-        
-                length_in = isec.second - isec.first
-
                 particles = ev[:particles]
 
-                modules_range_mask = get_modules_in_range(particles, d, 200)
-                modules_range = (modules[modules_range_mask])
-                # npmt, 1, ntargets
-                log_exp_per_pmt, _ = get_log_amplitudes(particles, modules_range, gpu(model); feat_buffer=hit_buffer)
-                
-                pmt_hits = exp.(log_exp_per_pmt) .>= 1
+                stats_hits = calc_hit_stats(particles, model, detector; feat_buffer=hit_buffer)
+                geo_stats = calc_geo_stats(particles, cylinder)
 
-                distinct_pmts = sum(pmt_hits, dims=1)[1, 1, :]
-                atleast_two_distinct = distinct_pmts .>= 2
-                atleast_three_distinct = distinct_pmts .>= 3
-                n_mod_thrsh_two = sum(atleast_two_distinct)
-                n_mod_thrsh_three = sum(atleast_three_distinct)
-
-                # PONE OFFLINE TRIGGER
-
-                n_total = sum(exp.(log_exp_per_pmt))
-                theta, phi = cart_to_sph(particles[1].direction)
-
-                
-                if args["type"] == "track"
-                    exp_per_mod = sum(exp.(log_exp_per_pmt), dims=1)[:]
-                    m_positions = [m.shape.position for m in modules_range]
-
-                    hit_positions = m_positions[exp_per_mod .> 1]
-                    max_lhit = 0
-                    if length(hit_positions) > 0
-                        hit_positions = reduce(hcat, m_positions[exp_per_mod .> 1])
-                        dists = norm.(eachslice(hit_positions .- reshape(hit_positions, 3, 1, size(hit_positions, 2)), dims=(2, 3)))
-                        max_lhit = maximum(dists)
-                    end
-                    weighted_mean = mean(m_positions, weights(exp_per_mod))
-
-                    rel_pos = m_positions .- Ref(weighted_mean)
-                    nrelpossq = norm.(rel_pos).^2
-                    variance_est = 1/sum((nrelpossq .* exp_per_mod))
-
-                    #n_mod_thrsh = sum(any(exp_per_module .>= 2, dims=1))
-                    proj_area = projected_area(cylinder, particles[1].direction)
-                   
-                    push!(eff_d, (n_mod_thrsh_two=n_mod_thrsh_two, n_mod_thrsh_three=n_mod_thrsh_three, dir_theta=theta, dir_phi=phi, length=length_in, log_energy=le, spacing=spacing, n_total,
-                                nrelpossq=sum(nrelpossq), variance_est=variance_est, max_lhit=max_lhit, proj_area=proj_area))
+                if args["type"] == "cascade"
+                    pdir = cart_to_sph(particles[1].direction)
+                    ptype = rand([PNuE, PNuEBar])
+                    total_prob = get_total_prob(weighter, ptype, :NU_CC, log10(particles[1].energy), pdir[1], length_in)
                 else
-                    push!(eff_d, (n_mod_thrsh_two=n_mod_thrsh_two, n_mod_thrsh_three=n_mod_thrsh_three, dir_theta=theta, dir_phi=phi, length=length_in, log_energy=le, spacing=spacing, n_total, sim_volume=sim_volume))
-            
+                    total_prob = 0.
                 end
+
+                other_stats = (dir_theta=theta, dir_phi=phi, log_energy=le, spacing=spacing, sim_volume=sim_volume, total_prob)
+                stats = merge(stats_hits, geo_stats, other_stats)
+                push(eff_d, stats)
+
+
             end
         end
     end
     jldsave(args["outfile"], results=DataFrame(eff_d))
     return nothing
+end
+
+
+function calculate_for_events(args)
+
+
+    PKGDIR = pkgdir(NeutrinoTelescopes)
+
+    weighter = WeighterPySpline(joinpath(PKGDIR, "assets/transm_inter_splines.pickle"))
+
+    model_path = joinpath(ENV["WORK"], "time_surrogate")
+    models_casc = Dict(
+        "Model A" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
+        "Model B" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
+        "Model C" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_3_FNL.bson"), joinpath(model_path, "extended/time_4_FNL.bson")),
+
+    )
+
+    models_track = Dict(
+        "Model A" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_1_FNL.bson")),
+        "Model B" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_2_FNL.bson"), joinpath(model_path, "lightsabre/time_2_FNL.bson")),
+        "Model C" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_3_FNL.bson"), joinpath(model_path, "lightsabre/time_4_FNL.bson")),
+
+    )
+
+    medium = make_cascadia_medium_properties(0.95f0)
+
+    model = nothing
+
+    if args["type"] == "track"
+        model = models_track["Model A"]
+    elseif args["type"] == "cascade"
+        model = models_casc["Model A"]
+    else
+        error("Unknown choice $(args["type"])")
+    end
+
+    for infile in args["infiles"]
+        eff_d = []
+        fisher_results = jldopen(infile)["results"]
+
+        for fr in eachrow(fisher_results)
+            ec = fr[:event_collection]
+            inj = ec.injector
+
+            modules = make_n_hex_cluster_detector(7, fr[:spacing], 20, 50)
+            medium = make_cascadia_medium_properties(0.95)
+            detector = Detector(modules, medium)
+
+            hit_buffer = create_input_buffer(detector, 1)
+            if args["type"] == "cascade"
+                cylinder = inj.volume
+            else
+                cylinder = Cylinder(inj.surface)
+            end
+            
+
+            sim_volume = get_volume(cylinder)
+
+            for ev in ec
+
+                particles = ev[:particles]
+                particle = first(particles)
+
+
+                stats_hits = calc_hit_stats(particles, model, detector; feat_buffer=hit_buffer)
+                geo_stats = calc_geo_stats(particles, cylinder)
+
+                if args["type"] == "cascade"
+                    pdir = cart_to_sph(particle.direction)
+                    ptype = rand([PNuE, PNuEBar])
+                    total_prob = get_total_prob(weighter, ptype, :NU_CC, log10(particle.energy), pdir[1], geo_stats[:length_in])
+                else
+                    total_prob = 0.
+                end
+
+                theta, phi = cart_to_sph(particle.direction)
+
+                other_stats = (dir_theta=theta, dir_phi=phi, log_energy=log10(particle.energy), spacing=fr[:spacing], sim_volume=sim_volume, total_prob=total_prob)
+                stats = merge(stats_hits, geo_stats, other_stats)
+                push(eff_d, stats)
+
+
+                end
+            end
+        end
+    jldsave(args["outfile"], results=DataFrame(eff_d))
+        return nothing
 end
 
 
@@ -180,3 +297,8 @@ det_choices = ["cluster", "full"]
 end
 
 calculate_efficiencies(parse_args(ARGS, s))
+
+
+args = Dict("infiles" => ["/home/saturn/capn/capn100h/fisher/fisher_cascade_full_10.jld2"], "type" => "cascade",)
+
+calculate_for_events(args)

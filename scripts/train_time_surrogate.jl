@@ -24,8 +24,13 @@ s = ArgParseSettings()
     "-o"
     help = "Output path"
     required = true
+    "-s"
+    help = "Timing uncert (sigma)"
+    required = false
+    default = 1.5
+    arg_type = Float64
     "--hparam_config"
-    help = "Output path"
+    help = "Hyper parameter config file"
     required = true
     "--model_name"
     help = "Model name"
@@ -41,6 +46,11 @@ model_name = parsed_args[:model_name]
 rng = MersenneTwister(31338)
 nsel_frac = 0.9
 hits, features, tf_vec = read_pmt_hits(fnames_casc, nsel_frac, rng)
+
+if parsed_args[:s] > 0
+    hits .+= randn(size(hits)) .* parsed_args[:s]
+end
+
 data = (tres=Float32.(hits), label=Float32.(features))
 
 hparams = RQNormFlowHParams(

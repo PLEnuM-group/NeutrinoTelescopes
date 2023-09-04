@@ -17,14 +17,14 @@ include("io.jl")
 
 const c_vac_m_ns = ustrip(u"m/ns", SpeedOfLightInVacuum)
 
-export calc_time_residual!, calc_tgeo, c_at_wl
+export calc_time_residual!, calc_tgeo
 export calc_time_residual_tracks!, calc_tgeo_tracks
 export shift_to_closest_approach
 export closest_approach_distance
 
 
 calc_tgeo(distance, c_n::Number) = distance / c_n
-calc_tgeo(distance, medium::MediumProperties) = calc_tgeo(distance, c_at_wl(800.0, medium))
+calc_tgeo(distance, medium::MediumProperties) = calc_tgeo(distance, group_velocity(800.0, medium))
 
 function calc_tgeo(distance::Real, target::PhotonTarget{<:Spherical}, c_n_or_medium)
     return  calc_tgeo(distance - target.shape.radius, c_n_or_medium)
@@ -63,7 +63,7 @@ end
 function calc_tgeo_tracks(p0, dir, pos, medium::MediumProperties)
 
     wl = 800.0
-    n_ph = refractive_index(wl, medium)
+    n_ph = phase_refractive_index(wl, medium)
     n_grp = c_vac_m_ns / group_velocity(wl, medium)
 
     return calc_tgeo_tracks(p0, dir, pos, n_ph, n_grp)

@@ -24,25 +24,23 @@ using Base.Iterators
 using Formatting
 using FiniteDifferences
 using ForwardDiff
-
-
+using PreallocationTools
+using BenchmarkTools
 
 model_path = joinpath(ENV["WORK"], "time_surrogate")
 
 models_casc = Dict(
-    "A1S1" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
-    "A2S1" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
-    "A1S2" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
-    "A2S2" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
+    "A1T1" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
+    "A2T1" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
+    "A1T2" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
+    "A2T2" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
 
 )
 
 models_tracks = Dict(
-    "A1S1" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_1_FNL.bson")),
-    "A2S1" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_2_FNL.bson"), joinpath(model_path, "lightsabre/time_1_FNL.bson")),
-    "A1S2" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_2_FNL.bson")),
-    "A2S2" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_2_FNL.bson"), joinpath(model_path, "lightsabre/time_2_FNL.bson")),
-
+    "A1T1" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_1_FNL.bson")),
+    "A1TU1.5_1" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_uncert_1.5_1_FNL.bson")),
+    "A1TU2.5_1" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_uncert_2.5_1_FNL.bson")),
 )
 
 
@@ -61,10 +59,10 @@ medium = make_cascadia_medium_properties(0.95f0)
 
 targets = targets_full
 model_path = joinpath(ENV["WORK"], "time_surrogate")
-model = models_tracks["A1S1"]
+model = models_tracks["A1TU2.5_1"]
 model = gpu(model)
 
-c_n = c_at_wl(800.0f0, medium)
+c_n = group_velocity(800.0f0, medium)
 rng = MersenneTwister(31338)
 
 pos = SA[-25.0, 5.0, -460]
@@ -104,63 +102,152 @@ hlines!(ax, logl_grad[1])
 fig
 
 
-
-
-
-
-
-
 d = Detector(targets_hex, medium)
 cylinder = get_bounding_cylinder(d)
+surf = CylinderSurface(cylinder)
 pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
 #edist = Pareto(1, 1E4) + 1E4
 edist = Dirac(1E4)
-ang_dist = UniformAngularDistribution()
+ang_dist = LowerHalfSphere()
 length_dist = Dirac(0.0)
 time_dist = Dirac(0.0)
-inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
-model = models_casc["A1S1"]
-model = gpu(model)
+inj = SurfaceInjector(surf, edist, pdist, ang_dist, length_dist, time_dist)
+buffer = (create_input_buffer(d, 1))
+diff_cache = FixedSizeDiffCache(buffer, 6)
+
+nev = 200
+nsa = 35
+
+model = gpu(models_tracks["A1T1"])
 hit_generator = SurrogateModelHitGenerator(model, 200.0, nothing)
 
+m, evts = calc_fisher(d, inj, hit_generator, nev, nsa, use_grad=true, cache=diff_cache)
 
-event = rand(inj)
-dets = []
-for n in 10:5:200    
-    m = calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=n)
-    push!(dets, tr(m))
+function profiled_pos(fisher::Matrix)
+    fisher
+    IA = fisher[1:3, 1:3]
+    IC = fisher[4:6, 1:3]
+    ICprime = fisher[1:3, 4:6]
+    IB = fisher[4:6, 4:6]
+    profiled = IA - ICprime*inv(IB)*IC
+    return profiled
 end
 
-dets = Vector{Float64}(dets)
-
-lines(dets, axis=(yscale=log10,))
-
-inv.(f)
-
-
-f = calc_fisher(d, inj, hit_generator, 20, 30, use_grad=true)
-inv(f)
-det(f)
-
-ec = EventCollection(inj)
-
+ang_errs = Float64[]
+for (mat, e) in zip(m, evts)
+    cov_za = inv(mat)[2:3, 2:3]
+    cov_za = 0.5 * (cov_za .+ cov_za')
+    dir_cart = first(e[:particles]).direction
+    dir_sp = cart_to_sph(dir_cart)
+    dist = MvNormal(dir_sp, cov_za)
+    rdirs = rand(dist, 1000)
+    dangles = rad2deg.(acos.(dot.(sph_to_cart.(rdirs[1, :], rdirs[2, :]), Ref(dir_cart))))
+    push!(ang_errs, mean(dangles))
+end
 
 
+ang_errs_p = Float64[]
+for (mat, e) in zip(m, evts)
+    p = profiled_pos(mat)
+    cov_za = inv(p)[2:3, 2:3]
+    cov_za = 0.5 * (cov_za .+ cov_za')
+    dir_cart = first(e[:particles]).direction
+    dir_sp = cart_to_sph(dir_cart)
+    dist = MvNormal(dir_sp, cov_za)
+    rdirs = rand(dist, 1000)
+    dangles = rad2deg.(acos.(dot.(sph_to_cart.(rdirs[1, :], rdirs[2, :]), Ref(dir_cart))))
+    push!(ang_errs_p, mean(dangles))
+end
+
+fig, ax, h = hist(ang_errs, normalization=:pdf)
+hist!(ax, ang_errs_p, normalization=:pdf)
+fig
 
 
+d = fit(Rayleigh, ang_errs_p)
+
+plot!(ax, d)
+fig
+
+median(ang_errs_p)
+percentile(ang_errs_p, 32)
+percentile(ang_errs_p, 68)
 
 
+models_uncert = Dict(0 => models_tracks["A1T1"], 1.5 => models_tracks["A1TU1.5_1"], 2.5 => models_tracks["A1TU2.5_1"])
+event = rand(inj)
 
-rng = MersenneTwister(31338)
+sstats = []
+for ns in [10, 20, 30, 50, 70, 100, 200, 500, 1000, 2000, 5000]
+    for i in 1:10
+        for (uncert, model) in models_uncert
+            model = gpu(model)
+            hit_generator = SurrogateModelHitGenerator(model, 200.0, nothing)
+            m = calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=ns, cache=diff_cache)
+            push!(sstats, (cov=inv(m), det=det(inv(m)), ns=ns, uncert=uncert, i=i))
+        end
+    end
+end
+
+df = DataFrame(sstats)
+
+grouped = groupby(df, :uncert)
+
+fig = Figure()
+ax = Axis(fig[1, 1], xscale=log10)
+
+for (gname, group) in pairs(grouped)
+    scatter!(ax, group[:, :ns], log10.(group[:, :det]), label=string(first(gname)))
+end
+axislegend("Timing Uncert.")
+fig
 
 
+fig = Figure()
+ax = Axis(fig[1, 1])
+for (uncert, model) in models_uncert
+    model = gpu(model)
 
-logenergies = 2:1:5
+    hit_generator = SurrogateModelHitGenerator(model, 200.0, nothing)
+    m = calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=100, cache=diff_cache)
+    sigmas = sqrt.(diag(inv(m)))
+    @show uncert, det(inv(m))
+    #=
+    hit_generator = SurrogateModelHitGenerator(model, 200.0, nothing)
+    m, events = calc_fisher(d, inj, hit_generator, 50, 35, use_grad=true, cache=diff_cache)
+    m = mean(m)
+    sigmas = sqrt.(diag(inv(m)))
+    =#
+    scatter!(ax, sigmas, label="$uncert ns")
+end
+axislegend("Timing Uncert.")
+fig
+
+buffer = (create_input_buffer(d, 1))
+diff_cache = FixedSizeDiffCache(buffer, 6)
+
+event = rand(inj)
+@time  calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=35, cache=diff_cache)
+@time  calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=35)
 
 
+@time calc_fisher(d, inj, hit_generator, 10, 35)
 
-inv.(sds)
+@btime begin
+    for i in 1:10
+        event = rand(inj)
+        calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=35, cache=diff_cache)
+    end
+end
 
+@btime m, events = calc_fisher(d, inj, hit_generator, 10, 35, use_grad=true, cache=diff_cache)
+
+
+@btime begin
+    for i in 1:10
+        calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=35)
+    end
+end
 
 
 covariances = Dict()

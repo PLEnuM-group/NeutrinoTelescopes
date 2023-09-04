@@ -279,13 +279,16 @@ function setup_model(hparams::RQNormFlowHParams)
     non_lins = Dict("relu" => relu, "tanh" => tanh)
     non_lin = non_lins[hparams.non_linearity]
 
-    # 3 K + 1 for spline, 1 for shift, 1 for scale, 1 for log-expectation
+    # 3 K + 1 for spline, 1 for shift, 1 for scale
     n_spline_params = 3 * hparams.K + 1
     n_out = n_spline_params + 2
 
+    # 3 Rel. Position, 3 Direction, 1 Energy, 1 distance
+    n_in = 8 + 16
+
     embedding = create_mlp_embedding(
         hidden_structure=hidden_structure,
-        n_in=24,
+        n_in=n_in,
         n_out=n_out,
         dropout=hparams.dropout,
         non_linearity=non_lin,
@@ -303,10 +306,13 @@ function setup_model(hparams::PoissonExpModel)
     non_lins = Dict("relu" => relu, "tanh" => tanh)
     non_lin = non_lins[hparams.non_linearity]
 
+    n_in = 8 
+    n_out = 16
+
     embedding = create_mlp_embedding(
         hidden_structure=hidden_structure,
-        n_in=8,
-        n_out=16,
+        n_in=n_in,
+        n_out=n_out,
         dropout=hparams.dropout,
         non_linearity=non_lin,
         split_final=false)
