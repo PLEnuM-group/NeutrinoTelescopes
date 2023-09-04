@@ -1832,7 +1832,7 @@ version = "2.7.1"
 deps = ["Adapt", "ArgParse", "CSV", "CUDA", "DataFrames", "Distributions", "HDF5", "Interpolations", "JSON", "JSON3", "LinearAlgebra", "Logging", "MultivariateStats", "Parquet", "PhysicalConstants", "PhysicsTools", "PoissonRandom", "ProgressLogging", "Random", "Reexport", "Revise", "Rotations", "SpecialFunctions", "StaticArrays", "StatsBase", "StructArrays", "StructTypes", "TerminalLoggers", "Unitful"]
 path = "/home/hpc/capn/capn100h/.julia/dev/PhotonPropagation"
 uuid = "28d5a9e5-7176-4325-9f36-6543c975d45b"
-version = "0.2.7"
+version = "0.2.9"
 
 [[deps.PhysicalConstants]]
 deps = ["Measurements", "Roots", "Unitful"]
@@ -1841,10 +1841,10 @@ uuid = "5ad8b20f-a522-5ce9-bfc9-ddf1d5bda6ab"
 version = "0.2.3"
 
 [[deps.PhysicsTools]]
-deps = ["DataStructures", "Distributions", "FastGaussQuadrature", "LinearAlgebra", "Polynomials", "PyCall", "Reexport", "Roots", "StaticArrays"]
+deps = ["DataStructures", "Distributions", "FastGaussQuadrature", "LinearAlgebra", "Polynomials", "PyCall", "Random", "Reexport", "Roots", "StaticArrays"]
 path = "/home/hpc/capn/capn100h/.julia/dev/PhysicsTools"
 uuid = "aacfb283-0df6-49c4-85a4-270b72c3b0a9"
-version = "0.4.2"
+version = "0.5.0"
 
 [[deps.Pipe]]
 git-tree-sha1 = "6842804e7867b115ca9de748a0cf6b364523c16d"
