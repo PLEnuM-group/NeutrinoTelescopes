@@ -3,8 +3,6 @@ using PhotonPropagation
 using PhysicsTools
 using Random
 using StaticArrays
-using BSON: @save, @load
-using BSON
 using CairoMakie
 using LinearAlgebra
 using DataFrames
@@ -21,73 +19,66 @@ using BenchmarkTools
 using PreallocationTools
 using ArgParse
 
+function make_injector(args, detector)
+
+    cylinder = get_bounding_cylinder(detector)
+
+    if haskey(args, "li-file")
+        return LIInjector(args["li-file"], drop_starting=(args["type"] == "track"), volume=cylinder)
+    else
+        pdist = nothing
+        ang_dist = nothing
+        length_dist = nothing
+        time_dist = Dirac(0.0)
+        edist = Dirac(10^args["log-energy"])
+
+        if args["type"] == "track"
+            pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
+            ang_dist = LowerHalfSphere()
+            length_dist = Dirac(10000.)
+            surface = CylinderSurface(cylinder)
+            return  SurfaceInjector(surface, edist, pdist, ang_dist, length_dist, time_dist)
+        else
+            pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
+            ang_dist = UniformAngularDistribution()
+            length_dist = Dirac(0.)
+            return VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
+        end
+    end
+end
+
+
 function run(args)
 
     model = PhotonSurrogate(args["model_path_amp"], args["model_path_time"])
     model = gpu(model)
     medium = make_cascadia_medium_properties(0.95f0)
 
-    pdist = nothing
-    ang_dist = nothing
-    length_dist = nothing
- 
-    if args["type"] == "track"
-        pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
-        ang_dist = LowerHalfSphere()
-        length_dist = Dirac(10000.)
-    else
-        pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
-        ang_dist = UniformAngularDistribution()
-        length_dist = Dirac(0.)
-    end
-   
-    time_dist = Dirac(0.0)
-    logenergies = 2:0.5:6
-    spacings = 30:10:200
-
-    n_samples = 30
+    n_samples = 150
     n_events = args["nevents"]
 
     results = []
 
-    for spacing in spacings
+    targets = nothing
 
-        #spacing = next!(spacings)[1]
-
-        targets = nothing
-        if args["det"] == "cluster"
-            targets = make_hex_detector(3, spacing, 20, 50, truncate=1)
-        else
-            targets = make_n_hex_cluster_detector(7, spacing, 20, 50)
-        end
-        d = Detector(targets, medium)
-        hit_buffer = create_input_buffer(d, 1)
-        cylinder = get_bounding_cylinder(d)
-        surface = CylinderSurface(cylinder)
-
-        buffer = (create_input_buffer(d, 1))
-        diff_cache = FixedSizeDiffCache(buffer, 6)
-           
-        hit_generator = SurrogateModelHitGenerator(model, 200.0, hit_buffer)
-        
-        for le in logenergies
-            edist = Dirac(10^le)
-            if args["type"] == "track"
-                inj = SurfaceInjector(surface, edist, pdist, ang_dist, length_dist, time_dist)
-            else
-                inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
-            end
-            
-            matrices, ec = calc_fisher(d, inj, hit_generator, n_events, n_samples, use_grad=true, cache=diff_cache)
-            #push!(sds, f)
-        
-            push!(results, (matrices=matrices, spacing=spacing, log_energy=le, event_collection=ec))
-
-        end
+    if args["det"] == "cluster"
+        targets = make_hex_detector(3, args["spacing"], 20, 50, truncate=1)
+    else
+        targets = make_n_hex_cluster_detector(7, args["spacing"], 20, 50)
     end
 
-    results = DataFrame(results)
-    save(args["outfile"], Dict("results" => results))
+    d = Detector(targets, medium)
+    hit_buffer = create_input_buffer(d, 1)
+    diff_cache = FixedSizeDiffCache(hit_buffer, 6)
+    
+    inj = make_injector(args, d)
+    hit_generator = SurrogateModelHitGenerator(model, 200.0, hit_buffer)
+        
+    matrices, events = calc_fisher(d, inj, hit_generator, n_events, n_samples, use_grad=true, cache=diff_cache)
+    
+    results = (fisher_matrices = matrices, events=ec)
+
+    JLD2.save(args["outfile"], Dict("results" => results))
 end
 
 s = ArgParseSettings()
@@ -119,6 +110,18 @@ det_choices = ["cluster", "full"]
     help ="Number of events"
     required = true
     arg_type = Int64
+    "--spacing"
+    help ="Detector spacing"
+    required = true
+    arg_type = Float64
+    "--log-energy"
+    help ="Log10(Energy)"
+    required = true
+    arg_type = Float64
+    "--li-file"
+    help ="LeptonInjector file"
+    required = false
+    arg_type = String
 end
 
 run(parse_args(ARGS, s))

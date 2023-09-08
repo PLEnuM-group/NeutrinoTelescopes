@@ -7,6 +7,8 @@ using PhysicsTools
 using UUIDs
 using StructTypes
 using Rotations
+using DataFrames
+using HDF5
 import Base.rand
 import ..Event
 
@@ -15,6 +17,7 @@ export Cylinder, Cuboid, VolumeType
 export SurfaceType, CylinderSurface
 export VolumeInjector, Injector
 export SurfaceInjector
+export LIInjector
 export ParticleTypeDistribution
 export AngularDistribution, UniformAngularDistribution
 export LowerHalfSphere
@@ -23,6 +26,7 @@ export sample_uniform_ray
 export maximum_proj_area, projected_area
 export get_volume
 export is_volume, is_surface
+export point_in_volume
 
 
 """
@@ -31,6 +35,9 @@ export is_volume, is_surface
 Abstract type for volumes
 """
 abstract type VolumeType end
+
+
+point_in_volume(::VolumeType, ::AbstractVector) = error("Not implemented")
 
 """
     Cylinder{T} <: VolumeType
@@ -46,8 +53,18 @@ end
 Base.:(==)(a::Cylinder, b::Cylinder) = (a.center == b.center) && (a.height == b.height) && (a.radius == b.radius)
 StructTypes.StructType(::Type{<:Cylinder}) = StructTypes.Struct()
 
+function point_in_volume(c::Cylinder, pos::AbstractVector)
+
+    rel_pos = pos .- c.center
+
+    height_check = (rel_pos[3] > -c.height /2) && (rel_pos[3] < c.height/2)
+    circle_check = (rel_pos[1]^2 + rel_pos[2]^2) < c.radius^2
+
+    return height_check && circle_check
+end
+
 """
-    Cylinder{T} <: VolumeType
+    Cuboid{T} <: VolumeType
 
 Type for cuboid volumes.
 """
@@ -72,8 +89,10 @@ struct FixedPosition{T} <: VolumeType
 end
 
 Base.:(==)(a::FixedPosition, b::FixedPosition) = all(a.position .== b.position)
-
 StructTypes.StructType(::Type{<:FixedPosition}) = StructTypes.Struct()
+
+point_in_volume(c::FixedPosition, pos::AbstractVector) = pos == c.position
+
 
 """
     rand(::VolumeType)
@@ -478,13 +497,81 @@ function Base.rand(rng::AbstractRNG, inj::SurfaceInjector)
     
     event = Event()
     event[:particles] = [Particle(pos, dir, time, energy, length, ptype)]
-
     return event
 
 end
 
-
 is_volume(::VolumeInjector) = true
 is_surface(::SurfaceInjector) = true
+
+struct LIInjector <: Injector
+    states::DataFrame
+    not_sampled::BitVector
+end
+
+StructTypes.StructType(::Type{LIInjector}) = StructTypes.Struct()
+
+function LIInjector(fname::String; drop_starting=false, volume=nothing)
+    if drop_starting && isnothing(volume)
+        error("Provide volume to filter out starting events")
+    end
+    hdl = h5open(fname)
+
+    final1 = DataFrame(hdl["RangedInjector0/final_1"][:])
+    final2 = DataFrame(hdl["RangedInjector0/final_2"][:])
+    initial = DataFrame(hdl["RangedInjector0/initial"][:])
+    weights = hdl["RangedInjector0/weights"][:]
+    close(hdl)
+
+
+    final1.row_num = 1:nrow(final1)
+    final2.row_num = 1:nrow(final2)
+    initial.row_num = 1:nrow(initial)
+
+    combined = innerjoin(final1, final2, on=:row_num, renamecols = "_final1" => "_final2")
+    combined = innerjoin(combined, initial, on=:row_num, renamecols = "" => "_initial")
+    combined[:, :weights] .= weights
+
+    if drop_starting
+        positions = initial[:, :Position]
+        not_in_volume = .!point_in_volume.(Ref(volume), positions)
+
+        combined = combined[not_in_volume, :]
+    end
+
+    return LIInjector(combined, ones(Bool, nrow(combined)))
+end
+
+
+Base.length(inj::LIInjector) = nrow(inj.states)
+
+function Base.rand(rng::AbstractRNG, inj::LIInjector)
+    if sum(inj.not_sampled) == 0
+        error("Injector ran out of events")
+    end
+    valid_indices = (1:length(inj))[inj.not_sampled]
+    ix = rand(rng, valid_indices)
+    inj.not_sampled[ix] = false
+    
+    pos = SVector{3}(inj.states[ix, :Position_final1])
+    dir_sph = SVector{2}(inj.states[ix, :Direction_final1])
+    dir = sph_to_cart(dir_sph)
+    energy = inj.states[ix, :Energy_final1]
+    ptype = ptype_for_code(inj.states[ix, :ParticleType_final1])
+    if particle_shape(ptype) == Track()
+        p = Particle(pos, dir, 0., energy, 1E4, ptype)
+    else
+        p = Particle(pos, dir, 0., energy, 0, ptype)
+    end
+
+    event = Event()
+    event[:particles] = [p]
+    event[:weight] = inj.states[ix, :weights]
+
+    return event
+end
+
+Base.rand(inj::LIInjector) = rand(Random.default_rng(), inj)
+
 
 end

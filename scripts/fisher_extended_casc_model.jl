@@ -57,6 +57,10 @@ detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => tar
 medium = make_cascadia_medium_properties(0.95f0)
 
 
+model = models_tracks["A1TU2.5_1"]
+model = gpu(model)
+
+
 targets = targets_full
 model_path = joinpath(ENV["WORK"], "time_surrogate")
 model = models_tracks["A1TU2.5_1"]
@@ -115,7 +119,8 @@ inj = SurfaceInjector(surf, edist, pdist, ang_dist, length_dist, time_dist)
 buffer = (create_input_buffer(d, 1))
 diff_cache = FixedSizeDiffCache(buffer, 6)
 
-nev = 200
+
+nev = 1
 nsa = 35
 
 model = gpu(models_tracks["A1T1"])
@@ -177,27 +182,50 @@ percentile(ang_errs_p, 68)
 models_uncert = Dict(0 => models_tracks["A1T1"], 1.5 => models_tracks["A1TU1.5_1"], 2.5 => models_tracks["A1TU2.5_1"])
 event = rand(inj)
 
+
+
+
+
+hit_generator = SurrogateModelHitGenerator(model, 200.0, nothing)
+fi, matrices = calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=100, cache=diff_cache)
+fi2, matrices2 = calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=1000, cache=diff_cache)
+fi3, matrices3 = calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=5000, cache=diff_cache)
+
+
+mean(tr.(matrices))
+mean(tr.(matrices2))
+mean(tr.(matrices3))
+
+
+
+fig, ax, h = hist(log10.(tr.(matrices)), normalization=:pdf)
+hist!(ax, log10.(tr.(matrices2)), normalization=:pdf)
+hist!(ax, log10.(tr.(matrices3)), normalization=:pdf)
+fig
+
+
 sstats = []
-for ns in [10, 20, 30, 50, 70, 100, 200, 500, 1000, 2000, 5000]
+for ns in [10, 20, 30, 50, 70, 100, 200, 500]
     for i in 1:10
         for (uncert, model) in models_uncert
             model = gpu(model)
             hit_generator = SurrogateModelHitGenerator(model, 200.0, nothing)
-            m = calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=ns, cache=diff_cache)
-            push!(sstats, (cov=inv(m), det=det(inv(m)), ns=ns, uncert=uncert, i=i))
+            fi, matrices = calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=ns, cache=diff_cache)
+            push!(sstats, (cov=inv(fi), det=det(inv(fi)), ns=ns, uncert=uncert, i=i))
         end
     end
 end
 
 df = DataFrame(sstats)
-
+df[!, :trace] .= tr.(df[:, :cov])
 grouped = groupby(df, :uncert)
 
 fig = Figure()
-ax = Axis(fig[1, 1], xscale=log10)
+ax = Axis(fig[1, 1], xscale=log10, yscale=log10)
 
 for (gname, group) in pairs(grouped)
-    scatter!(ax, group[:, :ns], log10.(group[:, :det]), label=string(first(gname)))
+    #scatter!(ax, group[:, :ns], log10.(group[:, :det]), label=string(first(gname)))
+    scatter!(ax, group[:, :ns], group[:, :trace], label=string(first(gname)))
 end
 axislegend("Timing Uncert.")
 fig
@@ -209,7 +237,7 @@ for (uncert, model) in models_uncert
     model = gpu(model)
 
     hit_generator = SurrogateModelHitGenerator(model, 200.0, nothing)
-    m = calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=100, cache=diff_cache)
+    m, _ = calc_fisher_matrix(event, d, hit_generator, use_grad=true, n_samples=150, cache=diff_cache)
     sigmas = sqrt.(diag(inv(m)))
     @show uncert, det(inv(m))
     #=

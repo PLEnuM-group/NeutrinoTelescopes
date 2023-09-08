@@ -9,6 +9,7 @@ using Flux
 using PreallocationTools
 using ...SurrogateModels.ExtendedCascadeModel
 using ...EventGeneration
+using LinearAlgebra
 
 export SimpleDiffCache
 export calc_fisher, calc_fisher_matrix, make_lh_func
@@ -58,6 +59,15 @@ function make_lh_func(;time, data, targets, model, medium, diff_cache, ptype, de
 end
 
 
+function filter_medad_eigen(matrices, threshold=10)
+    x = eigmax.(matrices)
+    med = median(x)
+    medad = median(abs.(x .- med ))
+    dev = abs.(x .- med) ./ medad
+    return matrices[dev .< threshold]
+end
+
+
 function calc_fisher_matrix(
     event::Event,
     detector::Detector{T, MP},
@@ -66,7 +76,8 @@ function calc_fisher_matrix(
     rng=Random.GLOBAL_RNG,
     n_samples=100,
     cache=nothing,
-    device=gpu) where {T <: PhotonTarget, MP <: MediumProperties}
+    device=gpu,
+    filter_outliers=true) where {T <: PhotonTarget, MP <: MediumProperties}
 
     medium = get_detector_medium(detector)
 
@@ -84,27 +95,35 @@ function calc_fisher_matrix(
             continue
         end
        
+        # Test sampling each dimension independently
         targets_range = get_detector_modules(detector)[range_mask]
 
         f, fwrapped = make_lh_func(time=0., data=times, targets=targets_range, model=generator.model, medium=medium, diff_cache=cache, ptype=p.type, device=device)
        
         if use_grad
             logl_grad = collect(ForwardDiff.gradient(fwrapped, [logenergy, dir_theta, dir_phi, pos...]))
-            push!(matrices, logl_grad .* logl_grad')
+            fi = logl_grad .* logl_grad' 
         else
             logl_hessian =  ForwardDiff.hessian(fwrapped, [logenergy, dir_theta, dir_phi, pos...])
-            push!(matrices, .-logl_hessian)
+            fi = .-logl_hessian
         end
+
+        push!(matrices, fi)
+        
     end
 
+
     if length(matrices) > 0
+        if filter_outliers
+            matrices = filter_medad_eigen(matrices)
+        end
         fisher_matrix = mean(matrices)
         fisher_matrix = 0.5 * (fisher_matrix + fisher_matrix')
     else
         fisher_matrix = zeros(6, 6)
     end
 
-    return fisher_matrix
+    return fisher_matrix, matrices
 
 end
 
@@ -116,16 +135,17 @@ function calc_fisher(
     n_events::Integer,
     n_samples::Integer; use_grad=false, rng=rng=Random.GLOBAL_RNG, cache=nothing, device=gpu)
     matrices = Matrix[]
-    ec = EventCollection(inj)
+    #ec = EventCollection(inj)
+    events = Event[]
     for _ in 1:n_events
         event = rand(inj)
-        m = calc_fisher_matrix(event, d, g, use_grad=use_grad, rng=rng, n_samples=n_samples, cache=cache, device=device)
+        m, _ = calc_fisher_matrix(event, d, g, use_grad=use_grad, rng=rng, n_samples=n_samples, cache=cache, device=device)
 
         push!(matrices, m)
-        push!(ec, event)
+        push!(events, event)
     end
     
-    return matrices, ec
+    return matrices, events
 end
 
 
