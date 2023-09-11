@@ -517,12 +517,24 @@ function LIInjector(fname::String; drop_starting=false, volume=nothing)
     end
     hdl = h5open(fname)
 
-    final1 = DataFrame(hdl["RangedInjector0/final_1"][:])
-    final2 = DataFrame(hdl["RangedInjector0/final_2"][:])
-    initial = DataFrame(hdl["RangedInjector0/initial"][:])
-    weights = hdl["RangedInjector0/weights"][:]
+    final1 = []
+    final2 = []
+    initial = []
+    weights = []
+
+    for inj in hdl
+        push!(final1, DataFrame(inj["final_1"][:]))
+        push!(final2,  DataFrame(inj["final_2"][:]))
+        push!(initial, DataFrame(inj["initial"][:]))
+        push!(weights, inj["weights"][:])
+    end
     close(hdl)
 
+    final1 = reduce(hcat, final1)
+    final2 = reduce(hcat, final2)
+    initial = reduce(hcat, final1)
+    weights = reduce(vcat, weights)
+    
 
     final1.row_num = 1:nrow(final1)
     final2.row_num = 1:nrow(final2)

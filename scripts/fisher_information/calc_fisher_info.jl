@@ -2,6 +2,7 @@ using NeutrinoTelescopes
 using PhotonPropagation
 using PhysicsTools
 using Random
+using Flux
 using DataFrames
 using DataStructures
 using JLD2
@@ -13,7 +14,7 @@ function make_injector(args, detector)
     cylinder = get_bounding_cylinder(detector)
 
     if haskey(args, "li-file")
-        return LIInjector(args["li-file"], drop_starting=(args["type"] == "track"), volume=cylinder)
+        return LIInjector(args["li-file"], drop_starting=(args["type"] == "lightsabre"), volume=cylinder)
     else
         pdist = nothing
         ang_dist = nothing
@@ -21,17 +22,19 @@ function make_injector(args, detector)
         time_dist = Dirac(0.0)
         edist = Dirac(10^args["log-energy"])
 
-        if args["type"] == "track"
+        if args["type"] == "lightsabre"
             pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
             ang_dist = LowerHalfSphere()
             length_dist = Dirac(10000.)
             surface = CylinderSurface(cylinder)
             return  SurfaceInjector(surface, edist, pdist, ang_dist, length_dist, time_dist)
-        else
+        elseif args["type"] == "extended"
             pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
             ang_dist = UniformAngularDistribution()
             length_dist = Dirac(0.)
             return VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
+        else
+            error("Unknown event type")
         end
     end
 end
@@ -65,14 +68,14 @@ function run(args)
         
     matrices, events = calc_fisher(d, inj, hit_generator, n_events, n_samples, use_grad=true, cache=diff_cache)
     
-    results = (fisher_matrices = matrices, events=ec)
+    results = (fisher_matrices = matrices, events=events)
 
     JLD2.save(args["outfile"], Dict("results" => results))
 end
 
 s = ArgParseSettings()
 
-type_choices = ["track", "cascade"]
+type_choices = ["lightsabre", "extended"]
 det_choices = ["cluster", "full"]
 @add_arg_table s begin
     "--outfile"
@@ -90,7 +93,7 @@ det_choices = ["cluster", "full"]
     "--type"
     help = "Particle Type;  must be one of " * join(type_choices, ", ", " or ")
     range_tester = (x -> x in type_choices)
-    default = "cascade"
+    default = "extended"
     "--det"
     help = "Detector Type;  must be one of " * join(det_choices, ", ", " or ")
     range_tester = (x -> x in det_choices)

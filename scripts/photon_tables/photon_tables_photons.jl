@@ -116,7 +116,7 @@ function run_sims(parsed_args)
             SobolSeq(
                 [log10(e_min), log10(dist_min), -1, 0],
                 [log10(e_max), log10(dist_max), 1, 2 * π]),
-            n_sims + n_skip)
+            n_sims * n_skip)
 
         for i in 1:n_sims
 
@@ -133,7 +133,7 @@ function run_sims(parsed_args)
             SobolSeq(
                 [log10(dist_min), -1, 0],
                 [log10(dist_max), 1, 2 * π]),
-            n_sims + n_skip)
+            n_sims * n_skip)
 
         for i in 1:n_sims
 
@@ -149,7 +149,7 @@ function run_sims(parsed_args)
     else
         sobol = skip(
             SobolSeq([log10(dist_min), -1], [log10(dist_max), 1]),
-            n_sims + n_skip)
+            n_sims * n_skip)
 
         for i in 1:n_sims
             pars = next!(sobol)
@@ -177,7 +177,7 @@ mode_choices = ["extended", "bare_infinite_track", "pointlike_cherenkov", "light
     arg_type = Int
     required = true
     "--n_skip"
-    help = "Skip in Sobol sequence"
+    help = "Skip multiple of nsims in Sobol sequence"
     arg_type = Int
     required = false
     default = 0
