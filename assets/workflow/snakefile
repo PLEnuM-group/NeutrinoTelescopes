@@ -1,0 +1,39 @@
+detectors = ["full"]
+spacings = [30, 50, 80]
+
+EMIN = 1E2
+EMAX = 1E6
+GAMMA = 1
+NEVENTS_LIC = 10000
+NEVENTS_FISHER = 100
+
+OUTDIR = os.environ["WORK"]
+
+JULIA_BIN = "/home/hpc/capn/capn100h/.juliaup/bin/julia"
+SCRIPT_DIR = "/home/hpc/capn/capn100h/.julia/dev/NeutrinoTelescopes/scripts"
+
+
+rule all:
+  input: expand(["fisher-{detector}-{spacing}.h5"], detector=detectors, spacing=spacings)
+  output: "files"
+  shell:
+     "echo {input} > files"
+
+rule leptoninjector:
+    output: out_li = expand(["leptoninjector-{EMIN}-{EMAX}.hd5"], EMIN=EMIN, EMAX=EMAX), out_lic = expand(["leptoninjector-{EMIN}-{EMAX}.lic"], EMIN=EMIN, EMAX=EMAX)
+    conda: "julia"
+    shell:
+        "python run_lepton_injector.py --emin {EMIN} --emax {EMAX} --gamma {GAMMA} --geo-radius 1200 --geo-length 1200 --nevents {NEVENTS_LIC} --outfile {output.out_li} --outfile_lic {output.out_lic} && \
+         python run_lepton_weighter.py --li-file {output.out_li} --lic-file {output.out_lic}"
+
+rule fisher:
+    input: rules.leptoninjector.output.out_li
+    output: "fisher-{detector}-{spacing}.h5"
+    conda: "julia"
+    shell:
+        "{JULIA_BIN} {SCRIPT_DIR}/fisher_information/calc_fisher_info.jl --model_path_amp $WORK/time_surrogate/lightsabre/amplitude_1_FNL.bson --model_path_time $WORK/time_surrogate/lightsabre/time_1_FNL.bson --type track --det {wildcards.detector} --nevents {NEVENTS_FISHER} --spacing {wildcards.spacing} --log-energy 4 --li-file {input} --outfile {output}"
+
+#rule acceptance:
+#  output: "acceptance-{detector}-{energy}-{spacing}.h5"
+#  shell:
+#    "touch acceptance-{wildcards.detector}-{wildcards.energy}-{wildcards.spacing}.h5"

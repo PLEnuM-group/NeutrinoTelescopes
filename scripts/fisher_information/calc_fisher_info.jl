@@ -2,20 +2,9 @@ using NeutrinoTelescopes
 using PhotonPropagation
 using PhysicsTools
 using Random
-using StaticArrays
-using CairoMakie
-using LinearAlgebra
 using DataFrames
-using StatsBase
-using Base.Iterators
-using Distributions
-using Formatting
-using ForwardDiff
 using DataStructures
-using Flux
-using Sobol
 using JLD2
-using BenchmarkTools
 using PreallocationTools
 using ArgParse
 
@@ -62,9 +51,9 @@ function run(args)
     targets = nothing
 
     if args["det"] == "cluster"
-        targets = make_hex_detector(3, args["spacing"], 20, 50, truncate=1)
+        targets = make_hex_detector(3, args["spacing"], 20, 50, truncate=1, z_start=475)
     else
-        targets = make_n_hex_cluster_detector(7, args["spacing"], 20, 50)
+        targets = make_n_hex_cluster_detector(7, args["spacing"], 20, 50, z_start=475)
     end
 
     d = Detector(targets, medium)
