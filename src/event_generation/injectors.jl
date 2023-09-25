@@ -100,36 +100,39 @@ point_in_volume(c::FixedPosition, pos::AbstractVector) = pos == c.position
 Sample a random point in volume
 """
 rand(::VolumeType) = error("Not implemented")
-rand(vol::FixedPosition) = vol.position
+rand(vol::VolumeType) = rand(Random.default_rng(), vol)
+
+rand(::AbstractRNG, vol::FixedPosition) = vol.position
 
 """
     rand(vol::Cylinder{T}) where {T}
 
 Sample a random point in Cylinder.
 """
-function rand(vol::Cylinder{T}) where {T}
+function rand(rng::AbstractRNG, vol::Cylinder{T}) where {T}
     uni = Uniform(-vol.height / 2, vol.height / 2)
-    rng_z = rand(uni)
+    rng_z = rand(rng, uni)
 
-    rng_r = sqrt(rand(T) * vol.radius)
-    rng_phi = rand(T) * 2 * π
+    rng_r = sqrt(rand(rng, T) * vol.radius)
+    rng_phi = rand(rng, T) * 2 * π
     rng_x = rng_r * cos(rng_phi)
     rng_y = rng_r * sin(rng_phi)
 
     return SA{T}[rng_x, rng_y, rng_z] + vol.center
-
 end
+
+
 
 """
     rand(vol::Cylinder{T}) where {T}
 
 Sample a random point in Cuboid.
 """
-function rand(vol::Cuboid{T}) where {T}
+function rand(rng::AbstractRNG, vol::Cuboid{T}) where {T}
     uni_x = Uniform(-vol.l_x / 2, vol.l_x / 2)
     uni_y = Uniform(-vol.l_y / 2, vol.l_y / 2)
     uni_z = Uniform(-vol.l_z / 2, vol.l_z / 2)
-    return SA{T}[rand(uni_x), rand(uni_y), rand(uni_z)] + vol.center
+    return SA{T}[rand(rng, uni_x), rand(rng, uni_y), rand(rng, uni_z)] + vol.center
 
 end
 
@@ -308,10 +311,8 @@ function get_intersection(c::Cylinder{T}, position, direction) where {T <: Real}
                 i1 = Intersection(max(i2.first, i1.first), min(i2.second, i1.second))
             end
 		end
-	
-		return i1
     end
-
+    return i1
 end
 
 get_intersection(c::CylinderSurface, position, direction) = get_intersection(Cylinder(c), position, direction)
@@ -442,7 +443,7 @@ end
 
 
 function Base.rand(rng::AbstractRNG, inj::VolumeInjector)
-    energy = randrng, (inj.e_dist)
+    energy = rand(rng, inj.e_dist)
     ptype = rand(rng, inj.type_dist)
     length = rand(rng, inj.length_dist)
     time = rand(rng, inj.time_dist)
@@ -455,7 +456,7 @@ function Base.rand(rng::AbstractRNG, inj::VolumeInjector)
 
 end
 
-Base.rand(inj::VolumeInjector) = rand(default_rng(), inj)
+Base.rand(inj::VolumeInjector) = rand(Random.default_rng(), inj)
 
 
 struct SurfaceInjector{
@@ -530,9 +531,9 @@ function LIInjector(fname::String; drop_starting=false, volume=nothing)
     end
     close(hdl)
 
-    final1 = reduce(hcat, final1)
-    final2 = reduce(hcat, final2)
-    initial = reduce(hcat, final1)
+    final1 = reduce(vcat, final1)
+    final2 = reduce(vcat, final2)
+    initial = reduce(vcat, initial)
     weights = reduce(vcat, weights)
     
 
@@ -564,21 +565,45 @@ function Base.rand(rng::AbstractRNG, inj::LIInjector)
     valid_indices = (1:length(inj))[inj.not_sampled]
     ix = rand(rng, valid_indices)
     inj.not_sampled[ix] = false
+
+    ptype_f1 = ptype_for_code(inj.states[ix, :ParticleType_final1])
     
-    pos = SVector{3}(inj.states[ix, :Position_final1])
-    dir_sph = SVector{2}(inj.states[ix, :Direction_final1])
+    if is_neutrino(ptype_f1)
+        # NC interaction, return the cascade
+
+        pos = SVector{3}(inj.states[ix, :Position_final2])
+        dir_sph = SVector{2}(inj.states[ix, :Direction_final2])
+        energy = inj.states[ix, :Energy_final2]
+        ptype = PHadronShower
+    else
+        pos = SVector{3}(inj.states[ix, :Position_final1])
+        dir_sph = SVector{2}(inj.states[ix, :Direction_final1])
+        
+        if particle_shape(ptype_f1) == Track()
+            # Currently we treat everyting as lightsabres
+            energy = inj.states[ix, :Energy_final1]
+            ptype = PLightSabre
+        else particle_shape(ptype_f1) == Cascade()
+            # Sum energy of the hadronic cascade + lepton energy
+            energy = inj.states[ix, :Energy_final1] + inj.states[ix, :Energy_final2]
+            ptype = PHadronShower
+        end
+    end
+
+
     dir = sph_to_cart(dir_sph)
-    energy = inj.states[ix, :Energy_final1]
-    ptype = ptype_for_code(inj.states[ix, :ParticleType_final1])
+
     if particle_shape(ptype) == Track()
         p = Particle(pos, dir, 0., energy, 1E4, ptype)
     else
-        p = Particle(pos, dir, 0., energy, 0, ptype)
+        p = Particle(pos, dir, 0., energy, 0., ptype)
     end
 
     event = Event()
     event[:particles] = [p]
     event[:weight] = inj.states[ix, :weights]
+    event[:initial_energy] = inj.states[ix, :Energy_initial]
+    event[:lifile_index] = ix
 
     return event
 end

@@ -43,15 +43,21 @@ outpath = parsed_args[:o]
 model_name = parsed_args[:model_name]
 
 
+hit_buffer = Vector{Float64}(undef, Int64(1E8))
+pmt_ixs_buffer = Vector{Int64}(undef, Int64(1E8))
+features_buffer = Matrix{Float64}(undef, 24, Int64(1E8))
+
 rng = MersenneTwister(31338)
 nsel_frac = 0.9
-hits, features, tf_vec = read_pmt_hits(fnames_casc, nsel_frac, rng)
+hits, features, tf_vec = read_pmt_hits!(fnames_casc, hit_buffer, pmt_ixs_buffer, features_buffer, nsel_frac, rng)
 
 if parsed_args[:s] > 0
-    hits .+= randn(size(hits)) .* parsed_args[:s]
+    @inbounds for i in eachindex(hits)
+        hits[i] = randn() * parsed_args[:s]
+    end
 end
 
-data = (tres=Float32.(hits), label=Float32.(features))
+data = (tres=hits, label=features)
 
 hparams = RQNormFlowHParams(
     K=12,

@@ -71,7 +71,11 @@ end
 function calc_geo_stats(particles, cylinder)
     particle = first(particles)
     isec = get_intersection(cylinder, particle)
-    length_in = isec.second - isec.first
+    if isnothing(isec.first)
+        length_in = 0
+    else
+        length_in = isec.second - isec.first
+    end
     proj_area = projected_area(cylinder, particle.direction)
     return (proj_area=proj_area, length_in=length_in)
 end
@@ -82,21 +86,7 @@ function calculate_efficiencies(args)
 
     weighter = WeighterPySpline(joinpath(PKGDIR, "assets/transm_inter_splines.pickle"))
 
-    model_path = joinpath(ENV["WORK"], "time_surrogate")
-    models_casc = Dict(
-        "Model A" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
-        "Model B" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
-        "Model C" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_3_FNL.bson"), joinpath(model_path, "extended/time_4_FNL.bson")),
-
-    )
-
-    models_track = Dict(
-        "Model A" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_1_FNL.bson")),
-        "Model B" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_2_FNL.bson"), joinpath(model_path, "lightsabre/time_2_FNL.bson")),
-        "Model C" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_3_FNL.bson"), joinpath(model_path, "lightsabre/time_4_FNL.bson")),
-
-    )
-
+    model = PhotonSurrogate(args.model_path_amp, arg.model_path.time)
     medium = make_cascadia_medium_properties(0.95f0)
 
     pdist = nothing
@@ -108,12 +98,10 @@ function calculate_efficiencies(args)
         pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
         ang_dist = LowerHalfSphere()
         length_dist = Dirac(10000.)
-        model = models_track["Model A"]
     elseif args["type"] == "cascade"
         pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
         ang_dist = UniformAngularDistribution()
         length_dist = Dirac(0.)
-        model = models_casc["Model A"]
     else
         error("Unknown choice $(args["type"])")
     end
@@ -156,7 +144,6 @@ function calculate_efficiencies(args)
                 inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
             end
 
-
             @progress name ="events" for i in 1:args["nevents"]
                 ev = rand(inj)
                 particles = ev[:particles]
@@ -187,118 +174,80 @@ end
 
 function calculate_for_events(args)
 
+    # = WeighterPySpline(joinpath(PKGDIR, "assets/transm_inter_splines.pickle"))
 
-    PKGDIR = pkgdir(NeutrinoTelescopes)
-
-    weighter = WeighterPySpline(joinpath(PKGDIR, "assets/transm_inter_splines.pickle"))
-
-    model_path = joinpath(ENV["WORK"], "time_surrogate")
-    models_casc = Dict(
-        "Model A" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
-        "Model B" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_2_FNL.bson"), joinpath(model_path, "extended/time_2_FNL.bson")),
-        "Model C" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_3_FNL.bson"), joinpath(model_path, "extended/time_4_FNL.bson")),
-
-    )
-
-    models_track = Dict(
-        "Model A" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_1_FNL.bson"), joinpath(model_path, "lightsabre/time_1_FNL.bson")),
-        "Model B" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_2_FNL.bson"), joinpath(model_path, "lightsabre/time_2_FNL.bson")),
-        "Model C" =>  PhotonSurrogate(joinpath(model_path, "lightsabre/amplitude_3_FNL.bson"), joinpath(model_path, "lightsabre/time_4_FNL.bson")),
-
-    )
-
+    model = PhotonSurrogate(args["model_path_amp"], args["model_path_time"])
     medium = make_cascadia_medium_properties(0.95f0)
 
-    model = nothing
 
-    if args["type"] == "track"
-        model = models_track["Model A"]
-    elseif args["type"] == "cascade"
-        model = models_casc["Model A"]
+    eff_d = []
+    res = jldopen(args["infile"])["results"]
+    cyl = res[:injection_volume]
+    medium = make_cascadia_medium_properties(0.95)
+    if args["det"] == "cluster"
+        targets = make_hex_detector(3, res[:spacing], 20, 50, truncate=1, z_start=475)
     else
-        error("Unknown choice $(args["type"])")
+        targets = make_n_hex_cluster_detector(7, res[:spacing], 20, 50, z_start=475)
     end
+    detector = Detector(targets, medium)
+    hit_buffer = create_input_buffer(detector, 1)
+    sim_volume = get_volume(cyl)
 
-    for infile in args["infiles"]
-        eff_d = []
-        fisher_results = jldopen(infile)["results"]
+    @progress for (_, e) in zip(res[:fisher_matrices], res[:events])
+        
+        particles = e[:particles]
+        particle = first(particles)
 
-        for fr in eachrow(fisher_results)
-            ec = fr[:event_collection]
-            inj = ec.injector
+        stats_hits = calc_hit_stats(particles, model, detector; feat_buffer=hit_buffer)
+        geo_stats = calc_geo_stats(particles, cyl)
 
-            modules = make_n_hex_cluster_detector(7, fr[:spacing], 20, 50)
-            medium = make_cascadia_medium_properties(0.95)
-            detector = Detector(modules, medium)
-
-            hit_buffer = create_input_buffer(detector, 1)
-            if args["type"] == "cascade"
-                cylinder = inj.volume
-            else
-                cylinder = Cylinder(inj.surface)
-            end
-            
-
-            sim_volume = get_volume(cylinder)
-
-            for ev in ec
-
-                particles = ev[:particles]
-                particle = first(particles)
-
-
-                stats_hits = calc_hit_stats(particles, model, detector; feat_buffer=hit_buffer)
-                geo_stats = calc_geo_stats(particles, cylinder)
-
-                if args["type"] == "cascade"
-                    pdir = cart_to_sph(particle.direction)
-                    ptype = rand([PNuE, PNuEBar])
-                    total_prob = get_total_prob(weighter, ptype, :NU_CC, log10(particle.energy), pdir[1], geo_stats[:length_in])
-                else
-                    total_prob = 0.
-                end
-
-                theta, phi = cart_to_sph(particle.direction)
-
-                other_stats = (dir_theta=theta, dir_phi=phi, log_energy=log10(particle.energy), spacing=fr[:spacing], sim_volume=sim_volume, total_prob=total_prob)
-                stats = merge(stats_hits, geo_stats, other_stats)
-                push(eff_d, stats)
-
-
-                end
-            end
+        #=
+        if args["type"] == "cascade"
+            pdir = cart_to_sph(particle.direction)
+            ptype = rand([PNuE, PNuEBar])
+            total_prob = get_total_prob(weighter, ptype, :NU_CC, log10(particle.energy), pdir[1], geo_stats[:length_in])
+        else
+            total_prob = 0.
         end
-    jldsave(args["outfile"], results=DataFrame(eff_d))
-        return nothing
+        =#
+        theta, phi = cart_to_sph(particle.direction)
+
+        other_stats = (dir_theta=theta, dir_phi=phi, log_energy=log10(particle.energy), spacing=res[:spacing], sim_volume=sim_volume, weight=e[:weight])
+        stats = merge(stats_hits, geo_stats, other_stats)
+        push!(eff_d, stats)
+
+    end
+    results=DataFrame(eff_d)
+    jldsave(args["outfile"], results=results)
+    #return results
 end
 
 
 s = ArgParseSettings()
 
-type_choices = ["track", "cascade"]
 det_choices = ["cluster", "full"]
 @add_arg_table s begin
     "--outfile"
     help = "Output filename"
     arg_type = String
     required = true
-    "--type"
-    help = "Particle Type;  must be one of " * join(type_choices, ", ", " or ")
-    range_tester = (x -> x in type_choices)
-    default = "cascade"
+    "--infile"
+    help = "Input filename"
+    arg_type = String
+    required = true
     "--det"
     help = "Detector type;  must be one of " * join(det_choices, ", ", " or ")
     range_tester = (x -> x in det_choices)
     default = "full"
-    "--nevents"
-    help ="Number of events"
+    "--model_path_amp"
+    help = "Amplitude model"
+    arg_type = String
     required = true
-    arg_type = Int64
+    "--model_path_time"
+    help = "Time model"
+    arg_type = String
+    required = true
 end
 
-calculate_efficiencies(parse_args(ARGS, s))
-
-
-args = Dict("infiles" => ["/home/saturn/capn/capn100h/fisher/fisher_cascade_full_10.jld2"], "type" => "cascade",)
-
+args = parse_args(s)
 calculate_for_events(args)

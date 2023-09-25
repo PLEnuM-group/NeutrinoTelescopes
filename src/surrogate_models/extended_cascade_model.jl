@@ -25,7 +25,7 @@ using ParameterSchedulers
 using ParameterSchedulers: Scheduler
 using StructTypes
 using StaticArrays
-
+import Base.GC: gc
 
 
 using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow
@@ -38,6 +38,7 @@ export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_
 export lightsabre_muon_likelihood
 export sample_cascade_event, evaluate_model, sample_multi_particle_event
 export create_pmt_table, preproc_labels, read_pmt_hits, fit_trafo_pipeline, log_likelihood_with_poisson, read_pmt_number_of_hits
+export read_pmt_hits!, read_pmt_number_of_hits!
 export calc_flow_input!, calc_flow_input
 export train_model!, RQNormFlowHParams, PoissonExpModel
 export setup_optimizer, setup_model, setup_dataloaders
@@ -294,7 +295,7 @@ function setup_model(hparams::RQNormFlowHParams)
         non_linearity=non_lin,
         split_final=false)
 
-    model = NNRQNormFlow(embedding, hparams.K, -20.0, 100.0)
+    model = NNRQNormFlow(embedding, hparams.K, -30.0, 200.0)
     return model, log_likelihood
 end
 
@@ -533,6 +534,12 @@ function append_onehot_pmt(features, pmt_ixs)
     return vcat(features, one_hot)
 end
 
+function append_onehot_pmt!(output, pmt_ixs)
+    lev = 1:16
+    output[9:24, :] .= (lev .== permutedims(pmt_ixs))
+    return output
+end
+
 
 function count_hit_per_pmt(grp)
 
@@ -551,16 +558,25 @@ function count_hit_per_pmt(grp)
         return feature_vector, hit_vector
     end
 
-    hits = DataFrame(grp[:, :], [:tres, :pmt_id])
+    hits = DataFrame(grp[:, :], [:tres, :pmt_id, :total_weight])
 
-    hits_per_pmt = combine(groupby(hits, :pmt_id), nrow)
+    hits_per_pmt = combine(groupby(hits, :pmt_id), :total_weight => sum => :weight_sum)
     pmt_id_ix = Int.(hits_per_pmt[:, :pmt_id])
-    hit_vector[pmt_id_ix] .= hits_per_pmt[:, :nrow]
+    hit_vector[pmt_id_ix] .= hits_per_pmt[:, :weight_sum]
 
     return feature_vector, hit_vector
 end
 
 function create_pmt_table(grp, limit=nothing)
+
+    grp_data = grp[:, :]
+    grplen = size(grp_data, 1)
+
+    sumw = sum(grp_data[:, 3])
+    weights = FrequencyWeights(grp_data[:, 3], sumw)
+    sampled = sample(1:grplen, weights, ceil(Int64, sumw), replace=true)
+
+    grp_data = grp_data[sampled, :]
 
     out_length = !isnothing(limit) ? min(limit, size(grp, 1)) : size(grp, 1)
 
@@ -585,10 +601,8 @@ function create_pmt_table(grp, limit=nothing)
 
 end
 
-
-function read_pmt_number_of_hits(fnames, nsel_frac=0.8, rng=default_rng())
-    features = Vector{Vector{Float64}}(undef, 0)
-    hits = Vector{Vector{Float64}}(undef, 0)
+function read_pmt_number_of_hits!(fnames, nhits_buffer, features_buffer, nsel_frac=0.8, rng=default_rng())
+    ix = 1
     for fname in fnames
         h5open(fname, "r") do fid
             if !isnothing(rng)
@@ -606,28 +620,38 @@ function read_pmt_number_of_hits(fnames, nsel_frac=0.8, rng=default_rng())
             for grpn in datasets[1:index_end]
                 grp = fid["pmt_hits"][grpn]
                 f,h = count_hit_per_pmt(grp)
-                push!(features, f)
-                push!(hits, h)
+
+                nhits_buffer[:, ix] .= h
+                features_buffer[:, ix] .= f
+                ix += 1
             end
 
         end
     end
 
-    hits = reduce(hcat, hits)
-    features = reduce(hcat, features)
-    features, tf_vec = preproc_labels!(features, features)
+    features_buffer_view = @view features_buffer[:, 1:ix]
+    nhits_buffer_view = @view nhits_buffer[:, 1:ix]
 
-    return hits, features, tf_vec
+    features_buffer_view, tf_vec = preproc_labels!(features_buffer_view, features_buffer_view)
 
+    return nhits_buffer_view, features_buffer_view, tf_vec
 end
 
 
-function read_pmt_hits(fnames, nsel_frac=0.8, rng=default_rng())
+function read_pmt_number_of_hits(fnames, nsel_frac=0.8, rng=default_rng())
+    nhits_buffer = Matrix{Float64}(undef, (16, Int64(1E8)))
+    features_buffer = Matrix{Float64}(undef, (8, Int64(1E8)))
 
-    features = Vector{Matrix{Float64}}(undef, 0)
-    pmt_ixs = Vector{Vector{Float64}}(undef, 0)
-    hits = Vector{Vector{Float64}}(undef, 0)
+    nhits_buffer_view, feature_buffer_view, tf_vec = read_pmt_number_of_hits!(fnames, nhits_buffer, features_buffer, nsel_frac, rng)
 
+    return nhits_buffer_view, feature_buffer_view, tf_vec
+end
+
+
+
+function read_pmt_hits!(fnames, hit_buffer, pmt_ixs_buffer, features_buffer, nsel_frac=0.8, rng=default_rng())
+
+    ix = 1
     for fname in fnames
         h5open(fname, "r") do fid
             if !isnothing(rng)
@@ -648,21 +672,40 @@ function read_pmt_hits(fnames, nsel_frac=0.8, rng=default_rng())
                     continue
                 end
                 f, pix, h = create_pmt_table(grp, 100)
-                push!(features, f)
-                push!(pmt_ixs, pix)
-                push!(hits, h)
+                nhits = length(h)
+
+                if ix+nhits-1 > length(hit_buffer)
+                    error("Buffer overflow")
+                end
+
+                hit_buffer[ix:ix+nhits-1] .= h
+                features_buffer[1:8, ix:ix+nhits-1] .= f
+                pmt_ixs_buffer[ix:ix+nhits-1] .= pix
+                ix += nhits
             end
         end
     end
-    hits = reduce(vcat, hits)
-    features = reduce(hcat, features)
-    pmt_ixs = reduce(vcat, pmt_ixs)
 
-    features, tf_vec = preproc_labels!(features, features)
-    features = append_onehot_pmt(features, pmt_ixs)
+    pmt_ixs_buffer_view = @view pmt_ixs_buffer[1:ix]
+    features_buffer_view = @view features_buffer[:, 1:ix]
+    hit_buffer_view = @view hit_buffer[1:ix]
 
-    return hits, features, tf_vec
+    features_buffer, tf_vec = preproc_labels!(features_buffer_view, features_buffer_view)
+    append_onehot_pmt!(features_buffer_view, pmt_ixs_buffer_view)
+    return hit_buffer_view, features_buffer_view, tf_vec
 end
+
+function read_pmt_hits(fnames, nsel_frac=0.8, rng=default_rng())
+    hit_buffer = Vector{Float64}(undef, Int64(1E8))
+    pmt_ixs_buffer = Vector{Int64}(undef, Int64(1E8))
+    features_buffer = Matrix{Float64}(undef, 24, Int64(1E8))
+
+    hit_buffer_view, features_buffer_view, tf_vec = read_pmt_hits!(fnames, hit_buffer, pmt_ixs_buffer, features_buffer, nsel_frac, rng)
+    return hit_buffer_view, features_buffer_view, tf_vec
+end
+
+
+
 
 read_hdf(fname::String, nsel, rng) = read_hdf([fname], nsel, rng)
 
@@ -1290,6 +1333,7 @@ function kfold_train_model(data, outpath, model_name, tf_vec, n_folds, hparams::
     model_stats = []
 
     for (model_num, (train_data, val_data)) in enumerate(kfolds(data; k=n_folds))
+        gc()
         lg = TBLogger(logdir)
         model, loss_f = setup_model(hparams)
         chk_path = joinpath(outpath, "$(model_name)_$(model_num)")

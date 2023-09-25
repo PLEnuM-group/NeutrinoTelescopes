@@ -14,10 +14,16 @@ using DataFrames
 using Arrow
 
 
-BSON.@load joinpath(@__DIR__, "../data/extended_cascade_2_FNL.bson") model tf_vec
+workdir = ENV["WORK"]
+
+model = PhotonSurrogate(
+    joinpath(workdir, "snakemake/time_surrogate/extended/amplitude_1_FNL.bson"),
+    joinpath(workdir, "snakemake/time_surrogate/extended/time_uncert_0_1_FNL.bson")
+)
+    
 
 
-targets_single = [make_pone_module(@SVector[-25.0, 0.0, -450.0], 1)]
+targets_single = [POM(@SVector[-25.0, 0.0, -450.0], 1)]
 targets_line = make_detector_line(@SVector[-25.0, 0.0, 0.0], 20, 50, 1)
 targets_three_l = [
     make_detector_line(@SVector[-25.0, 0.0, 0.0], 20, 50, 1)
@@ -25,7 +31,7 @@ targets_three_l = [
     make_detector_line(@SVector[0.0, sqrt(50^2 - 25^2), 0.0], 20, 50, 41)]
 targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
 
-medium = make_cascadia_medium_properties(0.99)
+medium = make_cascadia_medium_properties(0.95)
 d = Detector(targets_hex, medium)
 
 cylinder = get_bounding_cylinder(d)
@@ -35,8 +41,7 @@ ang_dist = UniformAngularDistribution()
 length_dist = Dirac(0.0)
 time_dist = Dirac(0.0)
 inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
-hit_generator = SurrogateModelHitGenerator(model, tf_vec, 200.0, d)
-ec = EventCollection(inj)
+hit_generator = SurrogateModelHitGenerator(model, 200.0, d)
 
 event = rand(inj)
 hits = generate_hit_times!(event, d, hit_generator)

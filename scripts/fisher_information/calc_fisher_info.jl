@@ -67,8 +67,9 @@ function run(args)
     hit_generator = SurrogateModelHitGenerator(model, 200.0, hit_buffer)
         
     matrices, events = calc_fisher(d, inj, hit_generator, n_events, n_samples, use_grad=true, cache=diff_cache)
+    cylinder = get_bounding_cylinder(d)
     
-    results = (fisher_matrices = matrices, events=events)
+    results = (fisher_matrices = matrices, events=events, injection_volume=cylinder, spacing=args["spacing"], det=args["det"])
 
     JLD2.save(args["outfile"], Dict("results" => results))
 end

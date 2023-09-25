@@ -9,33 +9,7 @@ using Formatting
 using Glob
 using CSV
 using ForwardDiff
-
-
-
-
-function unwrap_row(row)
-    matrices = row[:matrices]
-    events = row[:event_collection]
-    if is_surface(events.injector)
-        cyl = events.injector.surface
-    else
-        cyl = events.injector.volume
-    end
-    out = []
-    for (m, e) in zip(matrices, events)
-        p = e[:particles][1]
-        dir_theta, dir_phi = cart_to_sph(p.direction)
-        pos_x, pos_y, pos_z = p.position
-
-        intersection = get_intersection(cyl, p.position, p.direction)
-        length_in = intersection.second - intersection.first
-
-        push!(out, (fisher=m, log_energy=log10(p.energy), dir_theta=dir_theta,
-                dir_phi=dir_phi, pos_x=pos_x, pos_y=pos_y, pos_z=pos_z, length_in=length_in, spacing=row[:spacing],
-                model=row[:model]))
-    end
-    return DataFrame(out)
-end
+using PhotonPropagation
 
 
 function calc_ang_std(fisher, dir_theta, dir_phi)
@@ -81,18 +55,6 @@ function calc_pos_uncert(fisher, pos_x, pos_y, pos_z)
 end
 
 
-
-function proc_data(files)
-    df = mapreduce(f -> load(f)["results"], vcat,  files)
-    new_rows = []
-    for row in eachrow(df)
-        push!(new_rows, unwrap_row(row))
-    end
-    df =  reduce(vcat, new_rows)
-    df = transform(df, Cols(:fisher, :dir_theta, :dir_phi) => ByRow(calc_ang_std) => :dir_uncert)
-    df = transform(df, Cols(:fisher) => ByRow(calc_e_std) => :log10e_uncert)
-    df = transform(df, Cols(:fisher, :pos_x, :pos_y, :pos_z) => ByRow(calc_pos_uncert) => :pos_uncert)
-end
 
 
 function _make_resolution_plot!(ax, df; length_cut = 0)
@@ -238,13 +200,144 @@ function make_binned_resolutions(df, cos_zenith_bins)
     return reduce(vcat, avg_resos)
 end
 
+function proc_data(files)
 
-outdir = joinpath(ENV["WORK"], "fisher")
+    rows = []
+    for f in files
+        res = load(f)["results"]
+        cyl = res[:injection_volume]
+        for (m, e) in zip(res[:fisher_matrices], res[:events])
+            
+            p = e[:particles][1]
+            dir_theta, dir_phi = cart_to_sph(p.direction)
+            pos_x, pos_y, pos_z = p.position
+        
+            intersection = get_intersection(cyl, p.position, p.direction)
+            if isnothing(intersection.first)
+                length_in = 0
+            else
+                length_in = intersection.second - intersection.first
+            end
 
-df_track = proc_data(glob("fisher_track*.jld2", outdir ))
-df_casc = proc_data(glob("fisher_casc*.jld2", outdir ))
+            cad = closest_approach_distance(p.position, p.direction, cyl.center)
+            cparam = closest_approach_param(p.position, p.direction, cyl.center)
+            cad_pos = p.position .+ cparam .* p.direction
 
-df_casc[:, :model]
+            push!(rows, (fisher=m, log_energy=log10(p.energy), dir_theta=dir_theta,
+                dir_phi=dir_phi, pos_x=pos_x, pos_y=pos_y, pos_z=pos_z, length_in=length_in,
+                spacing=res[:spacing], closest_approach_distance=cad, cad_x=cad_pos[1], cad_y=cad_pos[2],
+                cad_z=cad_pos[3], time_uncert=parse(Float64, first(split(last(split(f, "-")), "."))),
+                cylinder=cyl.radius))
+        end
+    end
+       
+    df = DataFrame(rows)
+    df = transform(df, Cols(:fisher, :dir_theta, :dir_phi) => ByRow(calc_ang_std) => :dir_uncert)
+    df = transform(df, Cols(:fisher) => ByRow(calc_e_std) => :log10e_uncert)
+    df = transform(df, Cols(:fisher, :pos_x, :pos_y, :pos_z) => ByRow(calc_pos_uncert) => :pos_uncert)
+end
+
+
+function binned_average(x, y, bins)
+    ixs = searchsortedfirst.(Ref(bins), x)
+    averages = Vector{Float64}(undef, length(bins)+1)
+
+    for ix in eachindex(averages)
+        sel = ixs .== ix
+        averages[ix] = mean(skipmissing(y[sel]))
+    end
+    return averages[2:end-1]
+end
+
+bin_centers(bins) = 0.5*(bins[2:end] .+ bins[1:end-1])
+
+outdir = joinpath(ENV["WORK"], "snakemake/fisher")
+df_track = proc_data(glob("fisher-lightsabre*.jld2", outdir ))
+df_track_in = df_track[df_track[:, :length_in] .> 0, :] 
+
+
+f = Figure()
+ax = Axis(f[1, 1], yscale=log10)
+for (groupn, group) in pairs(groupby(df_track_in, [:spacing, :time_uncert]))
+    scatter!(ax, group[:, :log_energy], group[:, :dir_uncert], label=string(groupn[1]))
+end
+axislegend(ax)
+f
+
+bins = 1:0.5:6
+f = Figure()
+ax = Axis(f[1, 1], yscale=log10)
+for (groupn, group) in pairs(groupby(df_track_in, [:spacing, :time_uncert]))
+    avg = binned_average(group[:, :log_energy], group[:, :dir_uncert], bins)
+    lines!(ax, bin_centers(bins), avg, label=string(groupn))
+end
+axislegend(ax)
+f
+
+
+
+
+
+f = Figure()
+ax = Axis(f[1, 1], yscale=log10)
+for (groupn, group) in pairs(groupby(df_track_in, :spacing))
+    @show groupn
+    scatter!(ax, group[:, :closest_approach_distance], group[:, :dir_uncert], label=string(groupn[1]))
+end
+axislegend(ax)
+f
+
+f = Figure()
+ax = Axis(f[1, 1],)
+with_theme(
+    Theme(
+        Scatter = (cycle = [:marker],)
+    )) do
+    for (groupn, group) in pairs(groupby(df_track_in, :spacing))
+        
+        color = copy(group[:, :dir_uncert])
+        color[ismissing.(color)] .= NaN
+        color = convert(Vector{Float64}, color)
+
+        scatter!(ax, group[:, :cad_x], group[:, :cad_y], color=log10.(color), label=string(groupn[1]),
+                )
+    end
+    axislegend(ax)
+    f
+end
+
+
+df_casc = proc_data(glob("fisher-extended*.jld2", outdir ))
+bins = 1:0.5:6
+f = Figure()
+ax = Axis(f[1, 1], yscale=log10)
+for (groupn, group) in pairs(groupby(df_casc, :spacing))
+    avg = binned_average(group[:, :log_energy], group[:, :dir_uncert], bins)
+    lines!(ax, bin_centers(bins), avg, label=string(groupn[1]))
+end
+axislegend(ax)
+f
+
+f = Figure()
+for (i, (groupn, group)) in enumerate(pairs(groupby(df_casc, :spacing)))
+    ax = Axis(f[i, 1], limits=(-600, 600, -600, 600))
+    color = copy(group[:, :dir_uncert])
+    color[ismissing.(color)] .= NaN
+    color = convert(Vector{Float64}, color)
+
+    scatter!(ax, group[:, :cad_x], group[:, :cad_y], color=log10.(color), label=string(groupn[1]),
+            )
+    lines!(ax, Circle(Point2f((0, 0)), first(group[:, :cylinder])), linewidth=3)
+end
+f
+
+
+
+
+
+load(glob("fisher-lightsabre*.jld2", outdir )[1])["results"]
+
+keys(load(glob("fisher-lightsabre*.jld2", outdir )[1])["results"])
 
 
 fig = Figure()

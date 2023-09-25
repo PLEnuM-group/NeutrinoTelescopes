@@ -13,6 +13,8 @@ using Polyhedra
 import GLPK
 using Distributions
 using CSV
+using Glob
+using HDF5
 
 function get_polyhedron(spacing)
     targets = make_n_hex_cluster_detector(7, spacing, 20, 50)
@@ -316,8 +318,73 @@ function plot_neutrino_effective_area(df; n_mod_thresh=1, pmt_thresh=:n_mod_thrs
 end
 
 PLOT_DIR = joinpath(pkgdir(NeutrinoTelescopes), "figures")
+data_dir = joinpath(ENV["WORK"], "snakemake/fisher")
 
-data_dir = joinpath(ENV["WORK"], "fisher")
+
+data_tracks = mapreduce(f ->load(f)["results"], vcat, glob("*det*extended*", data_dir)) 
+
+pmt_thresh = :n_mod_thrsh_two
+n_mod_thresh = 0
+
+bins = 2:0.5:6
+fig = Figure()
+ax = Axis(fig[1, 1])
+for (groupn, group) in pairs(groupby(data_tracks, :spacing))
+    is_above_thresh = group[:, pmt_thresh] .>= n_mod_thresh
+
+
+    w = group[is_above_thresh, :weight]
+    e = group[is_above_thresh, :log_energy]
+
+    h = zeros(length(bins)-1)
+    ixs = searchsortedfirst.(Ref(bins), e) .- 1
+
+    for bix in eachindex(h)
+        mask = bix .== ixs
+        h[bix] += sum(w[mask])
+    end
+
+    h ./= diff(10 .^bins) * 1E4 * 4 * π
+
+    #h ./= diff(10 .^bins)
+
+    #hist!(ax, group[is_above_thresh, :log_energy], weights=group[is_above_thresh, :weight], bins=bins)
+    stairs!(ax, bins, push!(h, h[end]), step=:post)
+    #lines!(ax, group[:, :log_energy], group[:, :weight])
+end
+fig
+
+
+fid=  h5open("/home/saturn/capn/capn100h/snakemake/leptoninjector-lightsabre-0.hd5")
+weights = fid["RangedInjector0"]["weights"][:]
+energies = [r[:Energy] for r in fid["RangedInjector0"]["initial"][:]]
+
+inj = LIInjector(
+    "/home/saturn/capn/capn100h/snakemake/leptoninjector-lightsabre-0.hd5",
+    drop_starting=true,
+    volume=Cylinder(SA[])
+)
+
+make_hex_detector()
+
+
+
+
+h = zeros(length(bins)-1)
+ixs = searchsortedfirst.(Ref(bins), log10.(energies)) .- 1
+
+for bix in eachindex(h)
+    mask = bix .== ixs
+    h[bix] += sum(weights[mask])
+end
+h ./= diff(10 .^bins) * 1E4 * 4 * π
+push!(h, h[end])
+
+stairs(bins, h, step=:post, axis=(yscale=log10, ))
+
+
+
+
 data_tracks = load(joinpath(data_dir, "det_eff_track_full.jld2"), "results")
 data_cascades = load(joinpath(data_dir, "det_eff_cascade_full.jld2"), "results")
 

@@ -19,13 +19,15 @@ def get_weight(weighter, props):
     LWevent.final_state_particle_0 = LW.ParticleType( props[5] )
     LWevent.final_state_particle_1 = LW.ParticleType( props[6] )
     LWevent.primary_type = LW.ParticleType( props[7] )
-    LWevent.radius = props[9]
-    LWevent.total_column_depth = props[10]
-    LWevent.x = 0
-    LWevent.y = 0
-    LWevent.z = 0
+    # Radius is completely irrelevant
+    LWevent.radius = 0
     
-    weight = weighter(LWevent)
+    LWevent.x = props[8]
+    LWevent.y = props[9]
+    LWevent.z = props[10]
+    LWevent.total_column_depth = props[11]
+
+    weight = weighter.get_oneweight(LWevent)
 
     # this would alert us that something bad is happening 
     if weight==np.nan:
@@ -53,7 +55,7 @@ def run(args):
     flux = LW.PowerLawFlux( flux_params['constant'] , flux_params['index'] , flux_params['scale'] )
 
 
-    weighter = LW.Weighter( flux, xs, net_generation )
+    weighter = LW.Weighter(flux, xs, net_generation )
 
     # load data
     data_file = h5py.File(args.li_file, "r+")

@@ -40,7 +40,7 @@ function compare_mc_model(
         mask = hits[:, :pmt_id] .== i
         ax = Axis(ga[col+1, row+1], xlabel="Time Residual(ns)", ylabel="Hit density (1/ns)", title="PMT $i",
         )
-        hist!(ax, hits[mask, :tres], bins=-20:3:100, color=:orange, normalization=:density, weights=fill(1/oversampling, sum(mask)))
+        hist!(ax, hits[mask, :tres], bins=-20:3:100, color=:orange, normalization=:density, weights=hits[mask, :total_weight]./oversampling)
         hist!(ax, samples[i] .- t_geo .- particles[1].time, bins=-20:3:100, color=:slateblue, normalization=:density, weights=fill(1/oversampling, length(samples[i])))
     end
 
@@ -48,7 +48,7 @@ function compare_mc_model(
     hits_per_pmt = combine(groupby(hits, :pmt_id), nrow)
     max_pmt = Int64(sort(hits_per_pmt, :nrow, rev=true)[1, :pmt_id])
     mask = hits[:, :pmt_id] .== max_pmt
-    hist!(ax2, hits[mask, :tres], bins=bins, normalization=:density, weights=fill(1/oversampling, sum(mask)), label="MC Photon Propagation", color=(Makie.wong_colors()[1], 0.5))
+    hist!(ax2, hits[mask, :tres], bins=bins, normalization=:density, weights=hits[mask, :total_weight]./oversampling, label="MC Photon Propagation", color=(Makie.wong_colors()[1], 0.5))
     #hist!(ax2, samples[max_pmt] .- t_geo .- particles[1].time, bins=bins, normalization=:density, weights=fill(1/oversampling, length(samples[max_pmt])), color=(colors[2], 0.7))
 
 

@@ -8,6 +8,7 @@ using Random
 using LinearAlgebra
 using PhysicsTools
 using Base.Iterators
+using Flux
 
 import ..Event
 import ..get_lightemitting_particles
@@ -56,7 +57,7 @@ end
 
 
 
-function generate_hit_times(particles::Vector{<:Particle}, detector::Detector, generator::SurrogateModelHitGenerator, rng=Random.GLOBAL_RNG; device=gpu)
+function generate_hit_times(particles::Vector{<:Particle}, detector::Detector, generator::SurrogateModelHitGenerator, rng=Random.default_rng(); device=gpu)
     modules = get_detector_modules(detector)
     medium = get_detector_medium(detector)
     
@@ -75,12 +76,12 @@ function generate_hit_times(particles::Vector{<:Particle}, detector::Detector, g
 
 end
 
-function generate_hit_times(event::Event, detector::Detector, generator::SurrogateModelHitGenerator, rng=nothing; device=gpu)
+function generate_hit_times(event::Event, detector::Detector, generator::SurrogateModelHitGenerator, rng=Random.default_rng(); device=gpu)
     particles = get_lightemitting_particles(event)
     return generate_hit_times(particles, detector, generator, rng, device=device)
 end
 
-function generate_hit_times!(event::Event, detector::Detector, generator::SurrogateModelHitGenerator, rng=nothing; device=gpu)
+function generate_hit_times!(event::Event, detector::Detector, generator::SurrogateModelHitGenerator, rng=Random.default_rng(); device=gpu)
     hits, modules_range_mask = generate_hit_times(event, detector, generator, rng, device=device)
     modules = get_detector_modules(detector)
     hits_df = hit_list_to_dataframe(hits, modules, modules_range_mask)

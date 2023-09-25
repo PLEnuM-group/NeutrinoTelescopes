@@ -113,10 +113,11 @@ function calc_fisher_matrix(
     end
 
 
+
+    if (length(matrices) > 0) && filter_outliers
+        matrices = filter_medad_eigen(matrices)
+    end
     if length(matrices) > 0
-        if filter_outliers
-            matrices = filter_medad_eigen(matrices)
-        end
         fisher_matrix = mean(matrices)
         fisher_matrix = 0.5 * (fisher_matrix + fisher_matrix')
     else
