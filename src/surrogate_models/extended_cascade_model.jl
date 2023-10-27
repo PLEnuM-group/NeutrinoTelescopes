@@ -493,9 +493,7 @@ end
 function apply_feature_transform!(m, tf_vec, output)
     # Mutating version...
     for (in_row, out_row, tf) in zip(eachrow(m), eachrow(output), tf_vec)
-        for i in eachindex(in_row)
-            out_row[i] = tf(in_row[i])
-        end
+        out_row .= tf.(in_row)
     end
     return output
 end
@@ -792,16 +790,18 @@ function _calc_flow_input!(
     dist = clamp(norm(rel_pos), 0., 200.)
     normed_rel_pos = rel_pos ./ dist
 
-    output[1] = log(dist)
-    output[2] = log(particle_energy)
-    output[3] = particle_dir[1]
-    output[4] = particle_dir[2]
-    output[5] = particle_dir[3]
-    output[6] = normed_rel_pos[1]
-    output[7] = normed_rel_pos[2]
-    output[8] = normed_rel_pos[3]
-    #features, _ = preproc_labels(features, tf_vec)
-    apply_feature_transform!(output, tf_vec, output)[:]
+    @inbounds begin
+        output[1] = tf_vec[1](log(dist))
+        output[2] = tf_vec[2](log(particle_energy))
+        output[3] = tf_vec[3](particle_dir[1])
+        output[4] = tf_vec[4](particle_dir[2])
+        output[5] = tf_vec[5](particle_dir[3])
+        output[6] = tf_vec[6](normed_rel_pos[1])
+        output[7] = tf_vec[7](normed_rel_pos[2])
+        output[8] = tf_vec[8](normed_rel_pos[3])
+        #features, _ = preproc_labels(features, tf_vec)
+        #apply_feature_transform!(output, tf_vec, output)
+    end
 
     return output
 end
@@ -955,11 +955,20 @@ function create_non_uniform_ranges(n_per_split::AbstractVector)
 end
 
 """
-    sample_multi_particle_event(particles, targets, model, medium, rng=nothing; oversample=1)
+    sample_multi_particle_event(particles, targets, model, medium, rng=nothing; oversample=1, feat_buffer=nothing, output_buffer=nothing)
 
 Sample arrival times at `targets` for `particles` using `model`.
 """
-function sample_multi_particle_event(particles, targets, model, medium, rng=Random.default_rng(); oversample=1, feat_buffer=nothing, device=gpu)
+function sample_multi_particle_event(
+    particles,
+    targets,
+    model,
+    medium,
+    rng=Random.default_rng();
+    oversample=1,
+    feat_buffer=nothing,
+    output_buffer=nothing,
+    device=gpu)
 
     n_pmt = get_pmt_count(eltype(targets))
 
@@ -977,10 +986,11 @@ function sample_multi_particle_event(particles, targets, model, medium, rng=Rand
     # [(p_1, t_1, pmt_1), (p_1, t_1, pmt_2), ... (p_2, t_1, pmt_1), ... (p_1, t_end, pmt_1), ... (p_end, t_end, pmt_end)]
 
     flow_params::Matrix{Float32} = cpu(model.time_model.embedding(device(input)))
-    expec_per_source_rs = exp.(log_expec_per_src_pmt_rs) .* oversample
+    #flow_params = model.time_model.embedding(device(input))
+    expec_per_source_rs = log_expec_per_src_pmt_rs .= exp.(log_expec_per_src_pmt_rs) .* oversample
 
     n_hits_per_source_rs = pois_rand.(rng, Float64.(expec_per_source_rs))
-    n_hits_per_source = n_hits_per_source_rs[:]
+    n_hits_per_source = vec(n_hits_per_source_rs)
 
     mask = n_hits_per_source .> 0
     non_zero_hits = n_hits_per_source[mask]
@@ -995,16 +1005,24 @@ function sample_multi_particle_event(particles, targets, model, medium, rng=Rand
     )
 
 
-    data = Vector{Vector{Float64}}(undef, n_pmt * length(targets))
+    #data = Vector{Vector{Float64}}(undef, n_pmt * length(targets))
     data_index = LinearIndices((1:n_pmt, eachindex(targets)))
+
+    if isnothing(output_buffer)
+        output_buffer = VectorOfArrays(Float64, 1)
+    end
+
+    empty!(output_buffer)
+
 
     for (pmt_ix, t_ix) in product(1:n_pmt, eachindex(targets))
         target = targets[t_ix]
 
-        n_hits_this_target = sum(n_hits_per_source_rs[pmt_ix, :, t_ix])
+        @views n_hits_this_target = sum(n_hits_per_source_rs[pmt_ix, :, t_ix])
 
         if n_hits_this_target == 0
-            data[data_index[pmt_ix, t_ix]] = []
+            #data[data_index[pmt_ix, t_ix]] = []
+            push!(output_buffer, Float64[])
             continue
         end
 
@@ -1020,9 +1038,11 @@ function sample_multi_particle_event(particles, targets, model, medium, rng=Rand
                 data_this_target[data_selectors[p_ix]] = times[times_sel] .+ t_geo .+ particle.time
             end
         end
-        data[data_index[pmt_ix, t_ix]] = data_this_target
+        #data[data_index[pmt_ix, t_ix]] = data_this_target
+        #@show pmt_ix, t_ix, data_index[pmt_ix, t_ix], length(output_buffer)+1
+        push!(output_buffer, data_this_target)
     end
-    return data
+    return output_buffer
 end
 
 
@@ -1109,7 +1129,7 @@ function shape_llh(data; particles, targets, flow_params, rel_log_expec, model, 
     n_pmt = get_pmt_count(eltype(targets))
     data_ix = LinearIndices((1:n_pmt, eachindex(targets)))
     ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
-    out_ix = ix = LinearIndices((1:n_pmt, eachindex(targets)))
+    out_ix = LinearIndices((1:n_pmt, eachindex(targets)))
 
     T = eltype(flow_params)
     shape_llh = zeros(eltype(flow_params), n_pmt*length(targets))
@@ -1126,10 +1146,12 @@ function shape_llh(data; particles, targets, flow_params, rel_log_expec, model, 
             # Mixture weights 
             rel_expec_per_part = rel_log_expec[pmt_ix, p_ix, t_ix]
 
+            this_flow_params = @views flow_params[:, ix[pmt_ix, p_ix, t_ix]]
+
             # Mixture Pdf
             shape_pdf = eval_transformed_normal_logpdf(
                     data[data_ix[pmt_ix, t_ix]] .- calc_tgeo(particles[p_ix], targets[t_ix], medium) .- particles[p_ix].time,
-                    flow_params[:, ix[pmt_ix, p_ix, t_ix]],
+                    this_flow_params,
                     model.range_min,
                     model.range_max
             )
@@ -1150,11 +1172,11 @@ function evaluate_model(
     data, targets, model::PhotonSurrogate, medium; feat_buffer=nothing, device=gpu)
 
     log_expec_per_pmt, log_expec_per_src_pmt_rs = get_log_amplitudes(particles, targets, model; feat_buffer=feat_buffer, device=device)
-    rel_log_expec = log_expec_per_src_pmt_rs .- log_expec_per_pmt
+    rel_log_expec = log_expec_per_src_pmt_rs .= log_expec_per_src_pmt_rs .- log_expec_per_pmt
 
     hits_per_target = length.(data)
     # Flattening log_expec_per_pmt with [:] will let the first dimension be the inner one
-    poiss_llh = poisson_logpmf.(hits_per_target, log_expec_per_pmt[:])
+    poiss_llh = poisson_logpmf.(hits_per_target, vec(log_expec_per_pmt[:]))
 
     npmt = get_pmt_count(eltype(targets))
 
@@ -1167,6 +1189,8 @@ function evaluate_model(
     end
 
     flow_params::Matrix{eltype(input)} = cpu(model.time_model.embedding(device(input)))
+    #flow_params = model.time_model.embedding(device(input))
+
 
     #sllh = shape_llh(data; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model.time_model, medium=medium)
     sllh = shape_llh_generator(data; particles=particles, targets=targets, flow_params=flow_params, rel_log_expec=rel_log_expec, model=model.time_model, medium=medium)

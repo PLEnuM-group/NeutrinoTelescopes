@@ -11,6 +11,8 @@ using ...SurrogateModels.ExtendedCascadeModel
 using ...EventGeneration
 using LinearAlgebra
 
+import Base.GC: gc
+
 export SimpleDiffCache
 export calc_fisher, calc_fisher_matrix, make_lh_func
 
@@ -68,6 +70,38 @@ function filter_medad_eigen(matrices, threshold=10)
 end
 
 
+function _calc_single_fisher_matrix(event::Event, detector::Detector, generator, rng, device, cache, use_grad)
+    times, range_mask = generate_hit_times(event, detector, generator, rng, device=device)
+        
+    if sum(length.(times)) == 0
+        return nothing
+    end
+   
+    p::Particle = event[:particles][1]
+    dir = p.direction
+    dir_theta, dir_phi = cart_to_sph(dir)
+    logenergy = log10(p.energy)
+    pos = p.position
+
+    medium = get_detector_medium(detector)
+
+    # Test sampling each dimension independently
+    targets_range = get_detector_modules(detector)[range_mask]
+
+    f, fwrapped = make_lh_func(time=0., data=times, targets=targets_range, model=generator.model, medium=medium, diff_cache=cache, ptype=p.type, device=device)
+   
+    if use_grad
+        logl_grad = collect(ForwardDiff.gradient(fwrapped, [logenergy, dir_theta, dir_phi, pos...]))
+        fi = logl_grad .* logl_grad' 
+    else
+        logl_hessian =  ForwardDiff.hessian(fwrapped, [logenergy, dir_theta, dir_phi, pos...])
+        fi = .-logl_hessian
+    end
+
+    return fi
+end
+
+
 function calc_fisher_matrix(
     event::Event,
     detector::Detector{T, MP},
@@ -79,40 +113,14 @@ function calc_fisher_matrix(
     device=gpu,
     filter_outliers=true) where {T <: PhotonTarget, MP <: MediumProperties}
 
-    medium = get_detector_medium(detector)
-
-    p::Particle = event[:particles][1]
-    dir = p.direction
-    dir_theta, dir_phi = cart_to_sph(dir)
-    logenergy = log10(p.energy)
-    pos = p.position
-
     matrices = Matrix[]
     for __ in 1:n_samples
-        times, range_mask = generate_hit_times(event, detector, generator, rng, device=device)
-        
-        if sum(length.(times)) == 0
+        fi = _calc_single_fisher_matrix(event, detector, generator, rng, device, cache, use_grad)
+        if isnothing(fi)
             continue
         end
-       
-        # Test sampling each dimension independently
-        targets_range = get_detector_modules(detector)[range_mask]
-
-        f, fwrapped = make_lh_func(time=0., data=times, targets=targets_range, model=generator.model, medium=medium, diff_cache=cache, ptype=p.type, device=device)
-       
-        if use_grad
-            logl_grad = collect(ForwardDiff.gradient(fwrapped, [logenergy, dir_theta, dir_phi, pos...]))
-            fi = logl_grad .* logl_grad' 
-        else
-            logl_hessian =  ForwardDiff.hessian(fwrapped, [logenergy, dir_theta, dir_phi, pos...])
-            fi = .-logl_hessian
-        end
-
         push!(matrices, fi)
-        
     end
-
-
 
     if (length(matrices) > 0) && filter_outliers
         matrices = filter_medad_eigen(matrices)
@@ -144,7 +152,9 @@ function calc_fisher(
 
         push!(matrices, m)
         push!(events, event)
+        gc()
     end
+
     
     return matrices, events
 end

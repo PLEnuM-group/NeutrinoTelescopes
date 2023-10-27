@@ -78,57 +78,77 @@ function neutrino_effective_area(above_thrsh, proj_area, total_prob)
 end
 
 
-function effective_volume(above_thrsh, eff_volume)
-    return eff_volume[1] * sum(above_thrsh) / length(above_thrsh)
+function effective_volume(above_thrsh, eff_volume, weights=nothing)
+
+    if !isnothing(weights)
+        w = above_thrsh .* weights
+    else
+        w = above_thrsh
+    end
+
+    return eff_volume[1] * sum(w) / length(above_thrsh)
 end
 
-function _plot_effective_volume!(ax, df; n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_two, add_colorbar=true)
+
+function bin_centers(bins)
+    return 0.5*(bins[2:end] .+ bins[1:end-1])
+end
+
+function _plot_effective_volume!(ax, df, energy_bins, cmap; n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_two, add_colorbar=true)
     logenergies = unique(df[:, :log_energy])
     groups = groupby(df, :log_energy)
     is_above_thresh = df[:, pmt_thresh] .>= n_mod_thresh
     df[!, :is_above_thresh] = is_above_thresh
 
-    cmap = cgrad(:viridis, length(groups)-1, categorical = true)
+       
+    ixs = searchsortedfirst.(Ref(energy_bins), log10.(df[:, :initial_energy])) .- 1
 
-    for (groupn, group) in pairs(groups)
+
+    bc = bin_centers(energy_bins)
+    for bix in 1:(length(energy_bins)- 1)
+        mask = bix .== ixs
+  
+        group = df[mask, :]
+
         eff = combine(groupby(group, :spacing), [:is_above_thresh, :sim_volume] => effective_volume => :effective_volume)
+
         sort!(eff, :spacing)
 
         mask = eff[:, :effective_volume] .!= 0
         x_vals = eff[mask, :spacing]
         y_vals = eff[mask, :effective_volume] ./ 1E9
 
-        lines!(ax, x_vals, y_vals, label=format("{:.0d} TeV", round(10. ^groupn[1] / 1000)),
-            color=groupn[1], colorrange=(minimum(logenergies), maximum(logenergies)), colormap=cmap)
+        lines!(ax, x_vals, y_vals, label=format("{:.0d} TeV", round(10. ^bc[bix] / 1000)),
+            color=bc[bix], colorrange=(minimum(energy_bins), maximum(energy_bins)), colormap=cmap)
     end
 
     spacings = sort(unique(df[:, :spacing]))
     volumes = Polyhedra.volume.(get_polyhedron.(spacings)) ./ 1E9
     lines!(ax, spacings, volumes, color=:black, linestyle=:dot)
 
-    sim_vol = combine(groupby(df, :spacing), :sim_volume => first => :sim_volume)
+    #sim_vol = combine(groupby(df, :spacing), :sim_volume => first => :sim_volume)
     #lines!(sim_vol[:, :spacing], sim_vol[:, :sim_volume], color=:black, lw=3)
 
     return ax
 
-
-
-
 end
 
-function plot_effective_volume(df; n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_two, add_colorbar=true)
+function plot_effective_volume(df; energy_bins=2:0.5:6, n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_two, add_colorbar=true)
 
     fig = Figure()
     ax = Axis(fig[1, 1], xlabel="Spacing (m)", ylabel="Cascade Effective Volume (km³)",
               yscale=log10
               )
 
-    _plot_effective_volume!(ax, df, n_mod_thresh=n_mod_thresh, pmt_thresh=pmt_thresh)
+    
+    cmap = cgrad(:viridis, length(energy_bins)-1, categorical = true)
+
+    _plot_effective_volume!(ax, df, energy_bins, cmap, n_mod_thresh=n_mod_thresh, pmt_thresh=pmt_thresh)
    
     tick_labels = Dict(3 => "1 TeV", 4 => "10 TeV", 5=> "100 TeV", 6 => "1 PeV")
 
     if add_colorbar
-        Colorbar(fig[1, 2], limits = (minimum(logenergies), maximum(logenergies)), colormap = cmap,
+        Colorbar(fig[1, 2], limits = (minimum(energy_bins), maximum(energy_bins)), colormap = cmap,
             flipaxis = false, ticks=[3, 4, 5, 6], tickformat= xs -> [tick_labels[x] for x in xs])
     end
 
@@ -320,54 +340,59 @@ end
 PLOT_DIR = joinpath(pkgdir(NeutrinoTelescopes), "figures")
 data_dir = joinpath(ENV["WORK"], "snakemake/fisher")
 
+data_cascades = mapreduce(f ->load(f)["results"], vcat, glob("*det*extended-full-*-0-*", data_dir)) 
+data_tracks = mapreduce(f ->load(f)["results"], vcat, glob("*det*lightsabre-full-*-0-*", data_dir)) 
 
-data_tracks = mapreduce(f ->load(f)["results"], vcat, glob("*det*extended*", data_dir)) 
+n_files = 5
+n_sim = 10000
 
-pmt_thresh = :n_mod_thrsh_two
-n_mod_thresh = 0
+pmt_thresh = :n_mod_thrsh_one
+n_mod_thresh = 3
 
-bins = 2:0.5:6
-fig = Figure()
-ax = Axis(fig[1, 1])
-for (groupn, group) in pairs(groupby(data_tracks, :spacing))
-    is_above_thresh = group[:, pmt_thresh] .>= n_mod_thresh
+function plot_neutrino_effective_area_from_ow(data; n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_two)
+    bins = 2.5:0.125:6
+    fig = Figure()
+    ax = Axis(fig[1, 1], yscale=log10, xlabel="log10(Neutrino Energy / GeV)",
+             ylabel="Effective Area (m²)")
+    ax_ratio = Axis(fig[1, 2])
+    for (groupn, group) in pairs(groupby(data, :spacing))
+        is_above_thresh = group[:, pmt_thresh] .>= n_mod_thresh
 
+        nevents_per_file = nrow(group) / n_files
+        n_files_fact = n_sim / nevents_per_file / n_files
 
-    w = group[is_above_thresh, :weight]
-    e = group[is_above_thresh, :log_energy]
+        w = group[is_above_thresh, :weight]
+        e = log10.(group[is_above_thresh, :initial_energy])
 
-    h = zeros(length(bins)-1)
-    ixs = searchsortedfirst.(Ref(bins), e) .- 1
+        h = zeros(length(bins)-1)
+        ixs = searchsortedfirst.(Ref(bins), e) .- 1
 
-    for bix in eachindex(h)
-        mask = bix .== ixs
-        h[bix] += sum(w[mask])
+        for bix in eachindex(h)
+            mask = bix .== ixs
+            h[bix] += sum(w[mask])
+        end
+
+        h ./= diff(10 .^bins) * 1E4 * 4 * π 
+        h .*= n_files_fact
+
+        stairs!(ax, bins, push!(h, h[end]), step=:post, label=string(groupn[1]))
     end
-
-    h ./= diff(10 .^bins) * 1E4 * 4 * π
-
-    #h ./= diff(10 .^bins)
-
-    #hist!(ax, group[is_above_thresh, :log_energy], weights=group[is_above_thresh, :weight], bins=bins)
-    stairs!(ax, bins, push!(h, h[end]), step=:post)
-    #lines!(ax, group[:, :log_energy], group[:, :weight])
+    ylims!(1E-2, 5E3)
+    axislegend("Spacing (m)", position=:lt)
+    fig
 end
-fig
+
+plot_neutrino_effective_area_from_ow(data_cascades, n_mod_thresh=2)
+plot_neutrino_effective_area_from_ow(data_tracks, n_mod_thresh=2)
+
+inj_cyl = Cylinder(SA_F64[0, 0, 0], 1200., 1200.)
+data_cascades[!, :sim_volume] .=get_volume(inj_cyl)
+
+plot_effective_volume(data_cascades, n_mod_thresh=1, pmt_thresh=:n_mod_thrsh_three, energy_bins=2:0.5:6)
 
 
-fid=  h5open("/home/saturn/capn/capn100h/snakemake/leptoninjector-lightsabre-0.hd5")
-weights = fid["RangedInjector0"]["weights"][:]
-energies = [r[:Energy] for r in fid["RangedInjector0"]["initial"][:]]
-
-inj = LIInjector(
-    "/home/saturn/capn/capn100h/snakemake/leptoninjector-lightsabre-0.hd5",
-    drop_starting=true,
-    volume=Cylinder(SA[])
-)
-
-make_hex_detector()
-
-
+data_cascades[:, :sim_volume]
+data_dir
 
 
 h = zeros(length(bins)-1)

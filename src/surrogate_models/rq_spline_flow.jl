@@ -135,9 +135,9 @@ function _normalize_bin_sizes(unnormalized_bin_sizes,
 
     @assert num_bins * min_bin_size <= total_size
     bin_sizes = softmax(unnormalized_bin_sizes)
-    return bin_sizes .* (total_size - num_bins * min_bin_size) .+ min_bin_size
+    bin_sizes .= bin_sizes .* (total_size - num_bins * min_bin_size) .+ min_bin_size
+    return bin_sizes
 end
-
 
 """
     function _normalize_knot_slopes(unnormalized_knot_slopes,
@@ -372,30 +372,39 @@ function inv_rqs_univariate(x_pos::AbstractMatrix, y_pos::AbstractMatrix, knot_s
     @views x_pos_bin = (x_pos[1:end-1, :][correct_bin], x_pos[2:end, :][correct_bin])
     @views y_pos_bin = (y_pos[1:end-1, :][correct_bin], y_pos[2:end, :][correct_bin])
     @views knot_slopes_bin = (knot_slopes[1:end-1, :][correct_bin], knot_slopes[2:end, :][correct_bin])
-    =#
+   
 
     x_pos_bin = (x_pos[1:end-1, :][correct_bin], x_pos[2:end, :][correct_bin])
     y_pos_bin = (y_pos[1:end-1, :][correct_bin], y_pos[2:end, :][correct_bin])
     knot_slopes_bin = (knot_slopes[1:end-1, :][correct_bin], knot_slopes[2:end, :][correct_bin])
+    =#
 
+    x_pos_bin_upper = @views x_pos[2:end, :][correct_bin]
+    x_pos_bin_lower = @views x_pos[1:end-1, :][correct_bin]
 
-    bin_width = x_pos_bin[2] .- x_pos_bin[1]
-    bin_height = y_pos_bin[2] .- y_pos_bin[1]
+    y_pos_bin_upper = @views y_pos[2:end, :][correct_bin]
+    y_pos_bin_lower = @views y_pos[1:end-1, :][correct_bin]
+
+    knot_slopes_upper = @views knot_slopes[2:end, :][correct_bin]
+    knot_slopes_lower = @views knot_slopes[1:end-1, :][correct_bin]
+
+    bin_width = x_pos_bin_upper .- x_pos_bin_lower
+    bin_height = y_pos_bin_upper .- y_pos_bin_lower
     bin_slope = bin_height ./ bin_width
 
-    w = (y .- y_pos_bin[1]) ./ bin_height
+    w = (y .- y_pos_bin_lower) ./ bin_height
     w = clamp.(w, 0.0, 1.0)  # Ensure w is in [0, 1].
 
     # Compute quadratic coefficients: az^2 + bz + c = 0
-    slopes_term = knot_slopes_bin[2] .+ knot_slopes_bin[1] .- 2.0 * bin_slope
+    slopes_term = knot_slopes_upper .+ knot_slopes_lower .- 2.0 * bin_slope
     c = .-bin_slope .* w
-    b = knot_slopes_bin[1] .- slopes_term .* w
+    b =knot_slopes_lower .- slopes_term .* w
     a = bin_slope .- b
 
     # Solve quadratic to obtain z and then x.
     z = safe_quadratic_root.(a, b, c)
     z = clamp.(z, 0.0, 1.0)  # Ensure z is in [0, 1].
-    x = bin_width .* z .+ x_pos_bin[1]
+    x = bin_width .* z .+ x_pos_bin_lower
 
     # Compute log det Jacobian.
     sq_z = z .^ 2
@@ -403,8 +412,8 @@ function inv_rqs_univariate(x_pos::AbstractMatrix, y_pos::AbstractMatrix, knot_s
     sq_1mz = (1.0 .- z) .^ 2
     denominator = bin_slope .+ slopes_term .* z1mz
     logdet = -2.0 .* log.(bin_slope) .- log.(
-        knot_slopes_bin[2] .* sq_z .+ 2.0 .* bin_slope .* z1mz .+
-        knot_slopes_bin[1] .* sq_1mz) .+ 2.0 .* log.(denominator)
+        knot_slopes_upper .* sq_z .+ 2.0 .* bin_slope .* z1mz .+
+        knot_slopes_lower .* sq_1mz) .+ 2.0 .* log.(denominator)
 
     # If y is outside the spline range, we default to a linear transformation.
     x = my_where(below_range, (y .- y_pos[1, :]) ./ knot_slopes[1, :] .+ x_pos[1, :], x)
@@ -421,8 +430,6 @@ function inv_rqs_univariate(x_pos::AbstractMatrix, y_pos::AbstractMatrix, knot_s
 end
 
 function _split_params(params)
-
-
     spline_params = params[1:end-2, :]
     shift = params[end-1, :]
     scale = sigmoid.(params[end, :]) .* 100
@@ -440,10 +447,11 @@ function eval_transformed_normal_logpdf(
     params::AbstractMatrix,
     range_min, range_max)
     @assert length(y) == size(params, 2)
-    spline_params, shift, scale = _split_params(params)
+    
+    spline_params = @views params[1:end-2, :]
+    shift = @views params[end-1, :]
+    scale = sigmoid.(params[end, :]) .* 100
 
-    #scale = 5.
-    #shift = 0.
 
     x_pos, y_pos, knot_slopes = constrain_spline_params(spline_params, range_min, range_max)
     x, logdet_spline = inv_rqs_univariate(x_pos, y_pos, knot_slopes, y)
@@ -506,7 +514,10 @@ function eval_transformed_normal_logpdf(
     range_min, range_max)
 
     params = permutedims(params)'
-    spline_params, shift, scale = _split_params(params)
+
+    spline_params = @views params[1:end-2, :]
+    shift = @views params[end-1, :]
+    scale = sigmoid.(params[end, :]) .* 100
 
     x_pos, y_pos, knot_slopes = constrain_spline_params(spline_params, range_min, range_max)
     #x_pos = repeat(x_pos[:], 1, length(y))
@@ -516,8 +527,6 @@ function eval_transformed_normal_logpdf(
     x_pos = permutedims(x_pos)'
     y_pos =  permutedims(y_pos)'
     knot_slopes =  permutedims(knot_slopes)'
-
-
       
     x, logdet_spline = inv_rqs_univariate(x_pos, y_pos, knot_slopes, y)
     normal_logpdf = -0.5 .* (x .^ 2 .+ log(2 * pi))

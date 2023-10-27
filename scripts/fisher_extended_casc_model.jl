@@ -57,9 +57,6 @@ detectors = Dict("Single" => targets_single, "Line" =>targets_line, "Tri" => tar
 medium = make_cascadia_medium_properties(0.95f0)
 
 
-model = models_tracks["A1TU2.5_1"]
-model = gpu(model)
-
 
 targets = targets_full
 model_path = joinpath(ENV["WORK"], "time_surrogate")
@@ -120,13 +117,13 @@ buffer = (create_input_buffer(d, 1))
 diff_cache = FixedSizeDiffCache(buffer, 6)
 
 
-nev = 1
-nsa = 35
+nev = 10
+nsa = 20
 
 model = gpu(models_tracks["A1T1"])
 hit_generator = SurrogateModelHitGenerator(model, 200.0, nothing)
 
-m, evts = calc_fisher(d, inj, hit_generator, nev, nsa, use_grad=true, cache=diff_cache)
+@profview m, evts = calc_fisher(d, inj, hit_generator, nev, nsa, use_grad=true, cache=diff_cache)
 
 function profiled_pos(fisher::Matrix)
     fisher

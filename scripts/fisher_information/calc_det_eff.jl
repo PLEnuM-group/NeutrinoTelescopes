@@ -185,9 +185,9 @@ function calculate_for_events(args)
     cyl = res[:injection_volume]
     medium = make_cascadia_medium_properties(0.95)
     if args["det"] == "cluster"
-        targets = make_hex_detector(3, res[:spacing], 20, 50, truncate=1, z_start=475)
+        targets = make_hex_detector(3, res[:spacing],  res[:n_modules], res[:vert_spacing], truncate=1, z_start=res[:z_start])
     else
-        targets = make_n_hex_cluster_detector(7, res[:spacing], 20, 50, z_start=475)
+        targets = make_n_hex_cluster_detector(7, res[:spacing], res[:n_modules], res[:vert_spacing], z_start=res[:z_start])
     end
     detector = Detector(targets, medium)
     hit_buffer = create_input_buffer(detector, 1)
@@ -212,7 +212,8 @@ function calculate_for_events(args)
         =#
         theta, phi = cart_to_sph(particle.direction)
 
-        other_stats = (dir_theta=theta, dir_phi=phi, log_energy=log10(particle.energy), spacing=res[:spacing], sim_volume=sim_volume, weight=e[:weight])
+        other_stats = (dir_theta=theta, dir_phi=phi, log_energy=log10(particle.energy), spacing=res[:spacing], sim_volume=sim_volume, weight=e[:weight],
+                        initial_energy=e[:initial_energy], z_start=res[:z_start], n_modules=res[:n_modules], vert_spacing=[:vert_spacing])
         stats = merge(stats_hits, geo_stats, other_stats)
         push!(eff_d, stats)
 

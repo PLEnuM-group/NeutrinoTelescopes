@@ -1,11 +1,12 @@
 localrules: leptoninjector, all
 detectors = ["full"]
 spacings = [30, 50, 80, 90, 100, 120]
+vert_spacings = [28.57, 22.22, 50]
 time_uncerts = [0, 1.5, 2.5, 3.5, 5]
 EMIN = 1E2
 EMAX = 1E6
 GAMMA = 1
-NEVENTS_LIC = 10000
+NEVENTS_LIC = 50000
 NEVENTS_FISHER = 5000
 N_FISHER_FILES = 5
 WORKDIR = "/home/saturn/capn/capn100h"
@@ -23,7 +24,7 @@ NRESAMPLE = 50
 event_types = ["extended", "lightsabre"]
 
 rule all:
-  input: expand([os.path.join(OUTDIR, "fisher/fisher-{event_type}-{detector}-{spacing}-{time_uncert}-{file_num}.jld2"), os.path.join(OUTDIR, "fisher/deteff-{event_type}-{detector}-{spacing}-{time_uncert}-{file_num}.jld2")], detector=detectors, spacing=spacings, time_uncert=time_uncerts, event_type=event_types, file_num=range(N_FISHER_FILES))
+  input: expand([os.path.join(OUTDIR, "fisher/fisher-{event_type}-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2"), os.path.join(OUTDIR, "fisher/deteff-{event_type}-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")], detector=detectors, spacing=spacings, vert_spacing=vert_spacings, time_uncert=time_uncerts, event_type=event_types, file_num=range(N_FISHER_FILES))
   output: "files"
   shell:
      "echo {input} > files"
@@ -148,17 +149,17 @@ rule train_amp_model_extended:
 
 rule fisher:
     input: [rules.leptoninjector.output.out_li, os.path.join(OUTDIR, "time_surrogate/{event_type}/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate/{event_type}/time_uncert_{time_uncert}_1_FNL.bson")]
-    output: os.path.join(OUTDIR, "fisher/fisher-{event_type}-{detector}-{spacing}-{time_uncert}-{file_num}.jld2")
+    output: os.path.join(OUTDIR, "fisher/fisher-{event_type}-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")
     resources:
         clusters="tinygpu",
         slurm_extra="--gres=gpu:1",
-        time="6:00:00"
+        time="24:00:00"
     shell:
-        "{JULIA_BIN} {SCRIPT_DIR}/fisher_information/calc_fisher_info.jl --model_path_amp {input[1]} --model_path_time {input[2]} --type {wildcards.event_type} --det {wildcards.detector} --nevents {NEVENTS_FISHER} --spacing {wildcards.spacing} --log-energy 4 --li-file {input[0]} --outfile {output}"
+        "{JULIA_BIN} {SCRIPT_DIR}/fisher_information/calc_fisher_info.jl --model_path_amp {input[1]} --model_path_time {input[2]} --type {wildcards.event_type} --det {wildcards.detector} --nevents {NEVENTS_FISHER} --spacing {wildcards.spacing} --log-energy 4 --li-file {input[0]} --outfile {output} --vert_spacing {wildcards.vert_spacing}"
 
 rule calc_det_eff:
     input: [rules.fisher.output, os.path.join(OUTDIR, "time_surrogate/{event_type}/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate/{event_type}/time_uncert_{time_uncert}_1_FNL.bson")]
-    output: os.path.join(OUTDIR, "fisher/deteff-{event_type}-{detector}-{spacing}-{time_uncert}-{file_num}.jld2")
+    output: os.path.join(OUTDIR, "fisher/deteff-{event_type}-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")
     group: "det"
     resources:
         clusters="tinygpu",

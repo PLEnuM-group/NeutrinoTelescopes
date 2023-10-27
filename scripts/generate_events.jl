@@ -43,8 +43,15 @@ time_dist = Dirac(0.0)
 inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
 hit_generator = SurrogateModelHitGenerator(model, 200.0, d)
 
-event = rand(inj)
-hits = generate_hit_times!(event, d, hit_generator)
+
+events = Event[]
+for _ in 1:10
+    event = rand(inj)
+    hits = generate_hit_times!(event, d, hit_generator)
+    push!(events, event)
+end
+
+save(joinpath(workdir, "test_cascades.jld2"), Dict("events" => events))
 
 
 event

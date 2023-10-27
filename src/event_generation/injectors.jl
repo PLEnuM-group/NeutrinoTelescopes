@@ -99,7 +99,6 @@ point_in_volume(c::FixedPosition, pos::AbstractVector) = pos == c.position
 
 Sample a random point in volume
 """
-rand(::VolumeType) = error("Not implemented")
 rand(vol::VolumeType) = rand(Random.default_rng(), vol)
 
 rand(::AbstractRNG, vol::FixedPosition) = vol.position

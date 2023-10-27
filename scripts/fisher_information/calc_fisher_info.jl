@@ -52,24 +52,34 @@ function run(args)
     results = []
 
     targets = nothing
+    n_gaps = floor(Int64, 1000 / args["vert_spacing"])
+    n_modules = n_gaps + 1 
+    zstart = 0.5* n_gaps * args["vert_spacing"]
 
+    ## HACK FOR P-ONE-1 lines
+    if args["vert_spacing"] == 50
+        n_modules = 20
+        zstart = 475
+    end
+    
     if args["det"] == "cluster"
-        targets = make_hex_detector(3, args["spacing"], 20, 50, truncate=1, z_start=475)
+        targets = make_hex_detector(3, args["spacing"], n_modules, args["vert_spacing"], truncate=1, z_start=zstart)
     else
-        targets = make_n_hex_cluster_detector(7, args["spacing"], 20, 50, z_start=475)
+        targets = make_n_hex_cluster_detector(7, args["spacing"], n_modules, args["vert_spacing"], z_start=zstart)
     end
 
     d = Detector(targets, medium)
     hit_buffer = create_input_buffer(d, 1)
+    out_buffer = create_output_buffer(d, 500)
     diff_cache = FixedSizeDiffCache(hit_buffer, 6)
     
     inj = make_injector(args, d)
-    hit_generator = SurrogateModelHitGenerator(model, 200.0, hit_buffer)
+    hit_generator = SurrogateModelHitGenerator(model, 200.0, hit_buffer, out_buffer)
         
     matrices, events = calc_fisher(d, inj, hit_generator, n_events, n_samples, use_grad=true, cache=diff_cache)
     cylinder = get_bounding_cylinder(d)
     
-    results = (fisher_matrices = matrices, events=events, injection_volume=cylinder, spacing=args["spacing"], det=args["det"])
+    results = (fisher_matrices = matrices, events=events, injection_volume=cylinder, spacing=args["spacing"], det=args["det"], n_modules=n_modules, vert_spacing=args["vert_spacing"], z_start=zstart)
 
     JLD2.save(args["outfile"], Dict("results" => results))
 end
@@ -107,6 +117,11 @@ det_choices = ["cluster", "full"]
     help ="Detector spacing"
     required = true
     arg_type = Float64
+    "--vert_spacing"
+    help ="Vertical Detector spacing"
+    required = false
+    arg_type = Float64
+    default = 50.
     "--log-energy"
     help ="Log10(Energy)"
     required = true

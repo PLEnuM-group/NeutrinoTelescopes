@@ -23,7 +23,7 @@ def select_xs_tag(final1, final2):
 def make_injector(final1, final2, n_events):
 
     xs_folder = "/home/saturn/capn/capn100h/cross-sections/csms_differential_v1.0"
-    is_ranged =  final1 in [LI.Particle.ParticleType.MuMinus, LI.Particle.ParticleType.MuPlus]
+    is_ranged = True
 
     xs_tag = select_xs_tag(final1, final2)
     diff_xs     = xs_folder + f"/dsdxdy_{xs_tag}_iso.fits"

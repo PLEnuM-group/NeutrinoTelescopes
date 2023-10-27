@@ -49,7 +49,6 @@ function calc_pos_uncert(fisher, pos_x, pos_y, pos_z)
 
         return sqrt(var_pos_t)
     catch y
-        @show y
         return missing
     end
 end
@@ -219,15 +218,22 @@ function proc_data(files)
                 length_in = intersection.second - intersection.first
             end
 
-            cad = closest_approach_distance(p.position, p.direction, cyl.center)
-            cparam = closest_approach_param(p.position, p.direction, cyl.center)
+            cad = closest_approach_distance(p, cyl.center)
+            cparam = closest_approach_param(p, cyl.center)
             cad_pos = p.position .+ cparam .* p.direction
+
+            if haskey(res, :vert_spacing)
+                vert_spacing = res[:vert_spacing]
+            else
+                vert_spacing = 50
+            end
 
             push!(rows, (fisher=m, log_energy=log10(p.energy), dir_theta=dir_theta,
                 dir_phi=dir_phi, pos_x=pos_x, pos_y=pos_y, pos_z=pos_z, length_in=length_in,
-                spacing=res[:spacing], closest_approach_distance=cad, cad_x=cad_pos[1], cad_y=cad_pos[2],
-                cad_z=cad_pos[3], time_uncert=parse(Float64, first(split(last(split(f, "-")), "."))),
-                cylinder=cyl.radius))
+                spacing=res[:spacing], vert_spacing=vert_spacing, closest_approach_distance=cad, cad_x=cad_pos[1], cad_y=cad_pos[2],
+                cad_z=cad_pos[3], time_uncert=parse(Float64, split(f, "-")[end-1]),
+                cylinder=cyl.radius, cad_rho=sqrt(cad_pos[1]^2 + cad_pos[2]^2),
+                in_cylinder=point_in_volume(cyl, p.position)))
         end
     end
        
@@ -242,7 +248,7 @@ function binned_average(x, y, bins)
     ixs = searchsortedfirst.(Ref(bins), x)
     averages = Vector{Float64}(undef, length(bins)+1)
 
-    for ix in eachindex(averages)
+    @inbounds for ix in eachindex(averages)
         sel = ixs .== ix
         averages[ix] = mean(skipmissing(y[sel]))
     end
@@ -252,40 +258,144 @@ end
 bin_centers(bins) = 0.5*(bins[2:end] .+ bins[1:end-1])
 
 outdir = joinpath(ENV["WORK"], "snakemake/fisher")
-df_track = proc_data(glob("fisher-lightsabre*.jld2", outdir ))
-df_track_in = df_track[df_track[:, :length_in] .> 0, :] 
+df_track = proc_data(glob("fisher-light*.jld2", outdir ))
+df_track_in = df_track[df_track[:, :length_in] .> 0 .&& df_track[:, :time_uncert] .== 2.5, :] 
 
+df_casc = proc_data(glob("fisher-ext*.jld2", outdir ))
+df_casc_in = df_casc[df_casc[:, :in_cylinder] .&& df_casc[:, :vert_spacing] .== 50, :] 
 
-f = Figure()
-ax = Axis(f[1, 1], yscale=log10)
-for (groupn, group) in pairs(groupby(df_track_in, [:spacing, :time_uncert]))
-    scatter!(ax, group[:, :log_energy], group[:, :dir_uncert], label=string(groupn[1]))
+begin 
+    f = Figure(resolution=(1200, 1000))
+    bins = 1:0.5:6
+    f[1, 1] = grid = GridLayout()
+    for (i, (groupn, group)) in enumerate(pairs(groupby(df_casc_in, :spacing)))
+        row, col = divrem(i-1, 2)
+        row +=1
+        col +=1 
+
+        subgrid = grid[row, col] = GridLayout()
+        
+        ax = Axis(subgrid[1, 1], yscale=log10,
+                #xlabel="log10(Energy / GeV)",
+                ylabel="Angular Resolution (deg)",
+                title="Horizontal Spacing: $(groupn[1])"
+                )
+
+        sel50m = group[group[:, :vert_spacing] .== 50, :]
+        avg_50 = binned_average(sel50m[:, :log_energy], sel50m[:, :dir_uncert], bins)
+
+        ax_r = Axis(subgrid[2, 1], xlabel="log10(Energy / GeV)", ylabel="Ratio")
+        for (ggroupn, ggroup) in pairs(groupby(group, :vert_spacing))
+            avg = binned_average(ggroup[:, :log_energy], ggroup[:, :dir_uncert], bins)
+            lines!(ax, bin_centers(bins), avg, label=string(ggroupn[1]) * "m")
+            lines!(ax_r, bin_centers(bins), avg ./ avg_50, label=string(ggroupn[1]) * "m")
+        end
+        ylims!(ax, 1E-2, 30)
+        rowsize!(subgrid, 1, Auto(2))
+        rowsize!(subgrid, 2, Auto(1))
+
+    end
+    f[1, 2] = Legend(f, ax, "Vert Spacing", framevisible = false)
+    f
 end
-axislegend(ax)
-f
+
+begin
+    f = Figure(resolution=(1200, 1000))
+    bins = 1:0.5:6
+    f[1, 1] = grid = GridLayout()
+    for (i, (groupn, group)) in enumerate(pairs(groupby(df_track_in, :spacing)))
+        row, col = divrem(i-1, 2)
+        row +=1
+        col +=1 
+
+        subgrid = grid[row, col] = GridLayout()
+        
+        ax = Axis(subgrid[1, 1], yscale=log10,
+                #xlabel="log10(Energy / GeV)",
+                ylabel="Angular Resolution (deg)",
+                title="Horizontal Spacing: $(groupn[1])"
+                )
+
+        sel50m = group[group[:, :vert_spacing] .== 50, :]
+        avg_50 = binned_average(sel50m[:, :log_energy], sel50m[:, :dir_uncert], bins)
+
+        ax_r = Axis(subgrid[2, 1], xlabel="log10(Energy / GeV)", ylabel="Ratio")
+        for (ggroupn, ggroup) in pairs(groupby(group, :vert_spacing))
+            avg = binned_average(ggroup[:, :log_energy], ggroup[:, :dir_uncert], bins)
+            lines!(ax, bin_centers(bins), avg, label=string(ggroupn[1]) * "m")
+            lines!(ax_r, bin_centers(bins), avg ./ avg_50, label=string(ggroupn[1]) * "m")
+        end
+        ylims!(ax, 1E-2, 2)
+        rowsize!(subgrid, 1, Auto(2))
+        rowsize!(subgrid, 2, Auto(1))
+
+    end
+    f[1, 2] = Legend(f, ax, "Vert Spacing", framevisible = false)
+    f
+end
 
 bins = 1:0.5:6
-f = Figure()
-ax = Axis(f[1, 1], yscale=log10)
-for (groupn, group) in pairs(groupby(df_track_in, [:spacing, :time_uncert]))
-    avg = binned_average(group[:, :log_energy], group[:, :dir_uncert], bins)
-    lines!(ax, bin_centers(bins), avg, label=string(groupn))
+f = Figure(resolution=(1000, 1000))
+for (i, (groupn, group)) in enumerate(pairs(groupby(df_casc_in, [:time_uncert])))
+    
+    row, col = divrem(i-1, 2)
+    row +=1
+    col +=1 
+    @show i, row, col
+    ax = Axis(f[row, col], yscale=log10, title=string(groupn[1]))
+    for (ggroupn, ggroup) in pairs(groupby(group, [:spacing]))
+        avg = binned_average(ggroup[:, :log_energy], ggroup[:, :dir_uncert], bins)
+        lines!(ax, bin_centers(bins), avg, label=string(ggroupn[1]))
+    end
+    axislegend()
+    ylims!(ax, 1E-1, 100)
 end
-axislegend(ax)
 f
 
 
+bins = 1:0.5:6
+f = Figure(resolution=(1000, 1000))
+for (i, (groupn, group)) in enumerate(pairs(groupby(df_track_in, [:time_uncert])))
+    
+    row, col = divrem(i-1, 2)
+    row +=1
+    col +=1 
+    @show i, row, col
+    ax = Axis(f[row, col], yscale=log10, title=string(groupn[1]))
+    for (ggroupn, ggroup) in pairs(groupby(group, [:spacing]))
+        avg = binned_average(ggroup[:, :log_energy], ggroup[:, :dir_uncert], bins)
+        lines!(ax, bin_centers(bins), avg, label=string(ggroupn[1]))
+    end
+    axislegend()
+    ylims!(ax, 1E-1, 100)
+end
+f
 
 
 
 f = Figure()
 ax = Axis(f[1, 1], yscale=log10)
 for (groupn, group) in pairs(groupby(df_track_in, :spacing))
-    @show groupn
     scatter!(ax, group[:, :closest_approach_distance], group[:, :dir_uncert], label=string(groupn[1]))
 end
 axislegend(ax)
 f
+
+
+f = Figure()
+for (i, (groupn, group)) in enumerate(pairs(groupby(df_track[df_track[:, :time_uncert] .== 1.5, :], :spacing)))
+    ax = Axis(f[i, 1], limits=(-600, 600, -600, 600))
+    color = copy(group[:, :dir_uncert])
+    color[ismissing.(color)] .= NaN
+    color = convert(Vector{Float64}, color)
+
+    scatter!(ax, group[:, :cad_x], group[:, :cad_y], color=log10.(color), label=string(groupn[1]),
+            )
+    lines!(ax, Circle(Point2f((0, 0)), first(group[:, :cylinder])), linewidth=3)
+end
+f
+
+
 
 f = Figure()
 ax = Axis(f[1, 1],)
@@ -293,7 +403,7 @@ with_theme(
     Theme(
         Scatter = (cycle = [:marker],)
     )) do
-    for (groupn, group) in pairs(groupby(df_track_in, :spacing))
+    for (groupn, group) in pairs(groupby(df_track, :spacing))
         
         color = copy(group[:, :dir_uncert])
         color[ismissing.(color)] .= NaN
@@ -303,8 +413,11 @@ with_theme(
                 )
     end
     axislegend(ax)
+    ylims!(-1000, 1000)
+    xlims!(-1000, 1000)
     f
 end
+
 
 
 df_casc = proc_data(glob("fisher-extended*.jld2", outdir ))
