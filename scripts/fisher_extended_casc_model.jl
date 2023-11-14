@@ -27,7 +27,7 @@ using ForwardDiff
 using PreallocationTools
 using BenchmarkTools
 
-model_path = joinpath(ENV["WORK"], "time_surrogate")
+model_path = joinpath(ENV["ECAPSTOR"], "time_surrogate")
 
 models_casc = Dict(
     "A1T1" =>  PhotonSurrogate(joinpath(model_path, "extended/amplitude_1_FNL.bson"), joinpath(model_path, "extended/time_1_FNL.bson")),
@@ -59,7 +59,7 @@ medium = make_cascadia_medium_properties(0.95f0)
 
 
 targets = targets_full
-model_path = joinpath(ENV["WORK"], "time_surrogate")
+model_path = joinpath(ENV["ECAPSTOR"], "time_surrogate")
 model = models_tracks["A1TU2.5_1"]
 model = gpu(model)
 
@@ -115,15 +115,15 @@ time_dist = Dirac(0.0)
 inj = SurfaceInjector(surf, edist, pdist, ang_dist, length_dist, time_dist)
 buffer = (create_input_buffer(d, 1))
 diff_cache = FixedSizeDiffCache(buffer, 6)
-
+out_buffer = create_output_buffer(d, 500)
 
 nev = 10
 nsa = 20
 
 model = gpu(models_tracks["A1T1"])
-hit_generator = SurrogateModelHitGenerator(model, 200.0, nothing)
+hit_generator = SurrogateModelHitGenerator(model, 200.0, buffer, out_buffer)
 
-@profview m, evts = calc_fisher(d, inj, hit_generator, nev, nsa, use_grad=true, cache=diff_cache)
+m, evts = calc_fisher(d, inj, hit_generator, nev, nsa, use_grad=true, cache=diff_cache)
 
 function profiled_pos(fisher::Matrix)
     fisher

@@ -9,7 +9,7 @@ using LinearAlgebra
 using ..Injectors
 export make_detector_line, make_hex_detector
 export make_n_hex_cluster_positions, make_n_hex_cluster_detector
-export Detector, get_detector_modules, get_detector_medium
+export Detector, get_detector_modules, get_detector_medium, get_detector_pmts
 export get_bounding_cylinder
 
 struct Detector{T<:PhotonTarget, MP <: MediumProperties}
@@ -19,6 +19,21 @@ end
 
 get_detector_modules(d::Detector) = d.modules
 get_detector_medium(d::Detector) = d.medium
+
+function get_detector_pmts(d::Detector)
+
+    modules = get_detector_modules(d)
+    T = @NamedTuple{pos::SVector{3, Float64}, mod_ix::Int64, pmt_ix::Int64}
+    pmt_positions = Vector{T}(undef, 0)
+    for mod in modules
+        for (pmt_ix, coords) in enumerate(eachcol(mod.pmt_coordinates))
+            pmt_pos_cart = sph_to_cart(coords)
+            pos = mod.shape.position .+ mod.shape.radius .* pmt_pos_cart
+            push!(pmt_positions, (pos=pos, mod_ix=Int64(mod.module_id), pmt_ix=pmt_ix))
+        end
+    end
+    return pmt_positions
+end
 
 function get_bounding_cylinder(d::Detector; padding_top=50., padding_side=50.)
     modules = get_detector_modules(d)

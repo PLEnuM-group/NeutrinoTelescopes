@@ -8,19 +8,20 @@ using DataStructures
 using JLD2
 using PreallocationTools
 using ArgParse
+using Distributions
 
 function make_injector(args, detector)
 
     cylinder = get_bounding_cylinder(detector)
 
-    if haskey(args, "li-file")
+    if !isnothing(args["li-file"])
         return LIInjector(args["li-file"], drop_starting=(args["type"] == "lightsabre"), volume=cylinder)
     else
         pdist = nothing
         ang_dist = nothing
         length_dist = nothing
         time_dist = Dirac(0.0)
-        edist = Dirac(10^args["log-energy"])
+        edist = truncated(Pareto(args["gamma"]-1, args["e_min"]), upper=args["e_max"])
 
         if args["type"] == "lightsabre"
             pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
@@ -79,7 +80,8 @@ function run(args)
     matrices, events = calc_fisher(d, inj, hit_generator, n_events, n_samples, use_grad=true, cache=diff_cache)
     cylinder = get_bounding_cylinder(d)
     
-    results = (fisher_matrices = matrices, events=events, injection_volume=cylinder, spacing=args["spacing"], det=args["det"], n_modules=n_modules, vert_spacing=args["vert_spacing"], z_start=zstart)
+    results = (fisher_matrices = matrices, events=events, injection_volume=cylinder, spacing=args["spacing"], det=args["det"], n_modules=n_modules, vert_spacing=args["vert_spacing"], z_start=zstart,
+               emin=args["e_min"], emax=args["e_max"], gamma=args["gamma"])
 
     JLD2.save(args["outfile"], Dict("results" => results))
 end
@@ -108,7 +110,7 @@ det_choices = ["cluster", "full"]
     "--det"
     help = "Detector Type;  must be one of " * join(det_choices, ", ", " or ")
     range_tester = (x -> x in det_choices)
-    default = "cluster"
+    default = "full"
     "--nevents"
     help ="Number of events"
     required = true
@@ -122,10 +124,21 @@ det_choices = ["cluster", "full"]
     required = false
     arg_type = Float64
     default = 50.
-    "--log-energy"
-    help ="Log10(Energy)"
-    required = true
+    "--gamma"
+    help ="Spectral index when sampling in cylinder mode"
+    required = false
     arg_type = Float64
+    default = 2.
+    "--e_max"
+    help ="maximum energy when sampling in cylinder mode"
+    required = false
+    arg_type = Float64
+    default = 1E6
+    "--e_min"
+    help ="minimum energy when sampling in cylinder mode"
+    required = false
+    arg_type = Float64
+    default = 1E2
     "--li-file"
     help ="LeptonInjector file"
     required = false

@@ -382,6 +382,8 @@ function plot_neutrino_effective_area_from_ow(data; n_mod_thresh=1, pmt_thresh=:
     fig
 end
 
+data_cascades
+
 plot_neutrino_effective_area_from_ow(data_cascades, n_mod_thresh=2)
 plot_neutrino_effective_area_from_ow(data_tracks, n_mod_thresh=2)
 

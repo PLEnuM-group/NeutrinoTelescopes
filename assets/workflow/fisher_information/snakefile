@@ -1,4 +1,4 @@
-localrules: leptoninjector, all
+localrules: leptoninjector, all_li, all_cylinder
 detectors = ["full"]
 spacings = [30, 50, 80, 90, 100, 120]
 vert_spacings = [28.57, 22.22, 50]
@@ -7,9 +7,9 @@ EMIN = 1E2
 EMAX = 1E6
 GAMMA = 1
 NEVENTS_LIC = 50000
-NEVENTS_FISHER = 5000
+NEVENTS_FISHER = 1000
 N_FISHER_FILES = 5
-WORKDIR = "/home/saturn/capn/capn100h"
+WORKDIR = "/home/wecapstor3/capn/capn100h"
 OUTDIR = os.path.join(WORKDIR, "snakemake")
 
 JULIA_BIN = "/home/hpc/capn/capn100h/.julia/juliaup/julia-1.9.3+0.x64.linux.gnu/bin/julia"
@@ -23,11 +23,18 @@ NRESAMPLE = 50
 
 event_types = ["extended", "lightsabre"]
 
-rule all:
+rule all_li:
   input: expand([os.path.join(OUTDIR, "fisher/fisher-{event_type}-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2"), os.path.join(OUTDIR, "fisher/deteff-{event_type}-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")], detector=detectors, spacing=spacings, vert_spacing=vert_spacings, time_uncert=time_uncerts, event_type=event_types, file_num=range(N_FISHER_FILES))
   output: "files"
   shell:
-     "echo {input} > files"
+     "touch {output}"
+
+rule all_cylinder:
+  input: expand([os.path.join(OUTDIR, "fisher_cylinder/fisher-lightsabre-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2"), os.path.join(OUTDIR, "fisher/deteff-lightsabre-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")], detector=detectors, spacing=spacings, vert_spacing=vert_spacings, time_uncert=time_uncerts,file_num=range(N_FISHER_FILES))
+  output: "files_cylinder"
+  shell:
+     "touch {output}"
+
 
 rule leptoninjector:
     output: out_li = os.path.join(OUTDIR, "leptoninjector-{event_type}-{file_num}.hd5"), out_lic = os.path.join(OUTDIR, "leptoninjector-{event_type}-{file_num}.lic")
@@ -157,16 +164,27 @@ rule fisher:
     shell:
         "{JULIA_BIN} {SCRIPT_DIR}/fisher_information/calc_fisher_info.jl --model_path_amp {input[1]} --model_path_time {input[2]} --type {wildcards.event_type} --det {wildcards.detector} --nevents {NEVENTS_FISHER} --spacing {wildcards.spacing} --log-energy 4 --li-file {input[0]} --outfile {output} --vert_spacing {wildcards.vert_spacing}"
 
+rule fisher_cylinder:
+    input: [os.path.join(OUTDIR, "time_surrogate/lightsabre/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate/lightsabre/time_uncert_{time_uncert}_1_FNL.bson")]
+    output: os.path.join(OUTDIR, "fisher_cylinder/fisher-lightsabre-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")
+    resources:
+        clusters="tinygpu",
+        slurm_extra="--gres=gpu:1",
+        time="24:00:00"
+    shell:
+        "{JULIA_BIN} {SCRIPT_DIR}/fisher_information/calc_fisher_info.jl --model_path_amp {input[0]} --model_path_time {input[1]} --type lightsabre --det {wildcards.detector} --nevents {NEVENTS_FISHER} --spacing {wildcards.spacing} --gamma 2 --e_min 1E2 --e_max 1E6 --outfile {output} --vert_spacing {wildcards.vert_spacing}"
+
+
 rule calc_det_eff:
-    input: [rules.fisher.output, os.path.join(OUTDIR, "time_surrogate/{event_type}/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate/{event_type}/time_uncert_{time_uncert}_1_FNL.bson")]
-    output: os.path.join(OUTDIR, "fisher/deteff-{event_type}-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")
+    input: [os.path.join(OUTDIR, "{fisher_folder}/fisher-lightsabre-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2"), os.path.join(OUTDIR, "time_surrogate/{event_type}/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate/{event_type}/time_uncert_{time_uncert}_1_FNL.bson")]
+    output: os.path.join(OUTDIR, "{fisher_folder}/deteff-{event_type}-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")
     group: "det"
     resources:
         clusters="tinygpu",
         slurm_extra="--gres=gpu:1",
         time="3:00:00"
     shell:
-        "{JULIA_BIN} {SCRIPT_DIR}/fisher_information/calc_det_eff.jl --infile {input[0]} --model_path_amp {input[1]} --model_path_time {input[2]} --det {wildcards.detector} --outfile {output}"
+        "{JULIA_BIN} {SCRIPT_DIR}/fisher_information/calc_det_eff.jl --infile {input[0]} --model_path_amp {input[1]} --model_path_time {input[2]} --det {wildcards.detector} --outfile {output} --vert_spacing {wildcards.vert_spacing}"
 
 
 #rule acceptance:

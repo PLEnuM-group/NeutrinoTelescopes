@@ -12,13 +12,14 @@ using DataStructures
 using JSON3
 using DataFrames
 using Arrow
+using JLD2
 
 
-workdir = ENV["WORK"]
+workdir = ENV["ECAPSTOR"]
 
 model = PhotonSurrogate(
-    joinpath(workdir, "snakemake/time_surrogate/extended/amplitude_1_FNL.bson"),
-    joinpath(workdir, "snakemake/time_surrogate/extended/time_uncert_0_1_FNL.bson")
+    joinpath(workdir, "snakemake/time_surrogate/lightsabre/amplitude_1_FNL.bson"),
+    joinpath(workdir, "snakemake/time_surrogate/lightsabre/time_uncert_0_1_FNL.bson")
 )
     
 
@@ -34,25 +35,37 @@ targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
 medium = make_cascadia_medium_properties(0.95)
 d = Detector(targets_hex, medium)
 
+
 cylinder = get_bounding_cylinder(d)
-pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
+#pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
+pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
 edist = Pareto(1, 1E4) + 1E4
-ang_dist = UniformAngularDistribution()
+#ang_dist = UniformAngularDistribution()
+ang_dist = LowerHalfSphere()
 length_dist = Dirac(0.0)
 time_dist = Dirac(0.0)
-inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
+#inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
+inj = SurfaceInjector(CylinderSurface(cylinder), edist, pdist, ang_dist, length_dist, time_dist)
 hit_generator = SurrogateModelHitGenerator(model, 200.0, d)
 
 
 events = Event[]
+event_hits = []
 for _ in 1:10
     event = rand(inj)
     hits = generate_hit_times!(event, d, hit_generator)
     push!(events, event)
+
+    ev_d = Dict(:hits => event[:photon_hits], :mc_truth=>JSON3.write(event[:particles][1]))
+
+    push!(event_hits, ev_d)
 end
 
-save(joinpath(workdir, "test_cascades.jld2"), Dict("events" => events))
+save(joinpath(workdir, "test_muons.jld2"), Dict("event_hits" => event_hits, "geo" => get_detector_pmts(d)))
 
+data = load(joinpath(workdir, "test_cascades.jld2"))
+
+data["event_hits"]
 
 event
 groups = groupby(hits, [:pmt_id, :module_id])

@@ -33,20 +33,27 @@ function SurrogateModelHitGenerator(model, max_valid_distance, detector::Detecto
     return SurrogateModelHitGenerator(model, max_valid_distance, input_buffer, output_buffer)
 end
 
+
+function create_input_buffer(n_det::Integer, max_particles=500)
+    return zeros(24, n_det*max_particles)
+end
+
 function create_input_buffer(detector::Detector, max_particles=500)
     modules = get_detector_modules(detector)
-    return zeros(24, get_pmt_count(eltype(modules))*length(modules)*max_particles)
+    return create_input_buffer(get_pmt_count(eltype(modules))*length(modules), max_particles)
+end
+
+
+function create_output_buffer(n_det::Integer, expected_hits_per=100)
+    buffer = VectorOfArrays{Float64, 1}()
+    sizehint!(buffer, n_det, (expected_hits_per, ))
+    return buffer
 end
 
 function create_output_buffer(detector::Detector, expected_hits_per=100)
     modules = get_detector_modules(detector)
-
-    buffer = VectorOfArrays{Float64, 1}()
-
     n_pmts = get_pmt_count(eltype(modules))*length(modules)
-    sizehint!(buffer, n_pmts, (expected_hits_per, ))
-
-    return buffer
+    return create_output_buffer(n_pmts, expected_hits_per)
 end
 
 
@@ -75,8 +82,6 @@ function get_modules_in_range(particles, detector::Detector{T, <:MediumPropertie
     modules::Vector{T} = get_detector_modules(detector)
     return get_modules_in_range(particles, modules, max_valid_distance)
 end
-
-
 
 
 function generate_hit_times(
@@ -116,6 +121,13 @@ function generate_hit_times(event::Event, detector::Detector, generator::Surroga
     particles = get_lightemitting_particles(event)
     return generate_hit_times(particles, detector, generator, rng, device=device)
 end
+
+function generate_hit_times(events::AbstractVector{<:Event}, detector::Detector, generator::SurrogateModelHitGenerator, rng=Random.default_rng(); device=gpu)
+    particles_per_event = get_lightemitting_particles.(events)
+    particles = reduce(vcat, particles_per_event)
+    return generate_hit_times(particles, detector, generator, rng, device=device)
+end
+
 
 function generate_hit_times!(event::Event, detector::Detector, generator::SurrogateModelHitGenerator, rng=Random.default_rng(); device=gpu)
     hits, modules_range_mask = generate_hit_times(event, detector, generator, rng, device=device)

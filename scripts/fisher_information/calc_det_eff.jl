@@ -184,10 +184,22 @@ function calculate_for_events(args)
     res = jldopen(args["infile"])["results"]
     cyl = res[:injection_volume]
     medium = make_cascadia_medium_properties(0.95)
+
+    targets = nothing
+    n_gaps = floor(Int64, 1000 / args["vert_spacing"])
+    n_modules = n_gaps + 1 
+    zstart = 0.5* n_gaps * args["vert_spacing"]
+
+    ## HACK FOR P-ONE-1 lines
+    if args["vert_spacing"] == 50
+        n_modules = 20
+        zstart = 475
+    end
+    
     if args["det"] == "cluster"
-        targets = make_hex_detector(3, res[:spacing],  res[:n_modules], res[:vert_spacing], truncate=1, z_start=res[:z_start])
+        targets = make_hex_detector(3, res[:spacing], n_modules, args["vert_spacing"], truncate=1, z_start=zstart)
     else
-        targets = make_n_hex_cluster_detector(7, res[:spacing], res[:n_modules], res[:vert_spacing], z_start=res[:z_start])
+        targets = make_n_hex_cluster_detector(7, res[:spacing], n_modules, args["vert_spacing"], z_start=zstart)
     end
     detector = Detector(targets, medium)
     hit_buffer = create_input_buffer(detector, 1)
@@ -212,8 +224,17 @@ function calculate_for_events(args)
         =#
         theta, phi = cart_to_sph(particle.direction)
 
-        other_stats = (dir_theta=theta, dir_phi=phi, log_energy=log10(particle.energy), spacing=res[:spacing], sim_volume=sim_volume, weight=e[:weight],
-                        initial_energy=e[:initial_energy], z_start=res[:z_start], n_modules=res[:n_modules], vert_spacing=[:vert_spacing])
+        other_stats = (
+            dir_theta=theta,
+            dir_phi=phi,
+            log_energy=log10(particle.energy),
+            spacing=res[:spacing],
+            sim_volume=sim_volume,
+            weight=e[:weight],
+            initial_energy=e[:initial_energy],
+            z_start=res[:z_start],
+            n_modules=res[:n_modules],
+            vert_spacing=args["vert_spacing"])
         stats = merge(stats_hits, geo_stats, other_stats)
         push!(eff_d, stats)
 
@@ -248,6 +269,11 @@ det_choices = ["cluster", "full"]
     help = "Time model"
     arg_type = String
     required = true
+    "--vert_spacing"
+    help ="Vertical Detector spacing"
+    required = false
+    arg_type = Float64
+    default = 50.
 end
 
 args = parse_args(s)

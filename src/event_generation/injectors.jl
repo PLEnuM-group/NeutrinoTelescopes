@@ -405,11 +405,13 @@ end
 
 Base.rand(u::UniformAngularDistribution) = rand(default_rng(), u)
 
-function Base.rand(::LowerHalfSphere)
-    phi = rand() * 2 * π
-    theta = acos(rand() - 1)
+function Base.rand(rng::AbstractRNG, ::LowerHalfSphere)
+    phi = rand(rng) * 2 * π
+    theta = acos(rand(rng) - 1)
     return sph_to_cart(theta, phi)
 end
+
+Base.rand(sph::LowerHalfSphere) = rand(default_rng(), sph)
 
 
 abstract type Injector end

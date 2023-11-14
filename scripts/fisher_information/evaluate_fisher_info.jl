@@ -257,7 +257,7 @@ end
 
 bin_centers(bins) = 0.5*(bins[2:end] .+ bins[1:end-1])
 
-outdir = joinpath(ENV["WORK"], "snakemake/fisher")
+outdir = joinpath(ENV["ECAPSTOR"], "snakemake/fisher_cylinder")
 df_track = proc_data(glob("fisher-light*.jld2", outdir ))
 df_track_in = df_track[df_track[:, :length_in] .> 0 .&& df_track[:, :time_uncert] .== 2.5, :] 
 
@@ -316,9 +316,9 @@ begin
                 title="Horizontal Spacing: $(groupn[1])"
                 )
 
+
         sel50m = group[group[:, :vert_spacing] .== 50, :]
         avg_50 = binned_average(sel50m[:, :log_energy], sel50m[:, :dir_uncert], bins)
-
         ax_r = Axis(subgrid[2, 1], xlabel="log10(Energy / GeV)", ylabel="Ratio")
         for (ggroupn, ggroup) in pairs(groupby(group, :vert_spacing))
             avg = binned_average(ggroup[:, :log_energy], ggroup[:, :dir_uncert], bins)
@@ -328,9 +328,8 @@ begin
         ylims!(ax, 1E-2, 2)
         rowsize!(subgrid, 1, Auto(2))
         rowsize!(subgrid, 2, Auto(1))
-
+        axislegend(ax, ax, "Vert Spacing", framevisible = false)
     end
-    f[1, 2] = Legend(f, ax, "Vert Spacing", framevisible = false)
     f
 end
 

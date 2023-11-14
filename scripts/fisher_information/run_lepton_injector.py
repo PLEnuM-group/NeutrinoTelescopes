@@ -49,7 +49,7 @@ def run(args):
         injectors = [make_injector(final1, final2, n_events) for (final1, final2) in zip(finals1, finals2)]
     
     elif args.mode == "extended":
-        #all cascade like ints
+        #all cascade-like ints
 
         # All electron
 

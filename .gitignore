@@ -5,7 +5,7 @@
 /data
 /assets/proposal_tables/*
 **/logs
-assets/workflow/.snakemake
+.snakemake/
 /figures
 *.out
 *.err

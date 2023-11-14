@@ -1,5 +1,5 @@
 module ExtendedCascadeModel
-
+using ArraysOfArrays
 using MLUtils
 using Flux
 using TensorBoardLogger
@@ -25,10 +25,11 @@ using ParameterSchedulers
 using ParameterSchedulers: Scheduler
 using StructTypes
 using StaticArrays
+using CUDA
 import Base.GC: gc
 
 
-using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow
+using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow!
 using ...Processing
 
 export ArrivalTimeSurrogate, RQSplineModel, PhotonSurrogate
@@ -954,6 +955,86 @@ function create_non_uniform_ranges(n_per_split::AbstractVector)
     return output
 end
 
+
+function _reshape_and_timeshift_data!(times, particles, targets, medium, n_hits_per_pmt_source, output_buffer)
+
+    n_pmt = get_pmt_count(eltype(targets))
+    n_hits_per_source = vec(n_hits_per_pmt_source)
+
+    # Create range selectors into times for each particle-pmt pair
+    selectors = reshape(
+        create_non_uniform_ranges(n_hits_per_source),
+        n_pmt, length(particles), length(targets)
+    )
+    times = flatview(times)
+
+    for (pmt_ix, t_ix) in product(1:n_pmt, eachindex(targets))
+        target = targets[t_ix]
+
+        @views n_hits_this_target = sum(n_hits_per_pmt_source[pmt_ix, :, t_ix])
+
+        if n_hits_this_target == 0
+            push!(output_buffer, Float64[])
+            continue
+        end
+
+        data_this_target = Vector{Float64}(undef, n_hits_this_target)
+        data_selectors = create_non_uniform_ranges(n_hits_per_pmt_source[pmt_ix, :, t_ix])
+
+        for p_ix in eachindex(particles)
+            particle = particles[p_ix]
+            this_n_hits = n_hits_per_pmt_source[pmt_ix, p_ix, t_ix]
+            if this_n_hits > 0
+                t_geo = calc_tgeo(particle, target, medium)
+                times_sel = selectors[pmt_ix, p_ix, t_ix]
+                data_this_target[data_selectors[p_ix]] = times[times_sel] .+ t_geo .+ particle.time
+            end
+        end
+
+        push!(output_buffer, data_this_target)
+    end
+    return output_buffer
+end
+
+
+function _prepare_flow_inputs(particles, targets, model, feat_buffer, device, rng; oversample=1)
+    n_pmt = get_pmt_count(eltype(targets))
+
+    _, log_expec_per_src_pmt_rs = get_log_amplitudes(particles, targets, model; feat_buffer=feat_buffer, device=device)
+
+    if !isnothing(feat_buffer)
+        shape_buffer = @view feat_buffer[:, 1:length(particles)*length(targets)*n_pmt]
+        calc_flow_input!(particles, targets, model.time_transformations, shape_buffer)
+        input = shape_buffer
+    else
+        input = calc_flow_input(particles, targets, model.time_transformations)
+    end
+    
+    # The embedding for all the parameters is
+    # [(p_1, t_1, pmt_1), (p_1, t_1, pmt_2), ... (p_2, t_1, pmt_1), ... (p_1, t_end, pmt_1), ... (p_end, t_end, pmt_end)]
+
+    flow_params = cpu(model.time_model.embedding(device(input)))
+
+    expec_per_source_rs = log_expec_per_src_pmt_rs .= exp.(log_expec_per_src_pmt_rs) .* oversample
+
+    n_hits_per_source_rs = pois_rand.(rng, Float64.(expec_per_source_rs))
+   
+    return flow_params, n_hits_per_source_rs
+end
+
+function _sample_times_for_particle(particles, targets, model, output_buffer, rng=Random.default_rng(); oversample=1, feat_buffer=nothing, device=gpu)
+    
+    flow_params, n_hits_per_source_rs = _prepare_flow_inputs(particles, targets, model, feat_buffer, device, rng, oversample=oversample)
+    
+    n_hits_per_source = vec(n_hits_per_source_rs)
+    mask = n_hits_per_source .> 0
+    non_zero_hits = n_hits_per_source[mask]
+
+    # Only sample times for particle-target pairs that have at least one hit
+    times = sample_flow!(flow_params[:, mask], model.time_model.range_min, model.time_model.range_max, non_zero_hits, output_buffer, rng=rng)
+    return times, n_hits_per_source_rs
+end
+
 """
     sample_multi_particle_event(particles, targets, model, medium, rng=nothing; oversample=1, feat_buffer=nothing, output_buffer=nothing)
 
@@ -970,81 +1051,62 @@ function sample_multi_particle_event(
     output_buffer=nothing,
     device=gpu)
 
-    n_pmt = get_pmt_count(eltype(targets))
+    # We currently cannot reshape VectorOfArrays. For now just double allocate
+    temp_output_buffer = VectorOfArrays{Float64, 1}()
+    n_pmts = get_pmt_count(eltype(targets))*length(targets)
+    sizehint!(temp_output_buffer, n_pmts, (100, ))
 
-    _, log_expec_per_src_pmt_rs = get_log_amplitudes(particles, targets, model; feat_buffer=feat_buffer, device=device)
-
-    if !isnothing(feat_buffer)
-        shape_buffer = @view feat_buffer[:, 1:length(particles)*length(targets)*n_pmt]
-        calc_flow_input!(particles, targets, model.time_transformations, shape_buffer)
-        input = shape_buffer
-    else
-        input = calc_flow_input(particles, targets, model.time_transformations)
-    end
-    
-    # The embedding for all the parameters is
-    # [(p_1, t_1, pmt_1), (p_1, t_1, pmt_2), ... (p_2, t_1, pmt_1), ... (p_1, t_end, pmt_1), ... (p_end, t_end, pmt_end)]
-
-    flow_params::Matrix{Float32} = cpu(model.time_model.embedding(device(input)))
-    #flow_params = model.time_model.embedding(device(input))
-    expec_per_source_rs = log_expec_per_src_pmt_rs .= exp.(log_expec_per_src_pmt_rs) .* oversample
-
-    n_hits_per_source_rs = pois_rand.(rng, Float64.(expec_per_source_rs))
-    n_hits_per_source = vec(n_hits_per_source_rs)
-
-    mask = n_hits_per_source .> 0
-    non_zero_hits = n_hits_per_source[mask]
-
-    # Only sample times for particle-target pairs that have at least one hit
-    times = sample_flow(flow_params[:, mask], model.time_model.range_min, model.time_model.range_max, non_zero_hits, rng=rng)
-
-    # Create range selectors into times for each particle-pmt pair
-    selectors = reshape(
-        create_non_uniform_ranges(n_hits_per_source),
-        n_pmt, length(particles), length(targets)
-    )
-
-
-    #data = Vector{Vector{Float64}}(undef, n_pmt * length(targets))
-    data_index = LinearIndices((1:n_pmt, eachindex(targets)))
+    times, n_hits_per_pmt_source = _sample_times_for_particle(particles, targets, model, temp_output_buffer, rng, oversample=oversample, feat_buffer=feat_buffer, device=device)
 
     if isnothing(output_buffer)
-        output_buffer = VectorOfArrays(Float64, 1)
+        output_buffer = VectorOfArrays{Float64, 1}()
+        sizehint!(output_buffer, n_pmts, (100, ))
     end
-
     empty!(output_buffer)
 
 
-    for (pmt_ix, t_ix) in product(1:n_pmt, eachindex(targets))
-        target = targets[t_ix]
+    _reshape_and_timeshift_data!(times, particles, targets, medium, n_hits_per_pmt_source, output_buffer)
 
-        @views n_hits_this_target = sum(n_hits_per_source_rs[pmt_ix, :, t_ix])
-
-        if n_hits_this_target == 0
-            #data[data_index[pmt_ix, t_ix]] = []
-            push!(output_buffer, Float64[])
-            continue
-        end
-
-        data_this_target = Vector{Float64}(undef, n_hits_this_target)
-        data_selectors = create_non_uniform_ranges(n_hits_per_source_rs[pmt_ix, :, t_ix])
-
-        for p_ix in eachindex(particles)
-            particle = particles[p_ix]
-            this_n_hits = n_hits_per_source_rs[pmt_ix, p_ix, t_ix]
-            if this_n_hits > 0
-                t_geo = calc_tgeo(particle, target, medium)
-                times_sel = selectors[pmt_ix, p_ix, t_ix]
-                data_this_target[data_selectors[p_ix]] = times[times_sel] .+ t_geo .+ particle.time
-            end
-        end
-        #data[data_index[pmt_ix, t_ix]] = data_this_target
-        #@show pmt_ix, t_ix, data_index[pmt_ix, t_ix], length(output_buffer)+1
-        push!(output_buffer, data_this_target)
-    end
     return output_buffer
 end
 
+
+"""
+    sample_many_multi_particle_events(particles, targets, model, medium, rng=nothing; oversample=1, feat_buffer=nothing, output_buffer=nothing)
+
+Sample arrival times at `targets` for `particles` using `model`.
+"""
+function sample_many_multi_particle_events(
+    vec_particles::VectorOfArrays,
+    targets,
+    model,
+    medium,
+    rng=Random.default_rng();
+    oversample=1,
+    feat_buffer=nothing,
+    output_buffer=nothing,
+    device=gpu)
+
+    # We currently cannot reshape VectorOfArrays. For now just double allocate
+    temp_output_buffer = VectorOfArrays{Float64, 1}()
+    n_pmts = get_pmt_count(eltype(targets))*length(targets)
+    sizehint!(temp_output_buffer, n_pmts, (100, ))
+
+    particles_flat = flatview(particles)
+    times, n_hits_per_pmt_source = _sample_times_for_particle(particles_flat, targets, model, temp_output_buffer, rng, oversample=oversample, feat_buffer=feat_buffer, device=device)
+
+
+    if isnothing(output_buffer)
+        output_buffer = VectorOfArrays{Float64, 1}()
+        sizehint!(output_buffer, n_pmts, (100, ))
+    end
+    empty!(output_buffer)
+
+
+    _reshape_and_timeshift_data!(times, particles, targets, medium, n_hits_per_pmt_source, output_buffer)
+
+    return output_buffer
+end
 
 """
     sample_cascade_event(energy, dir_theta, dir_phi, position, time; targets, model, tf_vec, medium, rng=nothing)
@@ -1166,7 +1228,6 @@ function shape_llh(data; particles, targets, flow_params, rel_log_expec, model, 
 end
 
 
-
 function evaluate_model(
     particles::AbstractVector{<:Particle},
     data, targets, model::PhotonSurrogate, medium; feat_buffer=nothing, device=gpu)
@@ -1214,7 +1275,25 @@ function multi_particle_likelihood(
     else
         return sum(pois_llh) + sum(shape_llh, init=0.)
     end
+
+
 end
+
+#=
+function noise_likelihood(data; particles, targets, medium, noise_window_length)
+    n_pmt = get_pmt_count(eltype(targets))
+    data_ix = LinearIndices((1:n_pmt, eachindex(targets)))
+    ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
+
+    data_ix[pmt_ix, t_ix]
+
+    llh_w_noise = logsumexp(log(p_noise)- log((noise_window_length)) , log(1-p_noise) + log(s_lh))
+
+    llh_with_noise = log_poisson_w_nois + log()
+
+
+end
+=#
 
 
 function single_cascade_likelihood(
