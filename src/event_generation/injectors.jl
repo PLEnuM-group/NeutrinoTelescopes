@@ -13,7 +13,7 @@ import Base.rand
 import ..Event
 
 export sample_volume, inject
-export Cylinder, Cuboid, VolumeType
+export Cylinder, Cuboid, VolumeType, Sphere
 export SurfaceType, CylinderSurface
 export VolumeInjector, Injector
 export SurfaceInjector
@@ -36,8 +36,8 @@ Abstract type for volumes
 """
 abstract type VolumeType end
 
-
 point_in_volume(::VolumeType, ::AbstractVector) = error("Not implemented")
+StructTypes.StructType(::Type{<:VolumeType}) = StructTypes.Struct()
 
 """
     Cylinder{T} <: VolumeType
@@ -51,7 +51,6 @@ struct Cylinder{T} <: VolumeType
 end
 
 Base.:(==)(a::Cylinder, b::Cylinder) = (a.center == b.center) && (a.height == b.height) && (a.radius == b.radius)
-StructTypes.StructType(::Type{<:Cylinder}) = StructTypes.Struct()
 
 function point_in_volume(c::Cylinder, pos::AbstractVector)
 
@@ -77,7 +76,23 @@ end
 
 Base.:(==)(a::Cuboid, b::Cuboid) = (a.l_x == b.l_x) && (a.l_y == b.l_y) && (a.l_z == b.l_z)
 
-StructTypes.StructType(::Type{<:Cuboid}) = StructTypes.Struct()
+
+"""
+    Sphere{T} <: VolumeType
+
+Type for spherical volumes.
+"""
+struct Sphere{T} <: VolumeType
+    center::SVector{3,T}
+    radius::T
+end
+
+Base.:(==)(a::Sphere, b::Sphere) = (a.center == b.center) && (a.radius == b.radius)
+
+function point_in_volume(s::Sphere, pos::AbstractVector)
+    return norm(pos .- s.center) < s.radius
+end
+
 
 """
     FixedPosition{T} <: VolumeType
@@ -89,7 +104,6 @@ struct FixedPosition{T} <: VolumeType
 end
 
 Base.:(==)(a::FixedPosition, b::FixedPosition) = all(a.position .== b.position)
-StructTypes.StructType(::Type{<:FixedPosition}) = StructTypes.Struct()
 
 point_in_volume(c::FixedPosition, pos::AbstractVector) = pos == c.position
 
@@ -100,7 +114,6 @@ point_in_volume(c::FixedPosition, pos::AbstractVector) = pos == c.position
 Sample a random point in volume
 """
 rand(vol::VolumeType) = rand(Random.default_rng(), vol)
-
 rand(::AbstractRNG, vol::FixedPosition) = vol.position
 
 """
@@ -136,12 +149,28 @@ function rand(rng::AbstractRNG, vol::Cuboid{T}) where {T}
 end
 
 """
+    rand(vol::Sphere{T}) where {T}
+
+Sample a random point in Sphere.
+"""
+function rand(rng::AbstractRNG, vol::Sphere{T}) where {T}
+    uni_r3 = rand(rng)
+    uni_costheta = rand(Uniform(-1, 1))
+    uni_phi = rand(Uniform(0, 2*π))
+
+    cart = T.(vol.radius * cbrt(uni_r3) .* sph_to_cart(acos(uni_costheta), uni_phi) .+ vol.center)
+
+    return cart
+end
+
+"""
     get_volume(::VolumeType)
 Calculate volume.
 """
 get_volume(::VolumeType) = error("not implemented")
 get_volume(c::Cylinder) = c.radius^2 * π * c.height
 get_volume(c::Cuboid) = c.l_x * c.l_y * c.l_z
+get_volume(s::Sphere) = 4/3 * π * s.radius^3
 
 """
 SurfaceType
@@ -160,6 +189,16 @@ struct CylinderSurface{T} <: SurfaceType
 end
 
 Base.:(==)(a::CylinderSurface, b::CylinderSurface) = (a.center == b.center) && (a.height == b.height) && (a.radius == b.radius)
+
+"""
+    CylinderSurface{T} <: SurfaceType
+Type for Sphere surfaces
+"""
+struct SphereSurface{T} <: SurfaceType
+    center::SVector{3,T}
+    radius::T
+end
+
 
 """
     CylinderSurface(c::Cylinder)

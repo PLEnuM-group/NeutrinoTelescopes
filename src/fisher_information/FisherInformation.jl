@@ -7,8 +7,10 @@ using StaticArrays
 using StatsBase
 using Flux
 using PreallocationTools
-using ...SurrogateModels.ExtendedCascadeModel
+using ...SurrogateModels.NeuralFlowSurrogate
+using ...SurrogateModels.SurrogateModelHits
 using ...EventGeneration
+
 using LinearAlgebra
 
 import Base.GC: gc
@@ -101,12 +103,25 @@ function _calc_single_fisher_matrix(event::Event, detector::Detector, generator,
     return fi
 end
 
+"""
+    calc_fisher_matrix(
+        event::Event,
+        detector::Detector{T, MP},
+        generator::SurrogateModelHitGenerator;
+        use_grad=false,
+        rng=Random.GLOBAL_RNG,
+        n_samples=100,
+        cache=nothing,
+        device=gpu,
+        filter_outliers=true) where {T <: PhotonTarget, MP <: MediumProperties}
 
+Calculate fisher information matrix for `event`.
+"""
 function calc_fisher_matrix(
     event::Event,
     detector::Detector{T, MP},
     generator::SurrogateModelHitGenerator;
-    use_grad=false,
+    use_grad=true,
     rng=Random.GLOBAL_RNG,
     n_samples=100,
     cache=nothing,

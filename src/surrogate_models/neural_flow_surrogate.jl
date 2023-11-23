@@ -1,4 +1,4 @@
-module ExtendedCascadeModel
+module NeuralFlowSurrogate
 using ArraysOfArrays
 using MLUtils
 using Flux
@@ -54,6 +54,8 @@ end
 
 Normalizer(x::AbstractVector) = Normalizer(mean(x), std(x))
 (norm::Normalizer)(x::Number) = (x - norm.mean) / norm.σ
+Base.inv(n::Normalizer) = x -> x*n.σ + n.mean
+
 
 function fit_normalizer!(x::AbstractVector)
     tf = Normalizer(x)
@@ -500,7 +502,7 @@ function apply_feature_transform!(m, tf_vec, output)
 end
 
 function initialize_normalizers(feature_matrix)
-    tf_vec = Vector{Normalizer{Float64}}(undef, 8)
+    tf_vec = Vector{Normalizer{Float64}}(undef, size(feature_matrix, 1))
     for (row, ix) in zip(eachrow(feature_matrix), eachindex(tf_vec))
         tf = Normalizer(row)
         tf_vec[ix] = tf
@@ -1092,7 +1094,7 @@ function sample_many_multi_particle_events(
     n_pmts = get_pmt_count(eltype(targets))*length(targets)
     sizehint!(temp_output_buffer, n_pmts, (100, ))
 
-    particles_flat = flatview(particles)
+    particles_flat = flatview(vec_particles)
     times, n_hits_per_pmt_source = _sample_times_for_particle(particles_flat, targets, model, temp_output_buffer, rng, oversample=oversample, feat_buffer=feat_buffer, device=device)
 
 
@@ -1470,3 +1472,6 @@ end
 
 
 end
+
+# backwards compat for old bson files
+ExtendedCascadeModel = NeuralFlowSurrogate
