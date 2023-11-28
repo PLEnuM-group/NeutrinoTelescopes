@@ -2,11 +2,12 @@ module FisherSurrogate
 
 using Flux
 using BSON
-using ..NeuralFlowSurrogate: _calc_flow_input, apply_feature_transform, Normalizer, HyperParams, create_mlp_embedding
+using ..NeuralFlowSurrogate: _calc_flow_input!, apply_feature_transform, Normalizer, HyperParams, create_mlp_embedding
 using ..SurrogateModelHits
 using ...EventGeneration
 using LinearAlgebra
 using MLUtils
+using PhysicsTools
 
 export FisherSurrogateModel
 export FisherSurrogateModelParams
@@ -40,16 +41,18 @@ struct FisherSurrogateModel
     tf_in::Vector{Normalizer}
     tf_out::Vector{Normalizer}
     max_valid_distance::Float64
+    input_buffer::Matrix{Float32}    
 end
 
-function FisherSurrogateModel(fname::String)
+function FisherSurrogateModel(fname::String, max_particles=500, max_targets=70*20)
     m = BSON.load(fname)
     Flux.testmode!(m[:model])
-    return FisherSurrogateModel(m[:model], m[:tf_in], m[:tf_out], 200.)
+    buffer = zeros(Float32, 8, max_targets*max_particles)
+    return FisherSurrogateModel(m[:model], m[:tf_in], m[:tf_out], 200., buffer)
 end
 
-Flux.gpu(s::FisherSurrogateModel) = FisherSurrogateModel(gpu(s.model), s.tf_in, s.tf_out, s.max_valid_distance)
-Flux.cpu(s::FisherSurrogateModel) = FisherSurrogateModel(cpu(s.model), s.tf_in, s.tf_out, s.max_valid_distance)
+Flux.gpu(s::FisherSurrogateModel) = FisherSurrogateModel(gpu(s.model), s.tf_in, s.tf_out, s.max_valid_distance, s.input_buffer)
+Flux.cpu(s::FisherSurrogateModel) = FisherSurrogateModel(cpu(s.model), s.tf_in, s.tf_out, s.max_valid_distance, s.input_buffer)
 
 
 function setup_training(hparams::FisherSurrogateModelParams)
@@ -91,13 +94,15 @@ function predict_cov(particles, targets, model::FisherSurrogateModel)
     targets_range = targets[modules_range_mask]
 
     inv_y_tf = inv.(model.tf_out)
-    inp = _calc_flow_input(particles, targets_range, model.tf_in)
-    tril_pred = cpu(apply_feature_transform(model.model(gpu(inp)), inv_y_tf).^3)
+    # particles is the inner loop
+    inp = @view _calc_flow_input!(particles, targets_range, model.tf_in, model.input_buffer)[:, 1:(length(particles) * length(targets))]
+    
+    triu_pred = apply_feature_transform(cpu(model.model(gpu(inp))), inv_y_tf).^3
 
     fisher_pred_sum = zeros(6,6)
     triu = zeros(6,6)
     triu_ixs = triu!((trues(6,6)))
-    @inbounds for trl in eachcol(tril_pred)      
+    @inbounds for trl in eachcol(triu_pred)      
         triu[triu_ixs] .= trl
         fisher_pred_sum .+= (triu'*triu)
     end
@@ -107,39 +112,53 @@ end
 
 
 function predict_cov(events::Vector{<:Event}, targets, model::FisherSurrogateModel)
-
-    modules_range_mask = get_modules_in_range(particles, targets, model.max_valid_distance)
-
-    n_pmt = get_pmt_count(first(targets))
-
-    if !any(modules_range_mask)
-        return nothing
-    end
-
-    all_particles = [first(event[:particles]) for event in events ]
+    all_particles::Vector{Particle{Float32}} = [(first(event[:particles])) for event in events]
+    
     n_events = length(events)
 
-    targets_range = targets[modules_range_mask]
+    normalizers::Vector{Normalizer{Float32}} = model.tf_out
 
-    inv_y_tf = inv.(model.tf_out)
-    inp = _calc_flow_input(all_particles, targets_range, model.tf_in)
-    tril_pred = cpu(apply_feature_transform(model.model(gpu(inp)), inv_y_tf).^3)
-    tril_pred = reshape(tril_pred, (n_pmt, n_events, length(targets)))
+    inv_y_tf = inv.(normalizers)
+    # particles is the inner loop
 
+    inp = @view _calc_flow_input!(all_particles, targets, model.tf_in, model.input_buffer)[:, 1:(length(all_particles) * length(targets))]
+
+    triu_pred = cpu(apply_feature_transform(model.model(gpu(inp)), inv_y_tf).^3)
+    triu_pred = reshape(triu_pred, (size(triu_pred, 1), n_events, length(targets)))
 
     triu = zeros(6,6)
     triu_ixs = triu!((trues(6,6)))
 
     all_fishers = zeros(n_events, 6, 6)
 
-    for (i, tp) in enumerate(eachslice(tril_pred))
-        @inbounds for trl in eachcol(tp)      
+    # Loop over events
+    for (i, tp) in enumerate(eachslice(triu_pred, dims=2))
+
+        modules_range_mask = get_modules_in_range(events[i][:particles], targets, model.max_valid_distance)
+
+        if !any(modules_range_mask)
+            return continue
+        end
+
+        # Loop over targets
+        @inbounds for (j, trl) in enumerate(eachcol(tp))
+            if !modules_range_mask[j]
+                continue
+            end
             triu[triu_ixs] .= trl
             all_fishers[i, :, :] .+= (triu'*triu)
         end
     end
-    cov_pred_sum = inv.(eachslice(fisher_pred_sum, dims=1))
-    return cov_pred_sum
+    inverted = Matrix[]
+    for m in eachslice(all_fishers, dims=1)
+        if isapprox(det(m), 0)
+            continue
+        end
+        push!(inverted, inv(m))
+    end
+
+    cov_pred_sum = inverted
+
 end
 
 

@@ -56,6 +56,7 @@ Normalizer(x::AbstractVector) = Normalizer(mean(x), std(x))
 (norm::Normalizer)(x::Number) = (x - norm.mean) / norm.σ
 Base.inv(n::Normalizer) = x -> x*n.σ + n.mean
 
+Base.convert(::Type{Normalizer{T}}, n::Normalizer) where {T<:Real} = Normalizer(T(n.mean), T(n.σ))
 
 function fit_normalizer!(x::AbstractVector)
     tf = Normalizer(x)
@@ -766,7 +767,7 @@ end
     _calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
 
 Map input feature calculation over particles and targets. The product of particles and targets is traversed in
-the order particles, targets. The result is stacked horizontally
+the order particles, targets. The result is stacked horizontally.
 """
 function _calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
 
