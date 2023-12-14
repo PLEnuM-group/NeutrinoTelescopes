@@ -15,20 +15,19 @@ using DataFrames
 using DataFrames
 using ArgParse
 
-function make_cascade_injector()
-    sphere = Sphere(SA[0., 0., 0.], 200.)
+function make_cascade_injector(vol)
     pdist = CategoricalSetDistribution(OrderedSet([PEPlus, PEMinus]), [0.5, 0.5])
     edist = Pareto(1, 1E3)
     ang_dist = UniformAngularDistribution()
     length_dist = Dirac(0.0)
     time_dist = Dirac(0.0)
-    inj = VolumeInjector(sphere, edist, pdist, ang_dist, length_dist, time_dist)
+    inj = VolumeInjector(vol, edist, pdist, ang_dist, length_dist, time_dist)
     return inj
 end
 
-function make_track_injector()
-    cylinder = Cylinder(SA[0., 0., 0.], 400., 200.)
-    surface = CylinderSurface(cylinder)
+
+function make_track_injector(cyl)
+    surface = CylinderSurface(cyl)
     pdist = CategoricalSetDistribution(OrderedSet([PMuMinus, PMuPlus]), [0.5, 0.5])
     edist = Pareto(1, 1E3)
     ang_dist = LowerHalfSphere()
@@ -43,26 +42,29 @@ function generate_training_data(args)
     model_tracks = PhotonSurrogate(args["model_path_amp"], args["model_path_time"])
     model = gpu(model_tracks)
 
-    target = POM(SA_F32[0., 0., 0.], 1)
+
+    if args["per_string"]
+        targets = [make_detector_line(SA_F32[0., 0., 0.], 20, 50, 1)]
+        inj = args["type"] == "extended" ? make_cascade_injector(Cylinder(SA[0., 0., -475.], 1200., 100.)) : make_track_injector(Cylinder(SA[0., 0., -475.], 1200., 100.))
+        input_buffer = create_input_buffer(16*20, 1)
+        output_buffer = create_output_buffer(16*20, 100)
+    else
+        targets = [[POM(SA_F32[0., 0., 0.], 1)]]
+        inj = args["type"] == "extended" ? make_cascade_injector(Sphere(SA[0., 0., 0.], 200.)) : make_track_injector(Cylinder(SA[0., 0., 0.], 200., 400.))
+        input_buffer = create_input_buffer(16, 1)
+        output_buffer = create_output_buffer(16, 100)
+    end
 
     medium = make_cascadia_medium_properties(0.95f0)
 
-    input_buffer = create_input_buffer(16, 1)
-    output_buffer = create_output_buffer(16, 100)
+   
     diff_cache = FixedSizeDiffCache(input_buffer, 6)
     hit_generator = SurrogateModelHitGenerator(model, 200.0, input_buffer, output_buffer)
 
-    if args["type"] == "extended"
-        inj = make_cascade_injector()
-    elseif args["type"] == "lightsabre"
-        inj = make_track_injector()
-    else
-        error("unknown type $type")
-    end
     
     rng = MersenneTwister(args["seed"])
 
-    detector = Detector([target], medium)
+    detector = LineDetector(targets, medium)
 
     training_data = DataFrame(
         raw_input=Vector{Vector{Float64}}(undef, 0),
@@ -82,13 +84,17 @@ function generate_training_data(args)
         end
 
         p = first(event[:particles])
-        raw_input = NeuralFlowSurrogate._calc_flow_input(p, target, transformations)
+        # If we evaluate an entire string, use position SA[0., 0., -475.] as reference
+        if args["per_string"]
+            raw_input = FisherSurrogate.calculate_model_input([p], [[0f0, 0f0]], transformations)[:, 1]
+        else
+            raw_input = NeuralFlowSurrogate._calc_flow_input(p, targets[1], transformations)
+        end
         push!(training_data, (raw_input=raw_input, fi=m, chol_upper=l.U[triu!((trues(6,6)))]))
     end
 
     jldsave(args["outfile"], data=training_data)
 end
-
 
 s = ArgParseSettings()
 type_choices = ["lightsabre", "extended"]
@@ -117,6 +123,9 @@ type_choices = ["lightsabre", "extended"]
     help = "RNG Seed"
     arg_type = Int64
     required = true
+    "--per_string"
+    help = "Calculate for an entire string"
+    action = :store_true
 end
 
 parsed_args = parse_args(ARGS, s; as_symbols=false)

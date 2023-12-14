@@ -6,7 +6,9 @@ using PhotonPropagation
 using StaticArrays
 using StatsBase
 using Flux
+using DataFrames
 using PreallocationTools
+using Base.Iterators
 using ...SurrogateModels.NeuralFlowSurrogate
 using ...SurrogateModels.SurrogateModelHits
 using ...EventGeneration
@@ -45,6 +47,12 @@ function make_lh_func(;time, data, targets, model, medium, diff_cache, ptype, de
         direction = sph_to_cart(dir_theta, dir_phi)
         p = Particle(T.(pos), T.(direction), T(time), T(10^log_energy), T(length), ptype)
 
+        #=
+        if particle_shape(p) == Track()
+            p = shift_to_closest_approach(p, SVector{3, T}(0, 0, 0))
+        end
+        =#
+
         return multi_particle_likelihood([p], data=data, targets=targets, model=model, medium=medium, feat_buffer=cache, amp_only=false, device=device)
 
     end
@@ -78,8 +86,29 @@ function _calc_single_fisher_matrix(event::Event, detector::Detector, generator,
     if sum(length.(times)) == 0
         return nothing
     end
+
+    # Test sampling each dimension independently
+    targets_range = get_detector_modules(detector)[range_mask]  
+
+   
    
     p::Particle = event[:particles][1]
+
+    if particle_shape(p) == Track()
+        n_pmt = get_pmt_count(eltype(targets_range))
+        total_hits = sum(length.(times))
+
+        lin_ixs = LinearIndices((1:n_pmt, 1:length(targets_range)))
+
+        weighted_pos = []
+        for (i, t) in enumerate(targets_range)
+            this_n_hits = sum(length.(times[lin_ixs[:, i]]))
+            push!(weighted_pos, t.shape.position .* this_n_hits)
+        end
+        cad_com = closest_approach_param(p, sum(weighted_pos) / sum(total_hits))
+        p = shift_particle(p, cad_com)
+    end
+
     dir = p.direction
     dir_theta, dir_phi = cart_to_sph(dir)
     logenergy = log10(p.energy)
@@ -87,10 +116,7 @@ function _calc_single_fisher_matrix(event::Event, detector::Detector, generator,
 
     medium = get_detector_medium(detector)
 
-    # Test sampling each dimension independently
-    targets_range = get_detector_modules(detector)[range_mask]
-
-    f, fwrapped = make_lh_func(time=0., data=times, targets=targets_range, model=generator.model, medium=medium, diff_cache=cache, ptype=p.type, device=device)
+    f, fwrapped = make_lh_func(time=p.time, data=times, targets=targets_range, model=generator.model, medium=medium, diff_cache=cache, ptype=p.type, device=device)
    
     if use_grad
         logl_grad = collect(ForwardDiff.gradient(fwrapped, [logenergy, dir_theta, dir_phi, pos...]))

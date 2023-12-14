@@ -9,16 +9,47 @@ using LinearAlgebra
 using ..Injectors
 export make_detector_line, make_hex_detector
 export make_n_hex_cluster_positions, make_n_hex_cluster_detector
-export Detector, get_detector_modules, get_detector_medium, get_detector_pmts
+export Detector, LineDetector, get_detector_modules, get_detector_medium, get_detector_pmts
+export UnstructuredDetector
 export get_bounding_cylinder
+export get_detector_lines
 
-struct Detector{T<:PhotonTarget, MP <: MediumProperties}
+
+abstract type Detector{T<:PhotonTarget, MP <: MediumProperties} end
+
+struct UnstructuredDetector{T<:PhotonTarget, MP <: MediumProperties} <: Detector{T, MP}
     modules::Vector{T}
     medium::MP
 end
 
+
+struct LineDetector{T<:PhotonTarget, MP <: MediumProperties} <: Detector{T, MP}
+    modules::Vector{T}
+    medium::MP
+    line_mapping::Dict{Int64, Vector{Int64}}
+end
+
+function LineDetector(lines::AbstractArray{<:AbstractArray{<:PhotonTarget}}, medium)
+
+    modules = reduce(vcat, lines)
+    line_mapping = Dict{Int64, Vector{Int64}}()
+
+    counter = 1
+    for (line_id, mods) in enumerate(lines)
+        line_mapping[line_id] = collect(counter:(counter+length(mods)-1))
+        counter += length(mods)
+    end
+
+    return LineDetector(modules, medium, line_mapping)
+end
+
 get_detector_modules(d::Detector) = d.modules
 get_detector_medium(d::Detector) = d.medium
+
+function get_detector_lines(d::LineDetector)
+    lines = [d.modules[l] for l in values(d.line_mapping)]
+    return lines
+end
 
 function get_detector_pmts(d::Detector)
 
@@ -39,13 +70,10 @@ function get_bounding_cylinder(d::Detector; padding_top=50., padding_side=50.)
     modules = get_detector_modules(d)
     positions = reduce(hcat, [m.shape.position for m in modules])
     center_xyz = mean(positions, dims=2)[:]
-    radius = maximum(norm.(positions[1:2, :] .- center_xyz[1:2]))
+    radius = maximum(norm.(eachcol(positions[1:2, :] .- center_xyz[1:2])))
     height = first(diff(collect(extrema(positions[3, :] .- center_xyz[3]))))
     return Cylinder(SVector{3, Float64}(center_xyz), height.+padding_top, radius.+padding_side)
 end
-
-
-
 
 
 function make_detector_line(position, n_modules, vert_spacing, module_id_start=1, mod_constructor=POM)
@@ -90,7 +118,7 @@ function hex_grid_positions(n_side, dist; truncate=0 )
 end
 
 function make_detector_from_line_positions(positions, n_per_line, vert_spacing; z_start=0, mod_constructor=POM)
-    modules = []
+    lines = []
     for (line_id, (x, y)) in enumerate(eachcol(positions))
         mod = make_detector_line(
             [x, y, z_start],
@@ -98,9 +126,9 @@ function make_detector_from_line_positions(positions, n_per_line, vert_spacing; 
             vert_spacing,
             (line_id - 1) * n_per_line + 1,
             mod_constructor)
-        push!(modules, mod)
+        push!(lines, mod)
     end
-    return reduce(vcat, modules)
+    return lines
 end
 function make_hex_detector(n_side, dist, n_per_line, vert_spacing; z_start=0, mod_constructor=POM, truncate=0)
 

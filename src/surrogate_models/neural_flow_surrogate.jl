@@ -736,8 +736,7 @@ function _calc_flow_input(
     tf_vec::AbstractVector)
 
     rel_pos = particle_pos .- target_pos
-    # TODO: Remove hardcoded max distance
-    dist = clamp(norm(rel_pos), 0., 200.)
+    dist = norm(rel_pos)
     normed_rel_pos = rel_pos ./ dist
 
     T = promote_type(eltype(particle_pos), eltype(particle_dir), typeof(particle_energy), eltype(target_pos))
@@ -790,8 +789,7 @@ function _calc_flow_input!(
     output)
 
     rel_pos = particle_pos .- target_pos
-    # TODO: Remove hardcoded max distance
-    dist = clamp(norm(rel_pos), 0., 200.)
+    dist = norm(rel_pos)
     normed_rel_pos = rel_pos ./ dist
 
     @inbounds begin

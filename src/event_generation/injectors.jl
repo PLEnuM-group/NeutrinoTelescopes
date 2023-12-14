@@ -125,7 +125,7 @@ function rand(rng::AbstractRNG, vol::Cylinder{T}) where {T}
     uni = Uniform(-vol.height / 2, vol.height / 2)
     rng_z = rand(rng, uni)
 
-    rng_r = sqrt(rand(rng, T) * vol.radius)
+    rng_r = sqrt(rand(rng, T) * vol.radius^2)
     rng_phi = rand(rng, T) * 2 * π
     rng_x = rng_r * cos(rng_phi)
     rng_y = rng_r * sin(rng_phi)
@@ -136,7 +136,7 @@ end
 
 
 """
-    rand(vol::Cylinder{T}) where {T}
+    rand(vol::Cuboid{T}) where {T}
 
 Sample a random point in Cuboid.
 """

@@ -21,6 +21,10 @@ function load_data_from_dir(path, type, nfiles=nothing)
     chol_upper = reduce(hcat, training_data.chol_upper)
     chol_upper_cbrt = cbrt.(chol_upper)
 
+    #min_val = minimum(chol_upper)
+
+    #chol_upper_shift_log = log.(chol_upper .+ (abs(min_val) +1))
+
     tf_vec = NeuralFlowSurrogate.initialize_normalizers(raw_input) 
     raw_input_tf = NeuralFlowSurrogate.apply_feature_transform(raw_input, tf_vec)
     tf_vec_out = NeuralFlowSurrogate.initialize_normalizers(chol_upper_cbrt) 
