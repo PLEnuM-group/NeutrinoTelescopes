@@ -40,7 +40,7 @@ export lightsabre_muon_likelihood
 export sample_cascade_event, evaluate_model, sample_multi_particle_event
 export create_pmt_table, preproc_labels, read_pmt_hits, fit_trafo_pipeline, log_likelihood_with_poisson, read_pmt_number_of_hits
 export read_pmt_hits!, read_pmt_number_of_hits!
-export calc_flow_input!, calc_flow_input
+export calc_flow_input!
 export train_model!, RQNormFlowHParams, PoissonExpModel
 export setup_optimizer, setup_model, setup_dataloaders
 export Normalizer
@@ -259,6 +259,23 @@ Base.@kwdef struct RQNormFlowHParams <: HyperParams
     resnet = false
 end
 
+Base.@kwdef struct AbsScaRQNormFlowHParams <: HyperParams
+    K::Int64 = 10
+    batch_size::Int64 = 5000
+    mlp_layers::Int64 = 2
+    mlp_layer_size::Int64 = 512
+    lr::Float64 = 0.001
+    lr_min::Float64 = 1E-5
+    epochs::Int64 = 50
+    dropout::Float64 = 0.1
+    non_linearity::String = "relu"
+    seed::Int64 = 31338
+    l2_norm_alpha = 0.0
+    adam_beta_1 = 0.9
+    adam_beta_2 = 0.999
+    resnet = false
+end
+
 
 Base.@kwdef struct PoissonExpModel <: HyperParams
     batch_size::Int64 = 5000
@@ -277,6 +294,31 @@ Base.@kwdef struct PoissonExpModel <: HyperParams
 end
 
 StructTypes.StructType(::Type{<:HyperParams}) = StructTypes.Struct()
+
+function setup_model(hparams::AbsScaRQNormFlowHParams)
+    hidden_structure = fill(hparams.mlp_layer_size, hparams.mlp_layers)
+
+    non_lins = Dict("relu" => relu, "tanh" => tanh)
+    non_lin = non_lins[hparams.non_linearity]
+
+    # 3 K + 1 for spline, 1 for shift, 1 for scale
+    n_spline_params = 3 * hparams.K + 1
+    n_out = n_spline_params + 2
+
+    # 3 Rel. Position, 3 Direction, 1 Energy, 1 distance, 1 abs 1 sca
+    n_in = 8 + 16 + 2
+
+    embedding = create_mlp_embedding(
+        hidden_structure=hidden_structure,
+        n_in=n_in,
+        n_out=n_out,
+        dropout=hparams.dropout,
+        non_linearity=non_lin,
+        split_final=false)
+
+    model = NNRQNormFlow(embedding, hparams.K, -30.0, 200.0)
+    return model, log_likelihood
+end
 
 function setup_model(hparams::RQNormFlowHParams)
     hidden_structure = fill(hparams.mlp_layer_size, hparams.mlp_layers)
@@ -482,8 +524,6 @@ function dataframe_to_matrix(df)
     return feature_matrix
 end
 
-
-
 function apply_feature_transform(m, tf_vec)
     # Not mutating version...
     tf_matrix = mapreduce(
@@ -512,14 +552,6 @@ function initialize_normalizers(feature_matrix)
     return tf_vec
 end
 
-function preproc_labels(feature_matrix::AbstractMatrix, tf_vec=nothing)
-    if isnothing(tf_vec)
-        tf_vec = initialize_normalizers(feature_matrix)       
-    end
-    feature_matrix = apply_feature_transform(feature_matrix, tf_vec)
-    return feature_matrix, tf_vec
-end
-
 function preproc_labels!(feature_matrix::AbstractMatrix, output, tf_vec=nothing)
     if isnothing(tf_vec)
         tf_vec = initialize_normalizers(feature_matrix)       
@@ -530,15 +562,9 @@ end
 
 
 
-function append_onehot_pmt(features, pmt_ixs)
-    lev = 1:16
-    one_hot::Matrix{Float64} = (lev .== permutedims(pmt_ixs))
-    return vcat(features, one_hot)
-end
-
 function append_onehot_pmt!(output, pmt_ixs)
     lev = 1:16
-    output[9:24, :] .= (lev .== permutedims(pmt_ixs))
+    output[end-15:end, :] .= (lev .== permutedims(pmt_ixs))
     return output
 end
 
@@ -572,6 +598,8 @@ end
 function create_pmt_table(grp, limit=nothing)
 
     grp_data = grp[:, :]
+    grp_attrs = attrs(grp)
+
     grplen = size(grp_data, 1)
 
     sumw = sum(grp_data[:, 3])
@@ -582,16 +610,27 @@ function create_pmt_table(grp, limit=nothing)
 
     out_length = !isnothing(limit) ? min(limit, size(grp, 1)) : size(grp, 1)
 
-    feature_matrix = zeros(Float64, 8, out_length)
+    if haskey(grp_attrs, "abs_scale")
+        feature_dim = 10
+    else
+        feature_dim = 8
+    end
+
+
+    feature_matrix = zeros(Float64, feature_dim, out_length)
     hit_times = zeros(Float64, out_length)
 
-    grp_attrs = attrs(grp)
-    
     feature_matrix[1, :] .= log.(grp_attrs["distance"])
     feature_matrix[2, :] .= log.(grp_attrs["energy"])
 
     feature_matrix[3:5, :] .= permutedims(reduce(hcat, sph_to_cart.(grp_attrs["dir_theta"], grp_attrs["dir_phi"])))
     feature_matrix[6:8, :] .= permutedims(reduce(hcat, sph_to_cart.(grp_attrs["pos_theta"], grp_attrs["pos_phi"])))
+
+    if haskey(grp_attrs, "abs_scale")
+        feature_matrix[9, :] .= grp_attrs["abs_scale"]
+        feature_matrix[10, :] .= grp_attrs["sca_scale"]
+    end
+
 
     data_mat = grp[1:out_length, :]
 
@@ -640,17 +679,6 @@ function read_pmt_number_of_hits!(fnames, nhits_buffer, features_buffer, nsel_fr
 end
 
 
-function read_pmt_number_of_hits(fnames, nsel_frac=0.8, rng=default_rng())
-    nhits_buffer = Matrix{Float64}(undef, (16, Int64(1E8)))
-    features_buffer = Matrix{Float64}(undef, (8, Int64(1E8)))
-
-    nhits_buffer_view, feature_buffer_view, tf_vec = read_pmt_number_of_hits!(fnames, nhits_buffer, features_buffer, nsel_frac, rng)
-
-    return nhits_buffer_view, feature_buffer_view, tf_vec
-end
-
-
-
 function read_pmt_hits!(fnames, hit_buffer, pmt_ixs_buffer, features_buffer, nsel_frac=0.8, rng=default_rng())
 
     ix = 1
@@ -673,7 +701,7 @@ function read_pmt_hits!(fnames, hit_buffer, pmt_ixs_buffer, features_buffer, nse
                 if size(grp, 1) == 0
                     continue
                 end
-                f, pix, h = create_pmt_table(grp, 100)
+                f, pix, h = create_pmt_table(grp, 1000)
                 nhits = length(h)
 
                 if ix+nhits-1 > length(hit_buffer)
@@ -681,7 +709,7 @@ function read_pmt_hits!(fnames, hit_buffer, pmt_ixs_buffer, features_buffer, nse
                 end
 
                 hit_buffer[ix:ix+nhits-1] .= h
-                features_buffer[1:8, ix:ix+nhits-1] .= f
+                features_buffer[1:size(f, 1), ix:ix+nhits-1] .= f
                 pmt_ixs_buffer[ix:ix+nhits-1] .= pix
                 ix += nhits
             end
@@ -697,88 +725,6 @@ function read_pmt_hits!(fnames, hit_buffer, pmt_ixs_buffer, features_buffer, nse
     return hit_buffer_view, features_buffer_view, tf_vec
 end
 
-function read_pmt_hits(fnames, nsel_frac=0.8, rng=default_rng())
-    hit_buffer = Vector{Float64}(undef, Int64(1E8))
-    pmt_ixs_buffer = Vector{Int64}(undef, Int64(1E8))
-    features_buffer = Matrix{Float64}(undef, 24, Int64(1E8))
-
-    hit_buffer_view, features_buffer_view, tf_vec = read_pmt_hits!(fnames, hit_buffer, pmt_ixs_buffer, features_buffer, nsel_frac, rng)
-    return hit_buffer_view, features_buffer_view, tf_vec
-end
-
-
-
-
-read_hdf(fname::String, nsel, rng) = read_hdf([fname], nsel, rng)
-
-"""
-    _calc_flow_input(
-        particle_pos,
-        particle_dir,
-        particle_energy,
-        target_pos,
-        tf_vec::AbstractVector)
-
-Transform a particle and a target into input features for a neural netork.
-
-The resulting feature vector contains the log distance of particle and target,
-the log of the particle energy, the particle direction (in cartesian coordinates) and the
-direction from target to particle.
-
-The resulting feature vector is then transformed item by item using the corresponding transformations
-included in `tf_vec`.
-"""
-function _calc_flow_input(
-    particle_pos,
-    particle_dir,
-    particle_energy,
-    target_pos,
-    tf_vec::AbstractVector)
-
-    rel_pos = particle_pos .- target_pos
-    dist = norm(rel_pos)
-    normed_rel_pos = rel_pos ./ dist
-
-    T = promote_type(eltype(particle_pos), eltype(particle_dir), typeof(particle_energy), eltype(target_pos))
-
-    features::Vector{T} = [log(dist); log(particle_energy); particle_dir; normed_rel_pos]
-    #features, _ = preproc_labels(features, tf_vec)
-    features = apply_feature_transform(features, tf_vec)[:]
-    return features
-end
-
-"""
-    _calc_flow_input(particle::Particle, target::PhotonTarget, tf_vec::AbstractVector)
-
-    Extracts relavant quantities from particle / target structs. Checks particle shape and, if track, uses fixed
-    energy for input calculation
-"""
-function _calc_flow_input(particle::Particle, target::PhotonTarget, tf_vec::AbstractVector)
-    if particle_shape(particle) == Track()
-        particle = shift_to_closest_approach(particle, target.shape.position)
-    end
-    return _calc_flow_input(particle.position, particle.direction, particle.energy, target.shape.position, tf_vec)
-end
-
-
-
-"""
-    _calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
-
-Map input feature calculation over particles and targets. The product of particles and targets is traversed in
-the order particles, targets. The result is stacked horizontally.
-"""
-function _calc_flow_input(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, tf_vec)
-
-    res = mapreduce(hcat, product(particles, targets)) do pt
-
-        particle = pt[1]
-        target = pt[2]
-       
-        return _calc_flow_input(particle, target, tf_vec)       
-    end
-    return res
-end
 
 function _calc_flow_input!(
     particle_pos,
