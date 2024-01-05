@@ -1,0 +1,46 @@
+
+EVENT_TYPES = ["lightsabre", "extended"]
+N_SIMS = 1000
+N_SIMS_HIGHE = 250
+NRESAMPLE = 50
+
+WORKDIR = "/home/wecapstor3/capn/capn100h"
+OUTDIR = os.path.join(WORKDIR, "snakemake")
+JULIA_BIN = "/home/hpc/capn/capn100h/.julia/juliaup/julia-1.9.4+0.x64.linux.gnu/bin/julia"
+SCRIPT_PHOTONPROP = "/home/hpc/capn/capn100h/.julia/dev/PhotonPropagation/scripts"
+
+
+def get_nsims(wildcards):
+    if float(wildcards.e_max) > 1E5:
+        return N_SIMS_HIGHE
+    else:
+        return N_SIMS
+
+rule photon_tables:
+    output: os.path.join(OUTDIR, "photon_tables/{event_type}/photon_table_{event_type}_dmin_{dist_min}_dmax_{dist_max}_emin_{e_min}_emax_{e_max}_{photon_table_index,\d+}.hd5")
+    resources:
+        slurm_extra="--gres=gpu:1",
+        clusters="tinygpu",
+        time="12:00:00"
+    params:
+        n_sims = get_nsims
+    shell:
+        "{JULIA_BIN} {SCRIPT_PHOTONPROP}/photon_tables/photon_tables_photons.jl --n_sims={params.n_sims} --n_skip={wildcards.photon_table_index} --output {output} --dist_min={wildcards.dist_min} --dist_max={wildcards.dist_max} --mode {wildcards.event_type} --e_min {wildcards.e_min} --e_max {wildcards.e_max} --perturb_medium"
+
+rule photon_table_hits:
+    input: rules.photon_tables.output
+    output: os.path.join(OUTDIR, "photon_tables/{event_type}/hits/photon_table_hits_{event_type}_dmin_{dist_min}_dmax_{dist_max}_emin_{e_min}_emax_{e_max}_{photon_table_index,\d+}.hd5")
+    resources:
+        clusters="tinyfat",
+        time="2:00:00",
+        partition="work",
+        cpus_per_task=1
+    shell:
+        "{JULIA_BIN} {SCRIPT_PHOTONPROP}/photon_tables/photon_tables_hits.jl --infile {input} --outfile {output} --resample {NRESAMPLE}"
+
+
+rule all_photon_tables:
+    input: expand(rules.photon_table_hits.output, event_type=EVENT_TYPES, dist_min=1, dist_max=200, e_min=100, e_max=1E5, photon_table_index=range(20)), expand(rules.photon_tables.output, event_type=EVENT_TYPES, dist_min=1, dist_max=200, e_min=1E5, e_max=5E6, photon_table_index=range(5))
+    default_target: True
+
+
