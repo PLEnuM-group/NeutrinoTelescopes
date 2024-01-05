@@ -11,7 +11,6 @@ using CairoMakie
 using JLD2
 using ProgressBars
 using ParameterHandling
-using Zygote
 using StatsBase
 using StructArrays
 using MLUtils
@@ -24,13 +23,14 @@ import Base.GC: gc
 using TensorBoardLogger
 using Logging
 using ParameterSchedulers: next!
+using Zygote
 
 
 include("train_cov_utils.jl")
 
 
 function make_objective(type)
-    (data, tf_in, tf_out) = load_data_from_dir(joinpath(ENV["ECAPSTOR"], "snakemake/training_data_cov"), type, 80)
+    (data, tf_in, tf_out) = load_data_from_dir(joinpath(ENV["ECAPSTOR"], "snakemake/training_data_cov"), type, 50)
     train_loader, test_loader = FisherSurrogate.make_dataloaders(data, 2^15)
     logdir = joinpath(ENV["ECAPSTOR"], "tensorboard/cov_model")
     

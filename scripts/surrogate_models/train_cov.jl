@@ -61,7 +61,7 @@ function training_loop!(model, optim, train_loader, test_loader, logger, epochs=
     end
 end
 
-type = "per_string_lightsabre"
+type = "per_string_extended"
 
 (data, tf_in, tf_out) = load_data_from_dir(joinpath(ENV["ECAPSTOR"], "snakemake/training_data_cov"), type)
 
@@ -70,11 +70,11 @@ logdir = joinpath(ENV["ECAPSTOR"], "tensorboard/cov_model_prod_per_string")
  
 hparams = FisherSurrogateModelParams(
     mlp_layers = 4,
-    mlp_layer_size = 768,
-    lr = 0.002,
+    mlp_layer_size = 968,
+    lr = 0.003,
     lr_min = 1E-9,
-    l2_norm_alpha = 5E-6,
-    dropout = 0.05,
+    l2_norm_alpha =4E-6,
+    dropout = 0.1,
     non_linearity=relu,
     epochs = 200
 )
