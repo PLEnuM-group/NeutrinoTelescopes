@@ -218,6 +218,7 @@ function _predict_fisher(all_particles::AbstractVector{<:Particle}, targets, mod
 
     inp = @view _calc_flow_input!(all_particles, targets, model.tf_in, model.input_buffer)[:, 1:(length(all_particles) * length(targets))]
 
+    
     triu_pred = cpu(apply_feature_transform(model.model(gpu(inp)), inv_y_tf).^3)
     triu_pred = reshape(triu_pred, (size(triu_pred, 1), n_events, length(targets)))
 
