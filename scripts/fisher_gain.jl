@@ -522,6 +522,7 @@ function make_loss(x, y)
 end
 
 function optimize_loss_gp(loss, θ_init; maxiter=1_000)
+    
     options = Optim.Options(; iterations=maxiter, show_trace=false)
 
     θ_flat_init, unflatten = ParameterHandling.value_flatten(θ_init)
@@ -600,10 +601,11 @@ function fit_surrogate(metric::OptimizationMetric, detector, lower, upper, previ
     θ_init = make_initial_guess_gp(xys_vec, losses)
     θ_opt, res = optimize_loss_gp(gp_loss_f, θ_init)
 
+
     θ_min = [θ_opt]
     f_min = [Optim.minimum(res)]
 
-    for i in 1:9
+    for i in 1:5
         θ_rnd = make_initial_guess_gp(xys_vec, losses, true)
         θ_opt, res = optimize_loss_gp(gp_loss_f, θ_rnd)
         push!(θ_min, θ_opt)
@@ -614,7 +616,7 @@ function fit_surrogate(metric::OptimizationMetric, detector, lower, upper, previ
     θ_opt = θ_min[minix]
     
     @show θ_opt
-   
+
     gp_surrogate_opt = AbstractGPSurrogate(
         ColVecs(xys_vec),
         losses,
@@ -698,7 +700,7 @@ function run(type, n_lines_max; extent=1000, n_events=250, same_events=true, see
         error("Not implemented")
     end
 
-    metric = SingleEventTypeTotalResolutionNoVertex(events, fisher_model)
+    metric = SingleEventTypeTotalResolution(events, fisher_model)
     #alt_metric = SingleEventTypeDOptimal(events_alt, fisher_model_alt)
 
     previous_fisher = nothing
@@ -720,7 +722,7 @@ function run(type, n_lines_max; extent=1000, n_events=250, same_events=true, see
         push!(data, (detector=current_det, surrogate=gp_surrogate, xmin=xmin, fisher=current_resolution, fisher_alt=current_resolution_alt, target_pred=fmin))
         new_targets = new_line(xmin[1], xmin[2])
         current_det = add_line(current_det, new_targets)
-        # gc()
+        gc()
         if (i+1) % 5 == 0
             plot_surrogate_non_anim(data, nothing, -extent/2-50, extent/2+50)
             #plot_surrogate_anim(data, nothing, -250, 250)
@@ -729,177 +731,20 @@ function run(type, n_lines_max; extent=1000, n_events=250, same_events=true, see
     return data
 end
 
-medium = make_cascadia_medium_properties(0.95f0)
-sidelen = 200f0
-height::Float32 = sqrt(3)/2 * sidelen
-targets_triang = [
-    make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 1, DummyTarget),
-    make_detector_line(@SVector[-sidelen/2, -height, 0f0], 20, 50, 21, DummyTarget),
-    make_detector_line(@SVector[sidelen/2, -height, 0f0], 20, 50, 41, DummyTarget),
-]
+function main()
+    medium = make_cascadia_medium_properties(0.95f0)
+    sidelen = 100f0
+    height::Float32 = sqrt(3)/2 * sidelen
+    targets_triang = [
+        make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 1, DummyTarget),
+        make_detector_line(@SVector[-sidelen/2, -height, 0f0], 20, 50, 21, DummyTarget),
+        make_detector_line(@SVector[sidelen/2, -height, 0f0], 20, 50, 41, DummyTarget),
+    ]
 
-targets_line = make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 1, DummyTarget), medium, Dict(1 => collect(1:20))
+    targets_line = make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 1, DummyTarget)
 
-detector = LineDetector(targets_triang, medium)
-data = run("per_string_lightsabre", 50, n_events=500, extent=1000, geo_seed=detector, inj_radius=400.)
-
-data2 = run("per_string_lightsabre", 15, n_events=1000, extent=500, geo_seed=data[end][:detector], inj_radius=200.)
-
-
-data3 = run("extended", 15, n_events=1000, extent=1000, geo_seed=data2[end][:detector], inj_radius=500.)
-
-data2 = run("per_string_extended", 5, n_events=1000, extent=400, geo_seed=data[end][:detector], inj_radius=150.)
-data3 = run("per_string_extended", 10, n_events=1000, extent=500, geo_seed=data2[end][:detector], inj_radius=200.)
-data4 = run("per_string_extended", 10, n_events=1000, extent=500, geo_seed=data3[end][:detector], inj_radius=200.)
-
-data5 = run("per_string_lightsabre", 10, n_events=1000, extent=1000, geo_seed=data4[end][:detector], inj_radius=400.)
-
-data[3][:detector].modules
-
-convert(Vector{Float64}, SA[0., 0., 0.])
-
-data = run("extended", 15, n_events=1000, extent=400, geo_seed=targets_triang, inj_radius=150.)
-
-data = run("lightsabre", 25, n_events=300, extent=1000)
-data2 = run("extended", 25, n_events=300, extent=800, geo_seed=get_detector_modules(data[end-1][:detector]))
-
-
-medium = make_cascadia_medium_properties(0.95f0)
-
-detector = LineDetector(targets_triang, medium, Dict(1 => collect(1:20), 2 => collect(21:40), 1 => collect(41:60)))
-inj = make_cascade_injector(400.)
-
-n_lines_max = 70
-fisher_model, diff_cache = setup_fisher_surrogate("per_string_extended")
-
-lower = -300.
-upper = 300.
-lower_bound = [lower, lower]
-upper_bound = [upper, upper]
-
-n_samples = 200
-
-events_v = [rand(inj) for i in 1:250]
-
-xys = Surrogates.sample(300, lower_bound, upper_bound, SobolSample())
-metric = SingleEventTypeTotalResolution(events_v, fisher_model)
-@time zs = evaluate_optimization_metric.(xys, Ref(detector), Ref(metric))
-xys_vec = reduce(hcat, collect.(xys))
- 
-fig = Figure()
-ax = Axis3(fig[1,1], aspect = :equal)
-scatter!(ax, vcat(xys_vec, log10.(permutedims(zs))))
-fig
-
-l = make_loss(ColVecs(xys_vec), log10.(zs))
-θ_init = make_initial_guess_gp()
-θ_opt, _ = optimize_loss_gp(l, θ_init)
-gp_surrogate_opt = AbstractGPSurrogate(
-    ColVecs(xys_vec),
-    log10.(zs),
-    gp=build_gp_prior(ParameterHandling.value(θ_opt)),
-    Σy=ParameterHandling.value(θ_opt).noise_scale^2)
-
-minfunc(xs) = log10(expected_resolution(xs, event_or_inj, fisher_model, detector, diff_cache=diff_cache))
-a,b = surrogate_optimize(minfunc, EI(),lower_bound,upper_bound, gp_surrogate_opt, SobolSample(); maxiters = 100, num_new_samples = 400)
-
-get_surrogate_min(gp_surrogate_opt, a, lower, upper)
-
-
-vec(a)
-
-y=x = lower:2.:upper
-
-zs_eval = [gp_surrogate_opt((x1,x2)) for x1 in x, x2 in y]
-
-surface!(ax, x, y, zs_eval)
-ax2 = Axis(fig[1,2])
-contour!(ax2, x, y, zs_eval, levels=10)
-
-fig
-
-
-
-
-
-
-
-
-rng = MersenneTwister(12)
-
-
-
-
-@time mats = predict_cov(events, targets_line, fisher_model)
-@time mats2 = [predict_cov(e[:particles], targets_line, fisher_model) for e in events]
-
-
-targets_line
-
-predict_cov(events[1:1], targets_line, fisher_model)[1]
-predict_cov(events[1][:particles], targets_line, fisher_model)
-
-
-current_det = detector
-gp_surrogate = fit_surrogate(inj, current_det, fisher_model, diff_cache, -200.,200.)
-xmin, _ = get_surrogate_min(gp_surrogate, -200, 200)
-plot_surrogate(gp_surrogate, current_det, -200., 200.)
-
-current_det = add_line(xmin[1], xmin[2], current_det)
-gp_surrogate = fit_surrogate(inj, current_det, fisher_model, diff_cache, -150., 150.)
-xmin, _ = get_surrogate_min(gp_surrogate, -500, 500)
-plot_surrogate(gp_surrogate, current_det, -150., 150.)
-
-current_det = add_line(xmin[1], xmin[2], current_det)
-gp_surrogate = fit_surrogate(event, current_det, fisher_model, diff_cache, -500., 500.)
-xmin, _ = get_surrogate_min(gp_surrogate, -500, 500)
-plot_surrogate(event, gp_surrogate, current_det, -150., 150.)
-
-current_det = add_line(xmin[1], xmin[2], current_det)
-gp_surrogate = fit_surrogate(event, current_det, fisher_model, diff_cache, -500., 500.)
-xmin, _ = get_surrogate_min(gp_surrogate, -500, 500)
-plot_surrogate(event, gp_surrogate, current_det, -150., 150.)
-
-
-#=
-
-struct FisherForXY{T}
-    xy::Matrix{T}
-    fisher_model::FisherSurrogateModel
+    detector = LineDetector(targets_triang, medium)
+    data = run("per_string_lightsabre", 40, n_events=20000, extent=1000, geo_seed=detector, inj_radius=400.)
 end
 
-function (f::FisherForXY)(events, cache=nothing)
-    lines = reduce(vcat, [make_detector_line(@SVector[x, y, 0.0], 20, 50, 1) for (x, y) in eachcol(f.xy)])
-    covs = predict_cov(events, lines, f.fisher_model, cache)
-    return sum(diag(mean(covs)))
-end
-
-Flux.@functor FisherForXY
-Flux.trainable(f::FisherForXY) = (; f.xy)
-
-s = SobolSeq(2, [-200. -200], [200. 200])
-xypos = reduce(hcat, [next!(s) for _ in 1:10])
-
-f = FisherForXY(xypos, fisher_model)
-opt_state = Flux.setup(ADAM(0.01), f)
-evts = [rand(inj) for i in 1:500]
-event_loader = Flux.DataLoader(evts, batchsize=500, shuffle=true)
-
-pars, re = Flux.destructure(f)
-
-function wrapped(pars::Vector{<:Real})
-    if !isnothing(diff_cache)
-        dc = get_tmp(diff_cache, pars)
-    else
-        dc = nothing
-    end
-    return re(pars)(evts, dc)
-
-end
-
-
-grads = ForwardDiff.gradient(wrapped, pars)
-
-cache = zeros(Float32, 8*500*70*20)
-cache_diff = FixedSizeDiffCache(cache, 6)
-=# 
+main()
