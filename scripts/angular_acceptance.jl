@@ -60,7 +60,7 @@ end
 
 #sim_path = joinpath(ENV["WORK"], "geant4_pmt")
 #sim_path = "/home/chrhck/geant4_sims/P-OM photons 30 cm sphere/"
-sim_path = joinpath(ENV["WORK"], "geant4_pmt/30cm_sphere")
+sim_path = joinpath(ENV["ECAPSTOR"], "geant4_pmt/30cm_sphere")
 files = glob("*.csv", sim_path)
 coords_cart = reduce(hcat, sph_to_cart.(eachcol(coords)))
 
@@ -120,6 +120,12 @@ for f in files
 
 end
 
+
+
+fig, ax, _ = lines(wavelengths, total_acc_1)
+lines!(ax, wavelengths, total_acc_2)
+fig
+
 d1 = Distributions.fit(Rayleigh, (reduce(vcat, all_hc_1))) 
 d2 = Distributions.fit(Rayleigh, (reduce(vcat, all_hc_2))) 
 
@@ -132,8 +138,19 @@ h5open(fname, "w") do fid
     fid["sigma_grp_2"] = d2.σ
 end
 
+fname = joinpath(@__DIR__, "../assets/rel_pmt_acc.hd5")
+h5open(fname, "w") do fid
 
-fname = joinpath(@__DIR__, "../../PhotonPropagation/assets/pmt_acc.hd5")
+    rel_acc = total_acc_1 ./ total_acc_2
+    fid["rel_acc_pmt_grp_1"] = median(rel_acc)
+    fid["acc_pmt_grp_2"] = total_acc_2 *  length(pmt_grp_2)
+    fid["wavelengths"] = wavelengths
+    fid["sigma_grp_1"] = d1.σ 
+    fid["sigma_grp_2"] = d2.σ
+end
+
+
+fname = joinpath(@__DIR__, "../assets/pmt_acc.hd5")
 h5open(fname, "r") do fid
     fig = Figure()
     ax = Axis(fig[1, 1], xticks = WilkinsonTicks(8), xminorticks = IntervalsBetween(10), xminorticksvisible=true)
@@ -141,6 +158,9 @@ h5open(fname, "r") do fid
     lines!(ax, fid["wavelengths"][:], fid["acc_pmt_grp_2"][:])
     fig
 end
+
+
+
 
 
 using DataFrames
