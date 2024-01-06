@@ -119,7 +119,12 @@ for f in files
 end
 
 
+wlsort = sortperm(wavelengths)
 
+wavelengths = wavelengths[wlsort]
+total_acc_1 = total_acc_1[wlsort]
+total_acc_2 = total_acc_2[wlsort]
+ 
 fig, ax, _ = lines(wavelengths, total_acc_1)
 lines!(ax, wavelengths, total_acc_2)
 fig
