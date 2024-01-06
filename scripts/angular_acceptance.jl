@@ -5,7 +5,6 @@ using PhysicsTools
 using LinearAlgebra
 using PhotonPropagation
 using NeutrinoTelescopes
-using PhysicsTools
 using StaticArrays
 using Glob
 using HDF5
@@ -96,8 +95,8 @@ for f in files
 
         hit_pmt::BitVector = (
             (df[:, :out_VolumeName] .== "photocathode" .|| df[:, :out_VolumeName] .== "photocathodeTube") .&&
-            df[:, :out_Volume_CopyNo] .== (pmt_ix-1) .&& 
-            df[:, :out_ProcessName] .== "OpAbsorption"
+            df[:, :out_Volume_CopyNo] .== (pmt_ix-1)
+            #df[:, :out_ProcessName] .== "OpAbsorption"
         )
 
         rel_theta = acos.(rel_costheta[hit_pmt])
@@ -106,8 +105,8 @@ for f in files
 
     end
     
-    any_hit = ((df[:, :out_VolumeName] .== "photocathode" .|| df[:, :out_VolumeName] .== "photocathodeTube") .&&
-          df[:, :out_ProcessName] .== "OpAbsorption"
+    any_hit = ((df[:, :out_VolumeName] .== "photocathode" .|| df[:, :out_VolumeName] .== "photocathodeTube")
+          #df[:, :out_ProcessName] .== "OpAbsorption"
     )
 
     mask_grp_1 = any_hit .&& (div.(df[:, :out_Volume_CopyNo],  4) .% 2 .== 0)
@@ -115,9 +114,8 @@ for f in files
 
     # mask_grp_1 / mask_grp_2 are the probabilities to hit any pmt from the PMT group
     # have to account the number of PMTs per group to get the probability for a specific pmt
-    push!(total_acc_1, sum(mask_grp_1) / nrow(df) / length(pmt_grp_1))
-    push!(total_acc_2, sum(mask_grp_2) / nrow(df) / length(pmt_grp_2))
-
+    push!(total_acc_1, sum(mask_grp_1) / nrow(df))
+    push!(total_acc_2, sum(mask_grp_2) / nrow(df))
 end
 
 
