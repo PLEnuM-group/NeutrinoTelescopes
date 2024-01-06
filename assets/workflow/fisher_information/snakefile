@@ -1,0 +1,193 @@
+localrules: leptoninjector, all_li, all_cylinder
+detectors = ["full"]
+spacings = [30, 50, 80, 90, 100, 120]
+vert_spacings = [28.57, 22.22, 50]
+time_uncerts = [0, 1.5, 2.5, 3.5, 5]
+EMIN = 1E2
+EMAX = 1E6
+GAMMA = 1
+NEVENTS_LIC = 50000
+NEVENTS_FISHER = 1000
+N_FISHER_FILES = 5
+WORKDIR = "/home/wecapstor3/capn/capn100h"
+OUTDIR = os.path.join(WORKDIR, "snakemake")
+
+JULIA_BIN = "/home/hpc/capn/capn100h/.julia/juliaup/julia-1.9.3+0.x64.linux.gnu/bin/julia"
+SCRIPT_DIR = "/home/hpc/capn/capn100h/.julia/dev/NeutrinoTelescopes/scripts"
+SCRIPT_PHOTONPROP = "/home/hpc/capn/capn100h/.julia/dev/PhotonPropagation/scripts"
+SINGULARITY_IMAGE = os.path.join(WORKDIR, "leptoninjector.sif")
+
+NSIMS = 1000
+NSIMS_HIGHE = 250
+NRESAMPLE = 50
+
+event_types = ["extended", "lightsabre"]
+
+rule all_li:
+  input: expand([os.path.join(OUTDIR, "fisher/fisher-{event_type}-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2"), os.path.join(OUTDIR, "fisher/deteff-{event_type}-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")], detector=detectors, spacing=spacings, vert_spacing=vert_spacings, time_uncert=time_uncerts, event_type=event_types, file_num=range(N_FISHER_FILES))
+  output: "files"
+  shell:
+     "touch {output}"
+
+rule all_cylinder:
+  input: expand([os.path.join(OUTDIR, "fisher_cylinder/fisher-lightsabre-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2"), os.path.join(OUTDIR, "fisher/deteff-lightsabre-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")], detector=detectors, spacing=spacings, vert_spacing=vert_spacings, time_uncert=time_uncerts,file_num=range(N_FISHER_FILES))
+  output: "files_cylinder"
+  shell:
+     "touch {output}"
+
+
+rule leptoninjector:
+    output: out_li = os.path.join(OUTDIR, "leptoninjector-{event_type}-{file_num}.hd5"), out_lic = os.path.join(OUTDIR, "leptoninjector-{event_type}-{file_num}.lic")
+    singularity:
+        SINGULARITY_IMAGE
+    shell:
+        "python3 {SCRIPT_DIR}/fisher_information/run_lepton_injector.py --emin {EMIN} --emax {EMAX} --gamma {GAMMA} --geo-radius 1200 --geo-length 1200 --nevents {NEVENTS_LIC} --outfile {output.out_li} --outfile_lic {output.out_lic} --mode {wildcards.event_type} && \
+         python3 {SCRIPT_DIR}/fisher_information/run_lepton_weighter.py --li-file {output.out_li} --lic-file {output.out_lic}"
+
+rule photon_tables_lightsabre:
+    output: os.path.join(OUTDIR, "photon_tables/lightsabre/photon_table_lightsabre_{photon_table_index,\d+}.hd5")
+    resources:
+        slurm_extra="--gres=gpu:1",
+        clusters="tinygpu",
+        time="12:00:00"
+    shell:
+        "{JULIA_BIN} {SCRIPT_PHOTONPROP}/photon_tables/photon_tables_photons.jl --n_sims={NSIMS} --n_skip={wildcards.photon_table_index} --output {output} --dist_min=1 --dist_max=200 --mode lightsabre_muon"
+
+rule photon_tables_lightsabre_highE:
+    output: os.path.join(OUTDIR, "photon_tables/lightsabre/photon_table_lightsabre_{photon_table_index}_highE.hd5")
+    resources:
+        slurm_extra="--gres=gpu:1",
+        clusters="tinygpu",
+        time="12:00:00"
+    shell:
+        "{JULIA_BIN} {SCRIPT_PHOTONPROP}/photon_tables/photon_tables_photons.jl --n_sims={NSIMS_HIGHE} --n_skip={wildcards.photon_table_index} --output {output} --dist_min=1 --dist_max=200 --mode lightsabre_muon --e_min 1E5 --e_max 1E6"
+
+rule photon_tables_extended:
+    output: os.path.join(OUTDIR, "photon_tables/extended/photon_table_extended_{photon_table_index,\d+}.hd5")
+    resources:
+        slurm_extra="--gres=gpu:1",
+        clusters="tinygpu",
+        time="12:00:00"
+    shell:
+        "{JULIA_BIN} {SCRIPT_PHOTONPROP}/photon_tables/photon_tables_photons.jl --n_sims={NSIMS} --n_skip={wildcards.photon_table_index} --output {output} --dist_min=5 --dist_max=200 --mode extended"
+
+rule photon_tables_extended_close_dist:
+    output: os.path.join(OUTDIR, "photon_tables/extended/photon_table_extended_{photon_table_index,\d+}_close_dist.hd5")
+    resources:
+        slurm_extra="--gres=gpu:1",
+        clusters="tinygpu",
+        time="12:00:00"
+    shell:
+        "{JULIA_BIN} {SCRIPT_PHOTONPROP}/photon_tables/photon_tables_photons.jl --n_sims=200 --n_skip={wildcards.photon_table_index} --output {output} --dist_min=1 --dist_max=10 --mode extended"
+
+rule photon_tables_extended_highE:
+    output: os.path.join(OUTDIR, "photon_tables/extended/photon_table_extended_{photon_table_index}_highE.hd5")
+    resources:
+        slurm_extra="--gres=gpu:1",
+        clusters="tinygpu",
+        time="12:00:00"
+    shell:
+        "{JULIA_BIN} {SCRIPT_PHOTONPROP}/photon_tables/photon_tables_photons.jl --n_sims={NSIMS_HIGHE} --n_skip={wildcards.photon_table_index} --output {output} --dist_min=10 --dist_max=200 --mode extended --e_min 1E5 --e_max 1E6"
+
+
+rule photon_table_hits:
+    input: os.path.join(OUTDIR, "photon_tables/{event_type}/photon_table_{event_type}_{photon_table_index}.hd5")
+    output: os.path.join(OUTDIR, "photon_tables/{event_type}/hits/photon_table_{event_type}_{photon_table_index}_hits.hd5")
+    resources:
+        clusters="tinyfat",
+        time="2:00:00",
+        partition="work",
+        cpus_per_task=1
+    shell:
+        "{JULIA_BIN} {SCRIPT_PHOTONPROP}/photon_tables/photon_tables_hits.jl --infile {input} --outfile {output} --resample {NRESAMPLE}"
+
+
+def make_time_model_lightsabre_inputs():
+    PH_TBL_IXS_LIGHTSABRE = [i for i in range(20)] + [f"{ix}_highE" for ix in range(5)]
+    return [os.path.join(OUTDIR, f"photon_tables/lightsabre/hits/photon_table_lightsabre_{photon_table_index}_hits.hd5") for photon_table_index in PH_TBL_IXS_LIGHTSABRE]
+
+
+rule train_time_model_lightsabre:
+    input: *make_time_model_lightsabre_inputs()
+    output: os.path.join(OUTDIR, "time_surrogate/lightsabre/time_uncert_{time_uncert}_1_FNL.bson")
+    resources:
+        slurm_extra="--gres=gpu:1",
+        clusters="tinygpu",
+        time="3:00:00"
+    shell:
+       "{JULIA_BIN} {SCRIPT_DIR}/train_time_surrogate.jl -i {input} -o {OUTDIR}/time_surrogate/lightsabre/ --model_name time_uncert_{wildcards.time_uncert} -s {wildcards.time_uncert} --hparam_config ."
+
+rule train_amp_model_lightsabre:
+    input: *make_time_model_lightsabre_inputs()
+    output: os.path.join(OUTDIR, "time_surrogate/lightsabre/amplitude_1_FNL.bson")
+    resources:
+        slurm_extra="--gres=gpu:1",
+        clusters="tinygpu",
+        time="3:00:00"
+    shell:
+       "{JULIA_BIN} {SCRIPT_DIR}/train_time_surrogate_amplitude.jl -i {input} -o {OUTDIR}/time_surrogate/lightsabre/ --model_name amplitude --hparam_config ."
+
+
+
+def make_time_model_extended_inputs():
+    PH_TBL_IXS_EXTENDED = [i for i in range(20)]  + [f"{ix}_highE" for ix in range(5)] + [f"{ix}_close_dist" for ix in range(5)]
+    return [os.path.join(OUTDIR, f"photon_tables/extended/hits/photon_table_extended_{photon_table_index}_hits.hd5") for photon_table_index in PH_TBL_IXS_EXTENDED]
+
+rule train_time_model_extended:
+    input: *make_time_model_extended_inputs()
+    output: os.path.join(OUTDIR, "time_surrogate/extended/time_uncert_{time_uncert}_1_FNL.bson")
+    resources:
+        slurm_extra="--gres=gpu:1",
+        clusters="tinygpu",
+        time="3:00:00"
+    shell:
+       "{JULIA_BIN} {SCRIPT_DIR}/train_time_surrogate.jl -i {input} -o {OUTDIR}/time_surrogate/extended/ --model_name time_uncert_{wildcards.time_uncert} -s {wildcards.time_uncert} --hparam_config ."
+
+rule train_amp_model_extended:
+    input:  *make_time_model_extended_inputs()
+    output: os.path.join(OUTDIR, "time_surrogate/extended/amplitude_1_FNL.bson")
+    resources:
+        clusters="tinygpu",
+        slurm_extra="--gres=gpu:1",
+        time="3:00:00"
+    shell:
+       "{JULIA_BIN} {SCRIPT_DIR}/train_time_surrogate_amplitude.jl -i {input} -o {OUTDIR}/time_surrogate/extended/ --model_name amplitude --hparam_config ."
+
+
+rule fisher:
+    input: [rules.leptoninjector.output.out_li, os.path.join(OUTDIR, "time_surrogate/{event_type}/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate/{event_type}/time_uncert_{time_uncert}_1_FNL.bson")]
+    output: os.path.join(OUTDIR, "fisher/fisher-{event_type}-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")
+    resources:
+        clusters="tinygpu",
+        slurm_extra="--gres=gpu:1",
+        time="24:00:00"
+    shell:
+        "{JULIA_BIN} {SCRIPT_DIR}/fisher_information/calc_fisher_info.jl --model_path_amp {input[1]} --model_path_time {input[2]} --type {wildcards.event_type} --det {wildcards.detector} --nevents {NEVENTS_FISHER} --spacing {wildcards.spacing} --log-energy 4 --li-file {input[0]} --outfile {output} --vert_spacing {wildcards.vert_spacing}"
+
+rule fisher_cylinder:
+    input: [os.path.join(OUTDIR, "time_surrogate/lightsabre/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate/lightsabre/time_uncert_{time_uncert}_1_FNL.bson")]
+    output: os.path.join(OUTDIR, "fisher_cylinder/fisher-lightsabre-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")
+    resources:
+        clusters="tinygpu",
+        slurm_extra="--gres=gpu:1",
+        time="24:00:00"
+    shell:
+        "{JULIA_BIN} {SCRIPT_DIR}/fisher_information/calc_fisher_info.jl --model_path_amp {input[0]} --model_path_time {input[1]} --type lightsabre --det {wildcards.detector} --nevents {NEVENTS_FISHER} --spacing {wildcards.spacing} --gamma 2 --e_min 1E2 --e_max 1E6 --outfile {output} --vert_spacing {wildcards.vert_spacing}"
+
+
+rule calc_det_eff:
+    input: [os.path.join(OUTDIR, "{fisher_folder}/fisher-lightsabre-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2"), os.path.join(OUTDIR, "time_surrogate/{event_type}/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate/{event_type}/time_uncert_{time_uncert}_1_FNL.bson")]
+    output: os.path.join(OUTDIR, "{fisher_folder}/deteff-{event_type}-{detector}-{spacing}-{vert_spacing}-{time_uncert}-{file_num}.jld2")
+    group: "det"
+    resources:
+        clusters="tinygpu",
+        slurm_extra="--gres=gpu:1",
+        time="3:00:00"
+    shell:
+        "{JULIA_BIN} {SCRIPT_DIR}/fisher_information/calc_det_eff.jl --infile {input[0]} --model_path_amp {input[1]} --model_path_time {input[2]} --det {wildcards.detector} --outfile {output} --vert_spacing {wildcards.vert_spacing}"
+
+
+#rule acceptance:
+#  output: "acceptance-{detector}-{energy}-{spacing}.h5"
+#  shell:
+#    "touch acceptance-{wildcards.detector}-{wildcards.energy}-{wildcards.spacing}.h5"

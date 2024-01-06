@@ -1,6 +1,11 @@
-/Manifest.toml
 *.pt
 /.CondaPkg
 /tensorboard_logs
 .vscode
 /data
+/assets/proposal_tables/*
+**/logs
+.snakemake/
+/figures
+*.out
+*.err

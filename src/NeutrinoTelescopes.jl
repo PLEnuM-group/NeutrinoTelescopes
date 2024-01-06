@@ -2,19 +2,19 @@ module NeutrinoTelescopes
 
 using Reexport
 
-include("types.jl")
-include("utils.jl")
-
-@reexport using .Types
-@reexport using .Utils
-
-include("photon_propagation/PhotonProp.jl")
-include("pmt_frontend/PMTFrontEnd.jl")
+include("processing/Processing.jl")
 include("event_generation/EventGeneration.jl")
 include("surrogate_models/SurrogateModels.jl")
+include("plotting/Plotting.jl")
+include("event_reconstruction/EventReconstruction.jl")
+include("fisher_information/FisherInformation.jl")
+include("weighting/Weighting.jl")
 
-
-@reexport using .PhotonPropagation
-@reexport using .PMTFrontEnd
+@reexport using .Processing
+@reexport using .EventGeneration
 @reexport using .SurrogateModels
+@reexport using .Plotting
+@reexport using .EventReconstruction
+@reexport using .FisherInformation
+@reexport using .Weighting
 end
