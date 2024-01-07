@@ -6,7 +6,7 @@ NRESAMPLE = 50
 
 WORKDIR = "/home/wecapstor3/capn/capn100h"
 OUTDIR = os.path.join(WORKDIR, "snakemake")
-JULIA_BIN = "/home/hpc/capn/capn100h/.julia/juliaup/julia-1.9.4+0.x64.linux.gnu/bin/julia"
+JULIA_BIN = "/home/hpc/capn/capn100h/.julia/juliaup/julia-1.10.0+0.x64.linux.gnu/bin/julia"
 SCRIPT_PHOTONPROP = "/home/hpc/capn/capn100h/.julia/dev/PhotonPropagation/scripts"
 
 
