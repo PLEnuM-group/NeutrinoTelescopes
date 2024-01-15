@@ -32,7 +32,7 @@ import Base.GC: gc
 using ..RQSplineFlow: eval_transformed_normal_logpdf, sample_flow!
 using ...Processing
 
-export ArrivalTimeSurrogate, RQSplineModel, PhotonSurrogate
+export ArrivalTimeSurrogate, RQSplineModel, PhotonSurrogate, AbsScaRQNormFlowHParams
 export kfold_train_model
 export get_log_amplitudes, unfold_energy_losses, t_first_likelihood
 export track_likelihood_fixed_losses, single_cascade_likelihood, multi_particle_likelihood, track_likelihood_energy_unfolding

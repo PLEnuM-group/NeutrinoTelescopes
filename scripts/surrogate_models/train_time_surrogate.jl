@@ -4,7 +4,6 @@ using DataFrames
 using CairoMakie
 using Base.Iterators
 using CUDA
-using BenchmarkTools
 using Random
 using TensorBoardLogger
 using Glob

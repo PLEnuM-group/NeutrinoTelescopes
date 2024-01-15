@@ -135,7 +135,7 @@ function _normalize_bin_sizes(unnormalized_bin_sizes,
 
     @assert num_bins * min_bin_size <= total_size
     bin_sizes = softmax(unnormalized_bin_sizes)
-    bin_sizes .= bin_sizes .* (total_size - num_bins * min_bin_size) .+ min_bin_size
+    bin_sizes = bin_sizes .* (total_size - num_bins * min_bin_size) .+ min_bin_size
     return bin_sizes
 end
 
@@ -172,6 +172,7 @@ Adapted from distrax.
 """
 function constrain_spline_params(params, range_min::Real, range_max::Real, min_bin_size=1e-4, min_knot_slope=1e-4)
     num_bins = div((size(params, 1) - 1), 3)
+
     unnormalized_bin_widths = params[1:num_bins, :]
     unnormalized_bin_heights = params[num_bins+1:2*num_bins, :]
     unnormalized_knot_slopes = params[2*num_bins+1:end, :]
@@ -564,8 +565,8 @@ function inv_rqs_univariate(x_pos::AbstractMatrix, y_pos::AbstractMatrix, knot_s
 end
 
 function _split_params(params)
-    spline_params = @views params[1:end-2, :]
-    shift = @views params[end-1, :]
+    spline_params = params[1:end-2, :]
+    shift = params[end-1, :]
     scale = sigmoid.(params[end, :]) .* 100
 
     return spline_params, shift, scale
@@ -582,8 +583,7 @@ function eval_transformed_normal_logpdf(
     range_min, range_max)
     @assert length(y) == size(params, 2)
     
-    spline_params, shift, scale = _split_params(param_vec)
-
+    spline_params, shift, scale = _split_params(params)
 
     x_pos, y_pos, knot_slopes = constrain_spline_params(spline_params, range_min, range_max)
     x, logdet_spline = inv_rqs_univariate(x_pos, y_pos, knot_slopes, y)
