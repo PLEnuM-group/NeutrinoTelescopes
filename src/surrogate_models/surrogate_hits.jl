@@ -31,13 +31,17 @@ function SurrogateModelHitGenerator(model, max_valid_distance, detector::Detecto
 end
 
 
-function create_input_buffer(n_det::Integer, max_particles=500)
-    return zeros(24, n_det*max_particles)
+function create_input_buffer(model::PhotonSurrogate, n_det::Integer, max_particles=500)
+    input_size = size(model.time_model.embedding.layers[1].weight, 2)
+    @show input_size
+
+
+    return zeros(input_size, n_det*max_particles)
 end
 
-function create_input_buffer(detector::Detector, max_particles=500)
+function create_input_buffer(model, detector::Detector, max_particles=500)
     modules = get_detector_modules(detector)
-    return create_input_buffer(get_pmt_count(eltype(modules))*length(modules), max_particles)
+    return create_input_buffer(model, get_pmt_count(eltype(modules))*length(modules), max_particles)
 end
 
 
