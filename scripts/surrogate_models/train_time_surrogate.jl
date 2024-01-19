@@ -64,7 +64,6 @@ end
 
 data = (tres=hits, label=features)
 
-
 model_type = parsed_args[:perturb_medium] ? AbsScaRQNormFlowHParams : RQNormFlowHParams
 
 hparams = model_type(
@@ -83,6 +82,8 @@ hparams = model_type(
     adam_beta_2 = 0.999,
     resnet = false
 )
+
+@show model_type
 
 
 kfold_train_model(data, outpath, model_name, tf_vec, 5, hparams)

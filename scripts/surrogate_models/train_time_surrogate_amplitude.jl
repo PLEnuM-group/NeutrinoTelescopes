@@ -4,7 +4,6 @@ using DataFrames
 using CairoMakie
 using Base.Iterators
 using CUDA
-using BenchmarkTools
 using Random
 using TensorBoardLogger
 using Glob
@@ -30,6 +29,9 @@ s = ArgParseSettings()
     "--model_name"
     help = "Model name"
     required = true
+    "--perturb_medium"
+    help = "Train a model with medium perturbation"
+    action = :store_true
 end
 parsed_args = parse_args(ARGS, s; as_symbols=true)
 
@@ -40,12 +42,22 @@ model_name = parsed_args[:model_name]
 
 rng = MersenneTwister(31338)
 nsel_frac = 0.9
-hits, features, tf_vec = read_pmt_number_of_hits(fnames_casc, nsel_frac, rng)
+
+feature_length = parsed_args[:perturb_medium] ? 8 + 2 : 8
+
+
+hit_buffer = Matrix{Float64}(undef, 16, Int64(1E8))
+features_buffer = Matrix{Float64}(undef, feature_length, Int64(1E8))
+
+
+hits, features, tf_vec = read_pmt_number_of_hits!(fnames_casc, hit_buffer, features_buffer, nsel_frac, rng)
 
 data = (nhits=hits, labels=features)
 
+model_type = parsed_args[:perturb_medium] ? AbsScaPoissonExpModel : PoissonExpModel
 
-hparams = PoissonExpModel(
+
+hparams = model_type(
     batch_size=5000,
     mlp_layers = 2,
     mlp_layer_size = 512,

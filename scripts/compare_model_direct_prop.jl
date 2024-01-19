@@ -10,24 +10,13 @@ using HDF5
 using DataFrames
 
 
-model_path = joinpath(ENV["WORK"], "time_surrogate")
+workdir = ENV["ECAPSTOR"]
 
-models_casc = Dict(
-    "1" => joinpath(model_path, "extended/extended_casc_1_FNL.bson"),
-    "2" => joinpath(model_path, "extended/extended_casc_2_FNL.bson"),
-    "3" => joinpath(model_path, "extended/extended_casc_3_FNL.bson"),
-    "4" => joinpath(model_path, "extended/extended_casc_4_FNL.bson"),
-    "5" => joinpath(model_path, "extended/extended_casc_5_FNL.bson"),
+model = PhotonSurrogate(
+    joinpath(workdir, "snakemake/time_surrogate/extended/amplitude_2_FNL.bson"),
+    joinpath(workdir, "snakemake/time_surrogate/extended/time_uncert_0_1_FNL.bson")
 )
-
-# Tracks are simulated only at 100TeV!!!
-models_track = Dict(
-    "1" => joinpath(model_path, "infinite_track/infinite_bare_muon_1_FNL.bson"),
-    "2" => joinpath(model_path, "infinite_track/infinite_bare_muon_2_FNL.bson"),
-    "3" => joinpath(model_path, "infinite_track/infinite_bare_muon_3_FNL.bson"),
-    "4" => joinpath(model_path, "infinite_track/infinite_bare_muon_4_FNL.bson"),
-    "5" => joinpath(model_path, "infinite_track/infinite_bare_muon_5_FNL.bson"),
-)
+    
 
 targets_single = [POM(@SVector[-25.0, 0.0, -450.0], 1)]
 targets_line = make_detector_line(@SVector[-25.0, 0.0, 0.0], 20, 50, 1)
@@ -37,14 +26,14 @@ targets_three_l = [
     make_detector_line(@SVector[0.0, sqrt(50^2 - 25^2), 0.0], 20, 50, 41)]
 targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
 
-detectors = Dict("Single" => targets_single, "Line" => targets_line, "Tri" => targets_three_l, "Hex" => targets_hex)
 medium = make_cascadia_medium_properties(0.95f0)
+d = UnstructuredDetector(targets_single, medium)
 
-pos = SA[-15.0, 10, -460]
+pos = SA[-15.0, 1., -460]
 dir_theta = 0.6
-dir_phi = 0.1
+dir_phi = 0.3
 dir = sph_to_cart(dir_theta, dir_phi)
-energy = 3e4
+energy = 7e4
 
 rng = MersenneTwister(31338)
 particles = [
@@ -52,7 +41,12 @@ particles = [
 ]
 
 hits = mc_expectation(particles, targets_single, 1, medium);
-compare_mc_model(particles, targets_single, models_casc, medium, hits)
+hits
+
+
+fig = compare_mc_model(particles, targets_single, Dict("casc_model" =>model), medium, hits)
+
+fig[1]
 
 
 particles_track = [
