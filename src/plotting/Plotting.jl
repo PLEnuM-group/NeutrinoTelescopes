@@ -31,7 +31,10 @@ function compare_mc_model(
     ga = fig[1, 1] = GridLayout(4, 4)
 
 
-    samples = sample_multi_particle_event(particles, targets, gpu(first(models)[2]), medium; oversample=oversampling, feat_buffer=nothing)
+    feat_buffer = create_input_buffer(first(models)[2], sum(get_pmt_count.(targets)), length(particles))
+    out_buffer = create_output_buffer(length(targets))
+
+    samples = sample_multi_particle_event(particles, targets, gpu(first(models)[2]), medium; oversample=oversampling, feat_buffer=feat_buffer, output_buffer=out_buffer)
 
     t_geo = calc_tgeo(particles[1], targets[1], medium)
 
@@ -44,7 +47,7 @@ function compare_mc_model(
         hist!(ax, samples[i] .- t_geo .- particles[1].time, bins=-20:3:100, color=:slateblue, normalization=:density, weights=fill(1/oversampling, length(samples[i])))
     end
 
-    bins = -5:1:20
+    bins = -5:1:100
     hits_per_pmt = combine(groupby(hits, :pmt_id), nrow)
     max_pmt = Int64(sort(hits_per_pmt, :nrow, rev=true)[1, :pmt_id])
     mask = hits[:, :pmt_id] .== max_pmt
@@ -57,14 +60,14 @@ function compare_mc_model(
     t_geos = repeat([calc_tgeo(particles[1], t, medium) for t in targets], n_pmt)
     t0 = particles[1].time
 
-    times = -5:0.05:20
+    times = -5:0.05:100
  
     for (mname, model) in models
         model = gpu(model)
         shape_lhs = []
         local log_expec
         for t in times
-            _, shape_lh, log_expec = SurrogateModels.evaluate_model(particles, Vector.(eachrow(t .+ t_geos .+ t0)), targets, model, medium)
+            _, shape_lh, log_expec = SurrogateModels.evaluate_model(particles, Vector.(eachrow(t .+ t_geos .+ t0)), targets, model, medium, feat_buffer=feat_buffer)
             push!(shape_lhs, collect(shape_lh))
         end
 
