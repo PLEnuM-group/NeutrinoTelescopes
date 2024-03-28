@@ -12,14 +12,13 @@ using Flux
 using BSON: @save, @load
 using ArgParse
 using JSON3
+using JLD2
 
 
 s = ArgParseSettings()
 @add_arg_table s begin
     "-i"
-    help = "Input files"
-    nargs = '+'
-    action => :store_arg
+    help = "Input file"
     "-o"
     help = "Output path"
     required = true
@@ -28,9 +27,6 @@ s = ArgParseSettings()
     required = false
     default = 1.5
     arg_type = Float64
-    "--hparam_config"
-    help = "Hyper parameter config file"
-    required = true
     "--model_name"
     help = "Model name"
     required = true
@@ -40,50 +36,67 @@ s = ArgParseSettings()
 end
 parsed_args = parse_args(ARGS, s; as_symbols=true)
 
-fnames_casc = parsed_args[:i]
+#=
+parsed_args = Dict(
+    :i => "/home/wecapstor3/capn/capn100h/snakemake/training_inputs/time_input__perturb_extended.jld2",
+    :o => "/tmp/",
+    :s => 1.5,
+    :model_name => "test",
+    :perturb_medium => true)
+=#
+fname = parsed_args[:i]
 outpath = parsed_args[:o]
 model_name = parsed_args[:model_name]
 
-
-hit_buffer = Vector{Float64}(undef, Int64(1E8))
-pmt_ixs_buffer = Vector{Int64}(undef, Int64(1E8))
+rng = MersenneTwister(31338)
+fid = jldopen(fname) 
+hits = fid["hits"][:]
+features = fid["features"][:, :]
+close(fid)
 
 feature_length = parsed_args[:perturb_medium] ? 24 + 2 : 24
 
-features_buffer = Matrix{Float64}(undef, feature_length, Int64(1E8))
+tf_vec = Vector{Normalizer}(undef, 0)
 
-rng = MersenneTwister(31338)
-nsel_frac = 0.9
-hits, features, tf_vec = read_pmt_hits!(fnames_casc, hit_buffer, pmt_ixs_buffer, features_buffer, nsel_frac, rng)
+@views for row in eachrow(features[1:feature_length-16, :])
+    _, tf = fit_normalizer!(row)
+    push!(tf_vec, tf)
+end
+
 
 if parsed_args[:s] > 0
     @inbounds for i in eachindex(hits)
-        hits[i] = randn() * parsed_args[:s]
+        hits[i] += randn() * parsed_args[:s]
     end
 end
 
 data = (tres=hits, label=features)
 
+features
+
+length(hits)*32 / 8 / 1024 / 1024
+
 model_type = parsed_args[:perturb_medium] ? AbsScaRQNormFlowHParams : RQNormFlowHParams
 
 hparams = model_type(
-    K=12,
-    batch_size=5000,
-    mlp_layers = 2,
-    mlp_layer_size = 512,
+    K=10,
+    batch_size=32768,
+    mlp_layers = 3,
+    mlp_layer_size = 862,
     lr = 0.001,
     lr_min = 1E-7,
     epochs = 100,
-    dropout = 0.1,
+    dropout = 0.2,
     non_linearity = "relu",
     seed = 31338,
-    l2_norm_alpha = 0.0,
+    l2_norm_alpha = 2E-5,
     adam_beta_1 = 0.9,
     adam_beta_2 = 0.999,
     resnet = false
 )
 
-@show model_type
+ptm_flag = parsed_args[:perturb_medium] ? "perturb" : "const_medium"
 
+logdir = joinpath(ENV["ECAPSTOR"], "tensorboard/time_model_kfold_$(model_name)_$(ptm_flag)")
 
-kfold_train_model(data, outpath, model_name, tf_vec, 5, hparams)
+kfold_train_model(data, outpath, model_name, tf_vec, 3, hparams, logdir)
