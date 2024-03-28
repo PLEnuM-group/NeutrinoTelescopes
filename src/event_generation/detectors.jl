@@ -78,7 +78,7 @@ end
 
 function make_detector_line(position, n_modules, vert_spacing, module_id_start=1, mod_constructor=POM)
 
-    line = [
+    line::Vector{mod_constructor} = [
         mod_constructor(SVector{3}(position .- (i - 1) .* [0, 0, vert_spacing]), i + module_id_start)
         for i in 1:n_modules
     ]
@@ -118,7 +118,7 @@ function hex_grid_positions(n_side, dist; truncate=0 )
 end
 
 function make_detector_from_line_positions(positions, n_per_line, vert_spacing; z_start=0, mod_constructor=POM)
-    lines = []
+    lines = Vector{Vector{mod_constructor}}(undef, 0)
     for (line_id, (x, y)) in enumerate(eachcol(positions))
         mod = make_detector_line(
             [x, y, z_start],

@@ -9,7 +9,7 @@ using Flux
 using DataFrames
 using PreallocationTools
 using Base.Iterators
-using ...SurrogateModels.NeuralFlowSurrogate
+using ...SurrogateModels.PhotonSurrogates
 using ...SurrogateModels.SurrogateModelHits
 using ...EventGeneration
 
@@ -35,7 +35,8 @@ get_cache(cache::SimpleDiffCache, ::Type{<:ForwardDiff.Dual}) = cache.dual_du
 get_cache(cache::SimpleDiffCache, ::Type{<:Real}) = cache.du
 
 
-function make_lh_func(;time, data, targets, model, medium, diff_cache, ptype, device=gpu)
+function make_lh_func(;time, data, targets, model, medium, diff_cache, ptype, device=gpu,
+    abs_scale=1., sca_scale=1., noise_rate=1E4)
 
     function evaluate_lh(log_energy::Real, dir_theta::Real, dir_phi::Real, pos_x::Real, pos_y::Real, pos_z::Real; cache=nothing)
         T = promote_type(typeof(pos_x), typeof(pos_y), typeof(pos_z), typeof(log_energy), typeof(dir_theta), typeof(dir_phi))
@@ -53,7 +54,18 @@ function make_lh_func(;time, data, targets, model, medium, diff_cache, ptype, de
         end
         =#
 
-        return multi_particle_likelihood([p], data=data, targets=targets, model=model, medium=medium, feat_buffer=cache, amp_only=false, device=device)
+        return multi_particle_likelihood(
+            [p],
+            data=data,
+            targets=targets,
+            model=model,
+            medium=medium,
+            feat_buffer=cache,
+            amp_only=false,
+            device=device,
+            abs_scale=abs_scale,
+            sca_scale=sca_scale,
+            noise_rate=noise_rate)
 
     end
 
@@ -80,8 +92,26 @@ function filter_medad_eigen(matrices, threshold=10)
 end
 
 
-function _calc_single_fisher_matrix(event::Event, detector::Detector, generator, rng, device, cache, use_grad)
-    times, range_mask = generate_hit_times(event, detector, generator, rng, device=device)
+function _calc_single_fisher_matrix(
+    event::Event,
+    detector::Detector,
+    generator,
+    rng,
+    device,
+    cache,
+    use_grad;
+    abs_scale=1.,
+    sca_scale=1.,
+    noise_rate=1E4)
+    times, range_mask = generate_hit_times(
+        event,
+        detector,
+        generator,
+        rng,
+        device=device,
+        abs_scale=abs_scale,
+        sca_scale=sca_scale,
+        noise_rate=noise_rate)
         
     if sum(length.(times)) == 0
         return nothing
@@ -116,7 +146,18 @@ function _calc_single_fisher_matrix(event::Event, detector::Detector, generator,
 
     medium = get_detector_medium(detector)
 
-    f, fwrapped = make_lh_func(time=p.time, data=times, targets=targets_range, model=generator.model, medium=medium, diff_cache=cache, ptype=p.type, device=device)
+    f, fwrapped = make_lh_func(
+        time=p.time,
+        data=times,
+        targets=targets_range,
+        model=generator.model,
+        medium=medium,
+        diff_cache=cache,
+        ptype=p.type,
+        device=device,
+        abs_scale=abs_scale,
+        sca_scale=sca_scale,
+        noise_rate=noise_rate)
    
     if use_grad
         logl_grad = collect(ForwardDiff.gradient(fwrapped, [logenergy, dir_theta, dir_phi, pos...]))
@@ -152,11 +193,24 @@ function calc_fisher_matrix(
     n_samples=100,
     cache=nothing,
     device=gpu,
-    filter_outliers=true) where {T <: PhotonTarget, MP <: MediumProperties}
+    filter_outliers=true,
+    abs_scale=1.,
+    sca_scale=1.,
+    noise_rate=1E4) where {T <: PhotonTarget, MP <: MediumProperties}
 
     matrices = Matrix[]
     for __ in 1:n_samples
-        fi = _calc_single_fisher_matrix(event, detector, generator, rng, device, cache, use_grad)
+        fi = _calc_single_fisher_matrix(
+            event,
+            detector,
+            generator,
+            rng,
+            device,
+            cache,
+            use_grad,
+            abs_scale=abs_scale,
+            sca_scale=sca_scale,
+            noise_rate=noise_rate)
         if isnothing(fi)
             continue
         end
@@ -183,13 +237,32 @@ function calc_fisher(
     inj::Injector,
     g::SurrogateModelHitGenerator,
     n_events::Integer,
-    n_samples::Integer; use_grad=false, rng=rng=Random.GLOBAL_RNG, cache=nothing, device=gpu)
+    n_samples::Integer;
+    use_grad=false,
+    rng=Random.GLOBAL_RNG,
+    cache=nothing,
+    device=gpu,
+    abs_scale=1.,
+    sca_scale=1.,
+    noise_rate=1E4)
+
     matrices = Matrix[]
     #ec = EventCollection(inj)
     events = Event[]
     for _ in 1:n_events
         event = rand(inj)
-        m, _ = calc_fisher_matrix(event, d, g, use_grad=use_grad, rng=rng, n_samples=n_samples, cache=cache, device=device)
+        m, _ = calc_fisher_matrix(
+            event,
+            d,
+            g,
+            use_grad=use_grad,
+            rng=rng,
+            n_samples=n_samples,
+            cache=cache,
+            device=device,
+            abs_scale=abs_scale,
+            sca_scale=sca_scale,
+            noise_rate=noise_rate)
 
         push!(matrices, m)
         push!(events, event)

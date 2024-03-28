@@ -23,7 +23,7 @@ function compare_mc_model(
     targets::AbstractVector{<:PhotonTarget},
     models::Dict,
     medium::MediumProperties,
-    hits; oversampling=1, bin_width=2)
+    hits; oversampling=1, bin_width=2, noise_rate=0, abs_scale=1., sca_scale=1.)
 
     fig = Figure(resolution=(1500, 1000))
     fig2 = Figure()
@@ -42,7 +42,7 @@ function compare_mc_model(
         row, col = divrem(i - 1, 4)
         mask = hits[:, :pmt_id] .== i
         ax = Axis(ga[col+1, row+1], xlabel="Time Residual(ns)", ylabel="Hit density (1/ns)", title="PMT $i",
-        )
+        yscale=Makie.pseudolog10)
         hist!(ax, hits[mask, :tres], bins=-20:3:100, color=:orange, normalization=:density, weights=hits[mask, :total_weight]./oversampling)
         hist!(ax, samples[i] .- t_geo .- particles[1].time, bins=-20:3:100, color=:slateblue, normalization=:density, weights=fill(1/oversampling, length(samples[i])))
     end
@@ -60,14 +60,23 @@ function compare_mc_model(
     t_geos = repeat([calc_tgeo(particles[1], t, medium) for t in targets], n_pmt)
     t0 = particles[1].time
 
-    times = -5:0.05:100
+    times = -100:1:400
  
     for (mname, model) in models
         model = gpu(model)
         shape_lhs = []
         local log_expec
         for t in times
-            _, shape_lh, log_expec = SurrogateModels.evaluate_model(particles, Vector.(eachrow(t .+ t_geos .+ t0)), targets, model, medium, feat_buffer=feat_buffer)
+            _, shape_lh, log_expec = SurrogateModels.evaluate_model(
+                particles,
+                data=Vector.(eachrow(t .+ t_geos .+ t0)),
+                targets=targets,
+                model=model,
+                medium=medium,
+                feat_buffer=feat_buffer,
+                noise_rate=noise_rate,
+                abs_scale=abs_scale,
+                sca_scale=sca_scale)
             push!(shape_lhs, collect(shape_lh))
         end
 

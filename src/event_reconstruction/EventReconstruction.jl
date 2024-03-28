@@ -9,32 +9,7 @@ using ...Processing
 include("reco_model.jl")
 include("geometric_features.jl")
 
-export mc_expectation, calc_resolution_maxlh
-
-function mc_expectation(particles::AbstractVector{<:Particle}, targets::AbstractVector{<:PhotonTarget}, seed, medium::MediumProperties)
-
-    wl_range = (300.0f0, 800.0f0)
-    #spectrum = CherenkovSpectrum(wl_range, medium)
-    spectrum = make_cherenkov_spectrum(wl_range, medium)
-
-    sources = [particle_shape(p) isa Cascade ?
-               ExtendedCherenkovEmitter(convert(Particle{Float32}, p), medium, spectrum) :
-               CherenkovTrackEmitter(convert(Particle{Float32}, p), miedum, spectrum)
-               for p in particles]
-
-    targets_c::Vector{POM{Float32}} = convert(Vector{POM{Float32}}, targets)
-
-    photon_setup = PhotonPropSetup(sources, targets_c, medium, spectrum, seed)
-    photons = propagate_photons(photon_setup)
-
-    calc_total_weight!(photons, photon_setup)
-    calc_time_residual!(photons, photon_setup)
-
-    rot = RotMatrix3(I)
-    hits = make_hits_from_photons(photons, photon_setup, rot)
-    calc_pe_weight!(hits, photon_setup)
-    return hits
-end
+export calc_resolution_maxlh
 
 
 function calc_resolution_maxlh(targets, sampling_model, eval_model, n; energy=1E4, zenith=0.1, phi=0.1, position=SA[3.0, 10.0, 15.0], time=0.0)
