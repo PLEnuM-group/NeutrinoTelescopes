@@ -25,10 +25,9 @@ function load_data_from_dir(path, type, nfiles=nothing)
 
     #chol_upper_shift_log = log.(chol_upper .+ (abs(min_val) +1))
 
-    tf_vec = NeuralFlowSurrogate.initialize_normalizers(raw_input) 
-    raw_input_tf = NeuralFlowSurrogate.apply_feature_transform(raw_input, tf_vec)
-    tf_vec_out = NeuralFlowSurrogate.initialize_normalizers(chol_upper_cbrt) 
-    chol_upper_tf = NeuralFlowSurrogate.apply_feature_transform(chol_upper_cbrt, tf_vec_out)
+    raw_input_tf, tf_in = fit_normalizer!(raw_input)
+    chol_upper_tf, tf_out = fit_normalizer!(chol_upper_cbrt)
 
-    return ((raw_input_tf, chol_upper_tf), tf_vec, tf_vec_out)
+
+    return ((raw_input_tf, chol_upper_tf), tf_in, tf_out)
 end
