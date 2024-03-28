@@ -31,7 +31,7 @@ function make_track_injector(cyl)
     pdist = CategoricalSetDistribution(OrderedSet([PMuMinus, PMuPlus]), [0.5, 0.5])
     edist = Pareto(1, 1E3)
     ang_dist = LowerHalfSphere()
-    length_dist = Dirac(0.0)
+    length_dist = Dirac(1E4)
     time_dist = Dirac(0.0)
     inj = SurfaceInjector(surface, edist, pdist, ang_dist, length_dist, time_dist)
     return inj
@@ -45,26 +45,21 @@ function generate_training_data(args)
 
     if args["per_string"]
         targets = [make_detector_line(SA_F32[0., 0., 0.], 20, 50, 1)]
-        inj = args["type"] == "extended" ? make_cascade_injector(Cylinder(SA[0., 0., -475.], 1200., 100.)) : make_track_injector(Cylinder(SA[0., 0., -475.], 1200., 100.))
-        input_buffer = create_input_buffer(16*20, 1)
+        inj = args["type"] == "extended" ? make_cascade_injector(Cylinder(SA[0., 0., -475.], 1200., 150.)) : make_track_injector(Cylinder(SA[0., 0., -475.], 1200., 150.))
+        input_buffer = create_input_buffer(model, 16*20, 1)
         output_buffer = create_output_buffer(16*20, 100)
     else
         targets = [[POM(SA_F32[0., 0., 0.], 1)]]
         inj = args["type"] == "extended" ? make_cascade_injector(Sphere(SA[0., 0., 0.], 200.)) : make_track_injector(Cylinder(SA[0., 0., 0.], 200., 400.))
-        input_buffer = create_input_buffer(16, 1)
+        input_buffer = create_input_buffer(model, 16, 1)
         output_buffer = create_output_buffer(16, 100)
     end
 
-    medium = make_cascadia_medium_properties(0.95f0)
+    
 
    
     diff_cache = FixedSizeDiffCache(input_buffer, 6)
-    hit_generator = SurrogateModelHitGenerator(model, 200.0, input_buffer, output_buffer)
-
-    
     rng = MersenneTwister(args["seed"])
-
-    detector = LineDetector(targets, medium)
 
     training_data = DataFrame(
         raw_input=Vector{Vector{Float64}}(undef, 0),
@@ -73,9 +68,22 @@ function generate_training_data(args)
 
     transformations = [x -> x for _ in 1:8]
 
+    medium = make_cascadia_medium_properties(0.95f0)
+    hit_generator = SurrogateModelHitGenerator(model, 200.0, input_buffer, output_buffer)
+    detector = LineDetector(targets, medium)
+
     for i in 1:args["nevents"]
+
+        if args["perturb_medium"]
+            abs_scale = 1 + randn(rng)*0.05
+            sca_scale = 1 + randn(rng)*0.05
+        else
+            abs_scale = 1
+            sca_scale = 1
+        end
+        
         event = rand(rng, inj)
-        m, = calc_fisher_matrix(event, detector, hit_generator, use_grad=true, rng=rng, cache=diff_cache)
+        m, = calc_fisher_matrix(event, detector, hit_generator, use_grad=true, rng=rng, cache=diff_cache, abs_scale=abs_scale, sca_scale=sca_scale, n_samples=200)
         #cov = inv(m)
         #cov = 0.5* (cov + cov')
         l = cholesky(m, check = false)
@@ -86,9 +94,10 @@ function generate_training_data(args)
         p = first(event[:particles])
         # If we evaluate an entire string, use position SA[0., 0., -475.] as reference
         if args["per_string"]
-            raw_input = FisherSurrogate.calculate_model_input([p], [[0f0, 0f0]], transformations)[:, 1]
+            raw_input = FisherSurrogate.calculate_model_input([p], [[0f0, 0f0]], transformations, abs_scale=abs_scale, sca_scale=sca_scale)[:, 1]
+            @show size(raw_input)
         else
-            raw_input = NeuralFlowSurrogate._calc_flow_input(p, targets[1], transformations)
+            raw_input = NeuralFlowSurrogate.create_flow_input(p, targets[1], transformations)
         end
         push!(training_data, (raw_input=raw_input, fi=m, chol_upper=l.U[triu!((trues(6,6)))]))
     end
@@ -125,6 +134,9 @@ type_choices = ["lightsabre", "extended"]
     required = true
     "--per_string"
     help = "Calculate for an entire string"
+    action = :store_true
+    "--perturb_medium"
+    help = "perturb optical properties"
     action = :store_true
 end
 
