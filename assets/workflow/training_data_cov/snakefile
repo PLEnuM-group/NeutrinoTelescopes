@@ -2,10 +2,11 @@
 WORKDIR = "/home/wecapstor3/capn/capn100h"
 OUTDIR = os.path.join(WORKDIR, "snakemake")
 
-JULIA_BIN = "/home/hpc/capn/capn100h/.julia/juliaup/julia-1.9.3+0.x64.linux.gnu/bin/julia"
+JULIA_BIN = "/home/hpc/capn/capn100h/.julia/juliaup/julia-1.10.0+0.x64.linux.gnu/bin/julia"
 SCRIPT_DIR = "/home/hpc/capn/capn100h/.julia/dev/NeutrinoTelescopes/scripts/surrogate_models"
 
-NEVENTS = 7500
+NEVENTS_CASC = 7500
+NEVENTS_TRACKS = 15000
 
 EVENT_TYPES = ["per_string_lightsabre", "per_string_extended"]
 SEEDS = range(200)
@@ -14,21 +15,23 @@ rule all:
     input: [expand(os.path.join(OUTDIR, "training_data_cov/training_data_{event_type}_{seed}.jld2"), event_type=EVENT_TYPES, seed=SEEDS)]
 
 rule proc:
-    input: [os.path.join(OUTDIR, "time_surrogate/{event_type}/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate/{event_type}/time_uncert_2.5_1_FNL.bson")]
+    input: [os.path.join(OUTDIR, "time_surrogate_perturb/{event_type}/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate_perturb/{event_type}/time_uncert_2_1_FNL.bson")]
     output: os.path.join(OUTDIR, "training_data_cov/training_data_{event_type}_{seed}.jld2")
     resources:
         slurm_extra="--gres=gpu:1",
         clusters="tinygpu",
-        time="2:00:00"
+        time="4:00:00"
     shell: 
-        "{JULIA_BIN} {SCRIPT_DIR}/generate_training_data_cov.jl --model_path_amp {input[0]} --model_path_time {input[1]} --nevents {NEVENTS} --type {wildcards.event_type} --outfile {output} --seed {wildcards.seed}"
+        "{JULIA_BIN} {SCRIPT_DIR}/generate_training_data_cov.jl --model_path_amp {input[0]} --model_path_time {input[1]} --nevents {NEVENTS} --type {wildcards.event_type} --outfile {output} --seed {wildcards.seed} --perturb_medium"
 
 rule proc_per_string:
-    input: [os.path.join(OUTDIR, "time_surrogate/{event_type}/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate/{event_type}/time_uncert_2.5_1_FNL.bson")]
+    input: [os.path.join(OUTDIR, "time_surrogate_perturb/{event_type}/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate_perturb/{event_type}/time_uncert_2_1_FNL.bson")]
     output: os.path.join(OUTDIR, "training_data_cov/training_data_per_string_{event_type}_{seed}.jld2")
+    params:
+        n_events = lambda wildcards: NEVENTS_TRACKS if wildcards.event_type == "lightsabre" else NEVENTS_CASC
     resources:
         slurm_extra="--gres=gpu:1",
         clusters="tinygpu",
-        time="2:00:00"
+        time="4:00:00"
     shell: 
-        "{JULIA_BIN} {SCRIPT_DIR}/generate_training_data_cov.jl --model_path_amp {input[0]} --model_path_time {input[1]} --nevents {NEVENTS} --type {wildcards.event_type} --outfile {output} --seed {wildcards.seed} --per_string"
+        "{JULIA_BIN} {SCRIPT_DIR}/generate_training_data_cov.jl --model_path_amp {input[0]} --model_path_time {input[1]} --nevents {params.n_events} --type {wildcards.event_type} --outfile {output} --seed {wildcards.seed} --per_string --perturb_medium"
