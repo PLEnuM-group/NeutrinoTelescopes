@@ -1,7 +1,7 @@
 
 module SurrogateModelHits
 
-using ..NeuralFlowSurrogate
+using ..PhotonSurrogates
 using ...Processing
 using ...EventGeneration.Detectors
 using ...EventGeneration
@@ -25,23 +25,24 @@ mutable struct SurrogateModelHitGenerator{M <: PhotonSurrogate}
 end
 
 function SurrogateModelHitGenerator(model, max_valid_distance, detector::Detector; max_particles=500, expected_hits_per_module=100) 
-    input_buffer = create_input_buffer(detector, max_particles)
+    input_buffer = create_input_buffer(model, detector, max_particles)
     output_buffer = create_output_buffer(detector, expected_hits_per_module)
     return SurrogateModelHitGenerator(model, max_valid_distance, input_buffer, output_buffer)
 end
 
 
-function create_input_buffer(model::PhotonSurrogate, n_det::Integer, max_particles=500)
-    input_size = size(model.time_model.embedding.layers[1].weight, 2)
-    @show input_size
-
-
+function create_input_buffer(input_size::Integer, n_det::Integer, max_particles=500)
     return zeros(input_size, n_det*max_particles)
 end
 
-function create_input_buffer(model, detector::Detector, max_particles=500)
+function create_input_buffer(model::PhotonSurrogate, n_det::Integer, max_particles=500)
+    input_size = size(model.time_model.embedding.layers[1].weight, 2)
+    return create_input_buffer(input_size, n_det, max_particles)
+end
+
+function create_input_buffer(model_or_det, detector::Detector, max_particles=500)
     modules = get_detector_modules(detector)
-    return create_input_buffer(model, get_pmt_count(eltype(modules))*length(modules), max_particles)
+    return create_input_buffer(model_or_det, get_pmt_count(eltype(modules))*length(modules), max_particles)
 end
 
 
@@ -90,7 +91,11 @@ function generate_hit_times(
     detector::Detector,
     generator::SurrogateModelHitGenerator,
     rng=Random.default_rng();
-    device=gpu)
+    device=gpu,
+    noise_rate=1E4,
+    time_window=1E4,
+    abs_scale,
+    sca_scale)
     
     modules = get_detector_modules(detector)
     medium = get_detector_medium(detector)
@@ -112,26 +117,85 @@ function generate_hit_times(
         rng,
         feat_buffer=generator.input_buffer,
         output_buffer=generator.output_buffer,
-        device=device)
+        device=device,
+        abs_scale=abs_scale,
+        sca_scale=sca_scale,
+        noise_rate=noise_rate,
+        time_window=time_window)
 
     return hit_list, modules_range_mask
 
 end
 
-function generate_hit_times(event::Event, detector::Detector, generator::SurrogateModelHitGenerator, rng=Random.default_rng(); device=gpu)
+function generate_hit_times(
+    event::Event,
+    detector::Detector,
+    generator::SurrogateModelHitGenerator,
+    rng=Random.default_rng();
+    device=gpu,
+    abs_scale=1.,
+    sca_scale=1.,
+    noise_rate=1E4,
+    time_window=1E4)
     particles = get_lightemitting_particles(event)
-    return generate_hit_times(particles, detector, generator, rng, device=device)
+    return generate_hit_times(
+        particles,
+        detector,
+        generator,
+        rng,
+        device=device,
+        abs_scale=abs_scale,
+        sca_scale=sca_scale,
+        noise_rate=noise_rate,
+        time_window=time_window)
 end
 
-function generate_hit_times(events::AbstractVector{<:Event}, detector::Detector, generator::SurrogateModelHitGenerator, rng=Random.default_rng(); device=gpu)
+function generate_hit_times(
+    events::AbstractVector{<:Event},
+    detector::Detector,
+    generator::SurrogateModelHitGenerator,
+    rng=Random.default_rng();
+    device=gpu,
+    abs_scale=1.,
+    sca_scale=1.,
+    noise_rate=1E4,
+    time_window=1E4)
     particles_per_event = get_lightemitting_particles.(events)
     particles = reduce(vcat, particles_per_event)
-    return generate_hit_times(particles, detector, generator, rng, device=device)
+    return generate_hit_times(
+        particles,
+        detector,
+        generator,
+        rng,
+        device=device,
+        abs_scale=abs_scale,
+        sca_scale=sca_scale,
+        noise_rate=noise_rate,
+        time_window=time_window)
 end
 
 
-function generate_hit_times!(event::Event, detector::Detector, generator::SurrogateModelHitGenerator, rng=Random.default_rng(); device=gpu)
-    hits, modules_range_mask = generate_hit_times(event, detector, generator, rng, device=device)
+function generate_hit_times!(
+    event::Event,
+    detector::Detector,
+    generator::SurrogateModelHitGenerator,
+    rng=Random.default_rng();
+    device=gpu,
+    abs_scale=1.,
+    sca_scale=1.,
+    noise_rate=1E4,
+    time_window=1E4)
+    hits, modules_range_mask = generate_hit_times(
+        event,
+        detector,
+        generator,
+        rng,
+        device=device,
+        abs_scale=abs_scale,
+        sca_scale=sca_scale,
+        noise_rate=noise_rate,
+        time_window=time_window
+        )
     modules = get_detector_modules(detector)
     hits_df = hit_list_to_dataframe(hits, modules, modules_range_mask)
     event[:photon_hits] = hits_df

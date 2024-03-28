@@ -1,4 +1,9 @@
 
+export NNRQNormFlow
+export RQNormFlowHParams, AbsScaRQNormFlowHParams
+export create_model_input!
+
+
 """
 NNRQNormFlow(
     embedding::Chain
@@ -22,11 +27,11 @@ struct NNRQNormFlow <: RQSplineModel
     K::Integer
     range_min::Float64
     range_max::Float64
+    transformations::Vector{Normalizer{Float32}}
 end
 
 # Make embedding parameters trainable
 Flux.@functor NNRQNormFlow (embedding,)
-
 
 Base.@kwdef struct RQNormFlowHParams <: HyperParams
     K::Int64 = 10
@@ -70,13 +75,14 @@ Create and initialize a model for the arrival time distribution with medium pert
 
 # Arguments
 - `hparams::AbsScaRQNormFlowHParams`: Hyperparameters for the model.
+- `transformations::AbstractVector{<:Normalizer}`: Feature normalizers.
 
 # Returns
 - `model`: The initialized time prediction model.
 - `log_likelihood`: The log-likelihood function of the model.
 
 """
-function setup_model(hparams::AbsScaRQNormFlowHParams)
+function setup_model(hparams::AbsScaRQNormFlowHParams, transformations::AbstractVector{<:Normalizer})
     hidden_structure = fill(hparams.mlp_layer_size, hparams.mlp_layers)
 
     non_lins = Dict("relu" => relu, "tanh" => tanh)
@@ -97,7 +103,7 @@ function setup_model(hparams::AbsScaRQNormFlowHParams)
         non_linearity=non_lin,
         split_final=false)
 
-    model = NNRQNormFlow(embedding, hparams.K, -30.0, 200.0)
+    model = NNRQNormFlow(embedding, hparams.K, -30.0, 200.0, transformations)
     return model, arrival_time_log_likelihood
 end
 
@@ -108,13 +114,14 @@ Create and initialize a model for the arrival time distribution without medium p
 
 # Arguments
 - `hparams::RQNormFlowHParams`: Hyperparameters for the model.
+- `transformations::AbstractVector{<:Normalizer}`: Feature normalizers.
 
 # Returns
 - `model`: The initialized neural network model.
 - `log_likelihood`: The log-likelihood function of the model.
 
 """
-function setup_model(hparams::RQNormFlowHParams)
+function setup_model(hparams::RQNormFlowHParams, transformations::AbstractVector{<:Normalizer})
     hidden_structure = fill(hparams.mlp_layer_size, hparams.mlp_layers)
 
     non_lins = Dict("relu" => relu, "tanh" => tanh)
@@ -135,7 +142,39 @@ function setup_model(hparams::RQNormFlowHParams)
         non_linearity=non_lin,
         split_final=false)
 
-    model = NNRQNormFlow(embedding, hparams.K, -30.0, 200.0)
+    model = NNRQNormFlow(embedding, hparams.K, -30.0, 200.0, transformations)
     return model, arrival_time_log_likelihood
 end
+
+function create_model_input!(
+    model::NNRQNormFlow,
+    particles::AbstractVector{<:Particle},
+    targets::AbstractVector{<:PhotonTarget},
+    output;
+    abs_scale=1., sca_scale=1.)
+
+    n_pmt = get_pmt_count(eltype(targets))
+    out_ix = LinearIndices((1:n_pmt, eachindex(particles), eachindex(targets)))
+    
+    flen = length(model.transformations)
+
+    for (p_ix, t_ix) in product(eachindex(particles), eachindex(targets))
+        particle = particles[p_ix]
+        target = targets[t_ix]
+
+        for pmt_ix in 1:n_pmt
+            ix = out_ix[pmt_ix, p_ix, t_ix]
+            outview = @view output[1:flen, ix]
+            create_model_input!(particle, target, outview, model.transformations, abs_scale=abs_scale, sca_scale=sca_scale)
+        end
+
+        ix = out_ix[1:n_pmt, p_ix, t_ix]
+        output[flen+1:flen+n_pmt, ix] .= Matrix(one(eltype(output)) * I, n_pmt, n_pmt)
+        
+    end
+
+    return output
+end
+
+
 

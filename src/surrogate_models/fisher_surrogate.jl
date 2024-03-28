@@ -2,7 +2,7 @@ module FisherSurrogate
 
 using Flux
 using BSON
-using ..NeuralFlowSurrogate: _calc_flow_input!, apply_feature_transform, Normalizer, HyperParams, create_mlp_embedding
+using ..PhotonSurrogates: create_model_input!, apply_normalizer, Normalizer, HyperParams, create_mlp_embedding
 using ..SurrogateModelHits
 using ...EventGeneration
 using LinearAlgebra
@@ -19,6 +19,8 @@ export FisherSurrogateModelPerLine, FisherSurrogateModelPerModule
 export FisherSurrogateModelParams
 export predict_cov
 export predict_cov_improvement
+export predict_fisher
+export invert_fishers
 
 
 Base.@kwdef struct FisherSurrogateModelParams <: HyperParams
@@ -68,15 +70,14 @@ struct FisherSurrogateModelPerLine <: FisherSurrogateModel
     model::Chain
     tf_in::Vector{Normalizer}
     tf_out::Vector{Normalizer}
-     range_cylinder::Cylinder{Float64}
+    range_cylinder::Cylinder{Float64}
     input_buffer::Matrix{Float32}    
 end
 
 function FisherSurrogateModelPerLine(fname::String, max_particles=500, max_targets=70*20)
     m = BSON.load(fname)
     Flux.testmode!(m[:model])
-    @show keys(m)
-    buffer = zeros(Float32, 7, max_targets*max_particles)
+    buffer = zeros(Float32, 9, max_targets*max_particles)
     #range_cylinder = Cylinder(SA[0., 0., -475.], 1200., 200.)
     return FisherSurrogateModelPerLine(m[:model], m[:tf_in], m[:tf_out], m[:range_cylinder], buffer)
 end
@@ -123,11 +124,12 @@ function calculate_model_input!(
     particle_dir,
     particle_energy,
     line_xy,
-    tf_vec, output)
+    tf_vec, output;
+    abs_scale, sca_scale)
 
     r = sqrt((particle_pos[1]-line_xy[1])^2 + (particle_pos[2]-line_xy[2])^2)
     h = particle_pos[3]
-    phi = atan(particle_pos[2], particle_pos[1])
+    phi = atan(particle_pos[2]-line_xy[2], particle_pos[1]-line_xy[1])
 
     @inbounds begin
         output[1] = tf_vec[1](log(r))
@@ -137,6 +139,8 @@ function calculate_model_input!(
         output[5] = tf_vec[5](particle_dir[3])
         output[6] = tf_vec[6](cbrt(h))
         output[7] = tf_vec[7](phi)
+        output[8] = tf_vec[8](abs_scale)
+        output[9] = tf_vec[9](sca_scale)
     end
 
     return output
@@ -146,18 +150,18 @@ end
 function calculate_model_input!(
     particle::Particle,
     line_xy,
-    tf_vec, output)
+    tf_vec, output; abs_scale, sca_scale)
 
     if particle_shape(particle) == Track()
         particle = shift_to_closest_approach(particle, SA_F32[line_xy[1], line_xy[2], -475f0])
     end
 
-    return calculate_model_input!(particle.position, particle.direction, particle.energy, line_xy, tf_vec, output)
+    return calculate_model_input!(particle.position, particle.direction, particle.energy, line_xy, tf_vec, output, abs_scale=abs_scale, sca_scale=sca_scale)
     
 end
 
 
-function calculate_model_input!(particles::AbstractVector{<:Particle}, line_xys::AbstractVector{<:AbstractVector}, tf_vec, output)
+function calculate_model_input!(particles::AbstractVector{<:Particle}, line_xys::AbstractVector{<:AbstractVector}, tf_vec, output; abs_scale, sca_scale)
 
     out_ix = LinearIndices((eachindex(particles), eachindex(line_xys)))
     
@@ -166,14 +170,14 @@ function calculate_model_input!(particles::AbstractVector{<:Particle}, line_xys:
         line_xy = line_xys[t_ix]
 
         ix = out_ix[p_ix, t_ix]
-        calculate_model_input!(particle, line_xy, tf_vec, @view output[:, ix])
+        @views calculate_model_input!(particle, line_xy, tf_vec, output[:, ix], abs_scale=abs_scale, sca_scale=sca_scale)
     end
     return output
 end
 
-function calculate_model_input(particles::AbstractVector{<:Particle}, line_xys::AbstractVector{<:AbstractVector}, tf_vec)
-    output = zeros(Float32, 7, 1)
-    calculate_model_input!(particles, line_xys, tf_vec, output)
+function calculate_model_input(particles::AbstractVector{<:Particle}, line_xys::AbstractVector{<:AbstractVector}, tf_vec; abs_scale, sca_scale)
+    output = zeros(Float32, 9, 1)
+    calculate_model_input!(particles, line_xys, tf_vec, output, abs_scale=abs_scale, sca_scale=sca_scale)
     return output
 end
 
@@ -187,7 +191,7 @@ function setup_training(hparams::FisherSurrogateModelParams, n_batches)
 
     cov_model = create_mlp_embedding(
         hidden_structure=[hparams.mlp_layer_size for _ in 1:hparams.mlp_layers],
-        n_in=7,
+        n_in=9,
         n_out=21,
         dropout=hparams.dropout,
         non_linearity=hparams.non_linearity,
@@ -210,16 +214,16 @@ end
 
 
 
-function _predict_fisher(all_particles::AbstractVector{<:Particle}, targets, model::FisherSurrogateModel)
+function _predict_fisher(all_particles::AbstractVector{<:Particle}, targets, model::FisherSurrogateModel;  abs_scale, sca_scale)
     n_events = length(all_particles)
     normalizers::Vector{Normalizer{Float32}} = model.tf_out
     inv_y_tf = inv.(normalizers)
     # particles is the inner loop
 
-    inp = @view _calc_flow_input!(all_particles, targets, model.tf_in, model.input_buffer)[:, 1:(length(all_particles) * length(targets))]
+    inp = @view calc_model_input!(all_particles, targets, model.tf_in, model.input_buffer, abs_scale=abs_scale, sca_scale=sca_scale)[:, 1:(length(all_particles) * length(targets))]
 
     
-    triu_pred = cpu(apply_feature_transform(model.model(gpu(inp)), inv_y_tf).^3)
+    triu_pred = cpu(apply_normalizer(model.model(gpu(inp)), inv_y_tf).^3)
     triu_pred = reshape(triu_pred, (size(triu_pred, 1), n_events, length(targets)))
 
     triu = zeros(6,6)
@@ -250,14 +254,14 @@ function _predict_fisher(all_particles::AbstractVector{<:Particle}, targets, mod
 end
 
 
-function predict_fisher(events::Vector{<:Event}, targets, model::FisherSurrogateModelPerModule)
+function predict_fisher(events::Vector{<:Event}, targets, model::FisherSurrogateModelPerModule; abs_scale, sca_scale)
     all_particles::Vector{Particle{Float32}} = [(first(event[:particles])) for event in events]
-    return _predict_fisher(all_particles, targets, model)
+    return _predict_fisher(all_particles, targets, model, abs_scale=abs_scale, sca_scale=sca_scale)
     
 end
 
-function predict_fisher(events::Vector{<:Event}, lines, model::FisherSurrogateModelPerLine)
-    all_particles::Vector{Particle{Float32}} = [(first(event[:particles])) for event in events]
+function predict_fisher(events::Vector{<:Event}, lines, model::FisherSurrogateModelPerLine; abs_scale, sca_scale)
+    all_particles::Vector{Particle{Float32}} = [first(event[:particles]) for event in events]
     line_xys = [[first(l).shape.position[1], first(l).shape.position[2]] for l in lines]
 
     n_events = length(events)
@@ -268,10 +272,10 @@ function predict_fisher(events::Vector{<:Event}, lines, model::FisherSurrogateMo
     # particles is the inner loop
 
     
-    inp = @view calculate_model_input!(all_particles, line_xys, model.tf_in, model.input_buffer)[:, 1:(length(all_particles) * length(line_xys))]
+    inp = @view calculate_model_input!(all_particles, line_xys, model.tf_in, model.input_buffer, abs_scale=abs_scale, sca_scale=sca_scale)[:, 1:(length(all_particles) * length(line_xys))]
     
 
-    triu_pred = cpu(apply_feature_transform(model.model(gpu(inp)), inv_y_tf).^3)
+    triu_pred = cpu(apply_normalizer(model.model(gpu(inp)), inv_y_tf).^3)
     triu_pred = reshape(triu_pred, (size(triu_pred, 1), n_events, length(line_xys)))
 
     triu = zeros(6,6)
@@ -299,47 +303,29 @@ function predict_fisher(events::Vector{<:Event}, lines, model::FisherSurrogateMo
     return all_fishers
 end
 
-
-
-#=
-function predict_cov(particles, targets, model::FisherSurrogateModel)
-
-    modules_range_mask = get_modules_in_range(particles, targets, model.max_valid_distance)
-
-    if !any(modules_range_mask)
-        return nothing
-    end
-
-    targets_range = targets[modules_range_mask]
-
-    inv_y_tf = inv.(model.tf_out)
-    # particles is the inner loop
-    inp = @view _calc_flow_input!(particles, targets_range, model.tf_in, model.input_buffer)[:, 1:(length(particles) * length(targets))]
-    
-    triu_pred = apply_feature_transform(cpu(model.model(gpu(inp))), inv_y_tf).^3
-
-    fisher_pred_sum = zeros(6,6)
-    triu = zeros(6,6)
-    triu_ixs = triu!((trues(6,6)))
-    @inbounds for trl in eachcol(triu_pred)      
-        triu[triu_ixs] .= trl
-        fisher_pred_sum .+= (triu'*triu)
-    end
-    cov_pred_sum = inv(fisher_pred_sum)
-    return cov_pred_sum, fisher_pred_sum
-end
-=#
-
 function invert_fishers(all_fishers)
     inverted = Matrix[]
-    for m in eachslice(all_fishers, dims=1)
+    if typeof(all_fishers) <: AbstractVector
+        it_func = all_fishers
+    else
+        it_func = eachslice(all_fishers, dims=1)
+    end
+    for m in it_func
         if isapprox(det(m), 0)
+            push!(inverted, fill(NaN64, (6,6)))
             continue
         end
-        push!(inverted, inv(m))
+
+        invm::Matrix{Float64} = inv(m)
+        invm .= 0.5 * (invm + invm')
+
+        push!(inverted, invm)
     end
     return inverted
 end
+
+
+
 
 function predict_cov(events::Vector{<:Event}, detector, model::FisherSurrogateModel)
 
@@ -352,32 +338,26 @@ function predict_cov(events::Vector{<:Event}, detector, model::FisherSurrogateMo
 
 end
 
-function predict_cov(events::Vector{<:Event}, detector, model::FisherSurrogateModelPerLine)
+function predict_cov(events::Vector{<:Event}, detector, model::FisherSurrogateModelPerLine; abs_scale, sca_scale)
 
     lines = get_detector_lines(detector)
-    all_fishers = predict_fisher(events, lines, model)
+    all_fishers = predict_fisher(events, lines, model, abs_scale=abs_scale, sca_scale=sca_scale)
     inverted = invert_fishers(all_fishers)
     return inverted, all_fishers
 end
 
 
-function predict_cov_improvement(events::Vector{<:Event}, new_targets, prev_fisher, model::FisherSurrogateModel)
+function predict_cov_improvement(events::Vector{<:Event}, new_targets, prev_fisher, model::FisherSurrogateModelPerLine; abs_scale, sca_scale)
     
-    all_fishers = predict_fisher(events, new_targets, model)
-
-    inverted = Matrix[]
-    for(m, m_prev) in zip(eachslice(all_fishers, dims=1), eachslice(prev_fisher, dims=1))
+    all_fishers = predict_fisher(events, [new_targets], model, abs_scale=abs_scale, sca_scale=sca_scale)
+    
+    for (m, m_prev) in zip(eachslice(all_fishers, dims=1), eachslice(prev_fisher, dims=1))
         m .= m + m_prev
-        if isapprox(det(m), 0)
-            continue
-        end
-        push!(inverted, inv(m))
     end
 
+    inverted = invert_fishers(all_fishers)
+
     return inverted, all_fishers
-
 end
-
-
 
 end
