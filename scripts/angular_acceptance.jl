@@ -15,7 +15,7 @@ using Unitful
 using Rotations
 using LinearAlgebra
 using JSON3
-
+using Healpix
 
 begin
     coords = Matrix{Float64}(undef, 2, 16)
@@ -76,7 +76,6 @@ total_acc_2 = Float64[]
 pmt_grp_1 = collect(1:16)[div.(0:15,  4) .% 2 .== 0]
 pmt_grp_2 = collect(1:16)[div.(0:15,  4) .% 2 .== 1]
 
-
 for f in files
 
     df = DataFrame(CSV.File(f))
@@ -117,6 +116,121 @@ for f in files
     push!(total_acc_1, sum(mask_grp_1) / nrow(df))
     push!(total_acc_2, sum(mask_grp_2) / nrow(df))
 end
+
+
+azimuth_hit = []
+
+m_accepted = HealpixMap{Float64, RingOrder}(32)
+m_all = HealpixMap{Float64, RingOrder}(32)
+m_all[:] .= UNSEEN
+m_accepted[:] .= UNSEEN
+
+coords_rot = []
+for col in eachcol(coords)
+    R = calc_rot_matrix(SA[0.0, 0.0, 1.0], SA[1.0, 0.0, 0.0])
+    cart = sph_to_cart(col[1], col[2])
+    col = cart_to_sph((R * cart)...)
+    push!(coords_rot, col)
+    
+end
+coords_rot = Matrix(reduce(hcat, coords_rot))
+
+for f in files
+
+    df = DataFrame(CSV.File(f))
+    calc_coordinates!(df)
+
+    in_dir_cart = Matrix{Float64}(df[!, [:in_norm_x, :in_norm_y, :in_norm_z]])
+    R = calc_rot_matrix(SA[0.0, 0.0, 1.0], SA[1.0, 0.0, 0.0])
+    in_dir_cart = Ref(R) .* eachrow(in_dir_cart)
+    
+    in_dir_sph = reduce(hcat, cart_to_sph.(in_dir_cart))
+    
+    any_hit = ((df[:, :out_VolumeName] .== "photocathode" .|| df[:, :out_VolumeName] .== "photocathodeTube")
+          #df[:, :out_ProcessName] .== "OpAbsorption"
+    )
+
+    pix_id = map(x -> ang2pix(m, vec2ang(x...)...), in_dir_cart)
+    pix_id_accepted = pix_id[any_hit]
+    mask = m_accepted[pix_id_accepted] .== UNSEEN
+    m_accepted[pix_id_accepted[mask]] .= 0
+    m_accepted[pix_id_accepted] .+= 1
+
+    mask = m_all[pix_id] .== UNSEEN
+    m_all[pix_id[mask]] .= 0
+    m_all[pix_id] .+= 1
+
+    push!(azimuth_hit, in_dir_sph[2, any_hit])
+end
+
+any_unseen = (m_accepted .== UNSEEN) .|| (m_all .== UNSEEN)
+m_ratio = m_accepted / m_all
+m_ratio[any_unseen] .= UNSEEN
+
+fig = Figure()
+ax = Axis(fig[1, 1], aspect=2)
+img, mask, anymasked = mollweide(m_ratio)
+hm = heatmap!(ax, img', show_axis = false)
+hidespines!(ax)
+hidedecorations!(ax)
+# colat, long
+coords_rot_lat = reduce(hcat, map(x -> collect(vec2ang(x...)), sph_to_cart.(eachcol(coords_rot))))
+coords_rot_lat[1, :] = colat2lat.(coords_rot[1, :])
+coords_rot_lat[2, :] .-= π
+
+
+coords_proj = Point2f.(map(x -> collect(mollweideproj(x...)[[2,3]]), eachcol(coords_rot_lat)))
+coords_proj ./= 2
+coords_proj .+= Ref([0.5, 0.5])
+relative_projection = Makie.camrelative(ax.scene);
+
+coords_proj
+scatter!(relative_projection, coords_proj, color=:blue)
+Colorbar(fig[2, 1], hm, vertical = false, label="Acceptance")
+fig
+
+
+azimuth_hit = reduce(vcat, azimuth_hit)
+
+bins = 0:0.05:2*π
+fig, ax, h = hist(azimuth_hit, bins=bins, axis=(xlabel="Azimuth angle [rad]", ylabel="Counts"))
+
+
+#vlines!(ax, coords_rot[2, :], color=(:red, 0.5))
+fig
+
+
+
+rand(size(azimuth_hit))
+uni_hits = rand(size(azimuth_hit)[1]).*2 .*π
+
+fig = Figure()
+ax = Axis3(fig[1, 1], aspect = (1, 1, 1), azimuth = deg2rad(30))
+ax2 = Axis3(fig[1, 2], aspect = (1, 1, 1), azimuth = deg2rad(60))
+coords_cart = Point3f.(sph_to_cart.(eachcol(Matrix(coords_rot))))
+
+coords_cart[1:8] .+= Ref([2, 0, 0])
+coords_cart[9:16] .-= Ref([2, 0, 0])
+dirs_cart = Vec3f.(coords_cart)
+arrows!(ax, 5 .*coords_cart, dirs_cart)
+arrows!(ax2, 5 .*coords_cart, dirs_cart)
+fig
+
+ax2 = Axis3(fig[1, 2], aspect = (1, 1, 1), azimuth = deg2rad(60))
+for coord in eachcol(coords_rot[:, 1:8])
+    cc = sph_to_cart(coord)
+    line = hcat(cc, 1.2*cc)
+    arrows!(ax, cc..., cc...)
+end
+
+
+for coord in eachcol(coords_rot[:, 9:16])
+    cc = sph_to_cart(coord)
+    line = hcat(cc, 1.2*cc)
+    lines!(ax, line, color=:blue)
+    lines!(ax2, line, color=:blue)
+end
+fig
 
 
 wlsort = sortperm(wavelengths)
