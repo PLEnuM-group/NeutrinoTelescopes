@@ -18,8 +18,8 @@ using JLD2
 workdir = ENV["ECAPSTOR"]
 
 model = PhotonSurrogate(
-    joinpath(workdir, "snakemake/time_surrogate/lightsabre/amplitude_1_FNL.bson"),
-    joinpath(workdir, "snakemake/time_surrogate/lightsabre/time_uncert_0_1_FNL.bson")
+    joinpath(workdir, "snakemake/time_surrogate_perturb/lightsabre/amplitude_1_FNL.bson"),
+    joinpath(workdir, "snakemake/time_surrogate_perturb/lightsabre/time_uncert_0_1_FNL.bson")
 )
     
 
@@ -32,8 +32,11 @@ targets_three_l = [
     make_detector_line(@SVector[0.0, sqrt(50^2 - 25^2), 0.0], 20, 50, 41)]
 targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
 
-medium = make_cascadia_medium_properties(0.95)
-d = Detector(targets_hex, medium)
+abs_scale = 0.95f0
+sca_scale = 1.1f0
+
+medium = make_cascadia_medium_properties(0.95, abs_scale, sca_scale)
+d = LineDetector(targets_hex, medium)
 
 
 cylinder = get_bounding_cylinder(d)
@@ -46,7 +49,9 @@ length_dist = Dirac(0.0)
 time_dist = Dirac(0.0)
 #inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
 inj = SurfaceInjector(CylinderSurface(cylinder), edist, pdist, ang_dist, length_dist, time_dist)
+model = gpu(model)
 hit_generator = SurrogateModelHitGenerator(model, 200.0, d)
+
 
 
 events = Event[]
@@ -60,6 +65,9 @@ for _ in 1:10
 
     push!(event_hits, ev_d)
 end
+
+events
+
 
 save(joinpath(workdir, "test_muons.jld2"), Dict("event_hits" => event_hits, "geo" => get_detector_pmts(d)))
 
