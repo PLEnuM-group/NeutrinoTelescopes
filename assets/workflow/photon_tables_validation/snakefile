@@ -1,0 +1,26 @@
+
+EVENT_TYPES = ["lightsabre", "extended"]
+N_SIMS = 1000
+
+
+WORKDIR = "/home/wecapstor3/capn/capn100h"
+OUTDIR = os.path.join(WORKDIR, "snakemake/surrogate_validation_sets")
+JULIA_BIN = "/home/hpc/capn/capn100h/.juliaup/bin/julia"
+SCRIPT_DIR = "/home/hpc/capn/capn100h/.julia/dev/PhotonPropagation/scripts"
+PHOTON_SCALING = 5.
+N_PER_FILE = 50
+SEEDS = range(10)
+
+rule photon_tables:
+    output: os.path.join(OUTDIR, "validation_set_{seed}_{mode}.jld2")
+    resources:
+        slurm_extra="--gres=gpu:1",
+        clusters="tinygpu",
+        time="2:00:00"
+    shell:
+        "{JULIA_BIN} {SCRIPT_DIR}/photon_tables/create_validation_set.jl -o {output} -s {wildcards.seed} --mode {wildcards.mode} --photon_scaling {PHOTON_SCALING} -n {N_PER_FILE}"
+
+
+rule all:
+    input: expand(rules.photon_tables.output, seed=SEEDS, mode=EVENT_TYPES)
+    default_target: True
