@@ -248,7 +248,7 @@ function Base.rand(rng::AbstractRNG, c::CylinderSurface{T}) where {T}
 
 end
 
-Base.rand(c::CylinderSurface) = rand(default_rng(), c)
+Base.rand(c::CylinderSurface) = rand(Random.default_rng(), c)
 
 get_surface_normal(::SurfaceType, pos) = error("Not defined")
 
@@ -620,9 +620,8 @@ function Base.rand(rng::AbstractRNG, inj::LIInjector)
         dir_sph = SVector{2}(inj.states[ix, :Direction_final1])
         
         if particle_shape(ptype_f1) == Track()
-            # Currently we treat everyting as lightsabres
             energy = inj.states[ix, :Energy_final1]
-            ptype = PLightSabre
+            ptype = ptype_f1
         else particle_shape(ptype_f1) == Cascade()
             # Sum energy of the hadronic cascade + lepton energy
             energy = inj.states[ix, :Energy_final1] + inj.states[ix, :Energy_final2]
@@ -630,14 +629,8 @@ function Base.rand(rng::AbstractRNG, inj::LIInjector)
         end
     end
 
-
     dir = sph_to_cart(dir_sph)
-
-    if particle_shape(ptype) == Track()
-        p = Particle(pos, dir, 0., energy, 1E4, ptype)
-    else
-        p = Particle(pos, dir, 0., energy, 0., ptype)
-    end
+    p = Particle(pos, dir, 0., energy, -1., ptype)
 
     event = Event()
     event[:particles] = [p]
