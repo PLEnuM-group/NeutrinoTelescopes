@@ -270,8 +270,7 @@ function predict_fisher(events::Vector{<:Event}, lines, model::FisherSurrogateMo
 
     inv_y_tf = inv.(normalizers)
     # particles is the inner loop
-
-    
+   
     inp = @view calculate_model_input!(all_particles, line_xys, model.tf_in, model.input_buffer, abs_scale=abs_scale, sca_scale=sca_scale)[:, 1:(length(all_particles) * length(line_xys))]
     
 

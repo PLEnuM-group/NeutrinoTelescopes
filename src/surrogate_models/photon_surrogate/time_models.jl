@@ -169,6 +169,7 @@ function create_model_input!(
         end
 
         ix = out_ix[1:n_pmt, p_ix, t_ix]
+        # output[flen+1:flen+n_pmt, ix] .= Matrix(one(eltype(output)) * I, n_pmt, n_pmt)
         output[flen+1:flen+n_pmt, ix] .= Matrix(one(eltype(output)) * I, n_pmt, n_pmt)
         
     end

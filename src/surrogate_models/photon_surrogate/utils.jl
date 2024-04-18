@@ -4,7 +4,7 @@ export arrival_time_log_likelihood, log_likelihood_with_poisson
 export create_model_input!
 export apply_normalizer
 export kfold_train_model
-export sample_multi_particle_event
+export sample_multi_particle_event!
 export get_log_amplitudes
 export evaluate_model
 export multi_particle_likelihood
@@ -663,20 +663,21 @@ end
 
 Sample arrival times at `targets` for `particles` using `model`.
 """
-function sample_multi_particle_event(
+function sample_multi_particle_event!(
     particles,
     targets,
     model,
     medium,
     rng=Random.default_rng();
+    feat_buffer,
+    output_buffer,
     oversample=1,
-    feat_buffer=nothing,
-    output_buffer=nothing,
     device=gpu,
     abs_scale=1.,
     sca_scale=1.,
     noise_rate=1E4,
-    time_window=1E4)
+    time_window=1E4,
+    max_distance=200)
 
     # We currently cannot reshape VectorOfArrays. For now just double allocate
     temp_output_buffer = VectorOfArrays{Float64, 1}()
@@ -705,14 +706,6 @@ function sample_multi_particle_event(
     # Only sample times for particle-target pairs that have at least one hit
     times = sample_flow!(flow_params[:, mask], model.time_model.range_min, model.time_model.range_max, non_zero_hits, temp_output_buffer, rng=rng)
 
-
-    if isnothing(output_buffer)
-        output_buffer = VectorOfArrays{Float64, 1}()
-        sizehint!(output_buffer, n_pmts, (100, ))
-    end
-
-    empty!(output_buffer)
-
     
     # Create range selectors into times for each particle-pmt pair
     selectors = reshape(
@@ -738,8 +731,10 @@ function sample_multi_particle_event(
 
         for p_ix in eachindex(particles)
             particle = particles[p_ix]
+            particle_module_dist = closest_approach_distance(particle, target)
+            
             this_n_hits = n_hits_per_pmt_source[pmt_ix, p_ix, t_ix]
-            if this_n_hits > 0
+            if this_n_hits > 0 && particle_module_dist <= max_distance
                 t_geo = calc_tgeo(particle, target, medium)
                 times_sel = selectors[pmt_ix, p_ix, t_ix]
                 data_this_target[data_selectors[p_ix]] = times[times_sel] .+ t_geo .+ particle.time
@@ -833,7 +828,7 @@ function evaluate_model(
     npmt = get_pmt_count(eltype(targets))
 
 
-    input = @view feat_buffer[:, 1:length(targets)*length(particles)*npmt]
+    input = feat_buffer[:, 1:length(targets)*length(particles)*npmt]
     create_model_input!(model.time_model, particles, targets, input, abs_scale=abs_scale, sca_scale=sca_scale)
 
 
