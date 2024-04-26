@@ -16,6 +16,7 @@ using Rotations
 using LinearAlgebra
 using JSON3
 using Healpix
+using StatsBase
 
 begin
     coords = Matrix{Float64}(undef, 2, 16)
@@ -122,8 +123,10 @@ azimuth_hit = []
 
 m_accepted = HealpixMap{Float64, RingOrder}(32)
 m_all = HealpixMap{Float64, RingOrder}(32)
-m_all[:] .= UNSEEN
-m_accepted[:] .= UNSEEN
+m_all[:] .= 0
+m_accepted[:] .= 0
+
+length(m_all)
 
 coords_rot = []
 for col in eachcol(coords)
@@ -150,22 +153,16 @@ for f in files
           #df[:, :out_ProcessName] .== "OpAbsorption"
     )
 
-    pix_id = map(x -> ang2pix(m, vec2ang(x...)...), in_dir_cart)
+    pix_id = map(x -> ang2pix(m_all, vec2ang(x...)...), in_dir_cart)
     pix_id_accepted = pix_id[any_hit]
-    mask = m_accepted[pix_id_accepted] .== UNSEEN
-    m_accepted[pix_id_accepted[mask]] .= 0
-    m_accepted[pix_id_accepted] .+= 1
-
-    mask = m_all[pix_id] .== UNSEEN
-    m_all[pix_id[mask]] .= 0
-    m_all[pix_id] .+= 1
+    m_accepted .+= counts(pix_id_accepted, 1:length(m_accepted))
+    m_all .+= counts(pix_id, 1:length(m_all))
 
     push!(azimuth_hit, in_dir_sph[2, any_hit])
 end
 
-any_unseen = (m_accepted .== UNSEEN) .|| (m_all .== UNSEEN)
 m_ratio = m_accepted / m_all
-m_ratio[any_unseen] .= UNSEEN
+m_ratio[m_all .== 0] .= 0
 
 fig = Figure()
 ax = Axis(fig[1, 1], aspect=2)
@@ -282,30 +279,73 @@ end
 
 using DataFrames
 using StaticArrays
-using Cthulhu
 using Rotations
 using Random
 using LinearAlgebra
 using NeutrinoTelescopes
 using PhotonPropagation
 n = 1000000
-positions = rand(SVector{3, Float64}, n)
-directions = rand(SVector{3, Float64}, n)
-directions ./= norm.(directions)
-total_weights = rand(n)
 
+function rand_sph(n)
+    theta = acos.(2. *rand(n).-1)
+    phi = 2 .* π.*rand(n)
+    return theta, phi
+end
 
-
-photons = DataFrame(position=positions, direction=directions, total_weight=total_weights, module_id=ones(n), wavelength=fill(400, n))
-
-target = make_pone_module(SA_F32[0., 0., 10.], UInt16(1))
+target = POM(SA_F32[0., 0., 10.], UInt16(1))
 medium = make_cascadia_medium_properties(0.95f0)
 source = PointlikeIsotropicEmitter(SA_F32[0., 0., 0.], 0f0, 10000)
 spectrum = Monochromatic(4250f0)
+
+normed_pos = sph_to_cart.(rand_sph(n)...)
+positions = target.shape.radius .* normed_pos .+ Ref(target.shape.position)
+directions = sph_to_cart.(rand_sph(n)...)
+total_weights = ones(n)
+photons = DataFrame(position=positions, direction=directions, total_weight=total_weights, module_id=ones(n), wavelength=fill(600, n))
 
 seed = 1
 
 # Setup propagation
 setup = PhotonPropSetup([source], [target], medium, spectrum, seed)
 
-@profview make_hits_from_photons(photons, setup, RotMatrix3(I))
+hits = make_hits_from_photons(photons, setup, RotMatrix3(I))
+
+hit_normed_pos = (hits[:, :position] .- Ref(target.shape.position)) ./ target.shape.radius
+
+m_accepted_param = HealpixMap{Float64, RingOrder}(16)
+m_all_param = HealpixMap{Float64, RingOrder}(16)
+
+m_accepted_param[:] .= 0
+m_all_param[:] .= 0
+
+pix_id_hit = map(x -> ang2pix(m_accepted_param, vec2ang(x...)...), hit_normed_pos)
+m_accepted_param .+= counts(pix_id_hit, 1:length(m_accepted_param))
+
+pix_id_hit = map(x -> ang2pix(m_all_param, vec2ang(x...)...), normed_pos)
+m_all_param .+= counts(pix_id_hit, 1:length(m_all_param)) 
+
+m_ratio = m_accepted_param / m_all_param
+
+m_ratio
+
+m_ratio[m_all_param .== 0] .= 0
+fig = Figure()
+ax = Axis(fig[1, 1], aspect=2)
+img, mask, anymasked = mollweide(m_ratio)
+hm = heatmap!(ax, img', show_axis = false)
+Colorbar(fig[2, 1], hm, vertical = false, label="Acceptance")
+fig
+
+
+
+unique(pix_id_hit)
+
+any(isfinite.(img))
+
+m_accepted_param
+
+a = zeros(3)
+
+a[[3, 3, 3, 3]] .+=1
+
+a
