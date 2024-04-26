@@ -2,7 +2,8 @@ using JLD2
 using DataFrames
 using ArgParse
 using StatsBase
-using KernelDensityEstimate
+using CairoMakie
+using Distributions
 
 
 function make_hist(data, bins)
@@ -39,4 +40,27 @@ s = ArgParseSettings()
 end
 
 args = parse_args(s)
-bin_table(args)
+
+args = Dict("infile" => "/home/wecapstor3/capn/capn100h/muon_table.jld2")
+table = load(args["infile"])["table"]
+
+table[!, :mean_energy] .= mean.(table[:, :final_energies])
+table[!, :energy_loss] .=broadcast((x,y) -> broadcast(-, x, y), table[:, :initial_energy], table[:, :final_energies])
+
+table[!, :dEE] .= table[:, :energy_loss] ./ ( table[:, :initial_energy])
+
+table[!, :z] .= table[:, :final_energies] ./ ( table[:, :initial_energy])
+
+table
+
+table[15, :]
+ix = 130
+fig, ax, _ = CairoMakie.hist(.-log10.((table[ix, :z])), bins=20, normalization=:pdf)
+d = fit(Gamma, (table[ix, :dEE]))
+lines!(ax, d)
+fig
+
+hist = fit(Histogram, (log10.(table[:, :initial_energy]), log10.(table[:, :distance])), Weights(log10.(table[:, :mean_energy])))
+
+heatmap(hist)
+

@@ -27,8 +27,8 @@ def get_weight(weighter, props):
     LWevent.z = props[10]
     LWevent.total_column_depth = props[11]
 
-    weight = weighter.get_oneweight(LWevent)
-
+    #weight = weighter.get_oneweight(LWevent)
+    weight = weighter(LWevent)
     # this would alert us that something bad is happening 
     if weight==np.nan:
         raise ValueError("Bad Weight!")
@@ -38,7 +38,7 @@ def get_weight(weighter, props):
 
 def run(args):
 
-    xs_folder = "/home/saturn/capn/capn100h/cross-sections/csms_differential_v1.0"
+    xs_folder = "/home/wecapstor3/capn/capn100h/cross-sections/csms_differential_v1.0"
     earthmodel_folder = "/home/hpc/capn/capn100h/repos/LeptonInjector/resources/earthparams/"
 
     flux_params={ 'constant': 10**-18, 'index':-2, 'scale':10**5 }

@@ -1,13 +1,12 @@
 using PhysicsTools
 using Base.Iterators
 using DataFrames
-import PhysicsTools.ProposalInterface: make_propagator, pp
 using StatsBase
 using CairoMakie
 using ArgParse
 using JLD2
 using ProgressBars
-
+import PhysicsTools.ProposalInterface: make_propagator
 
 function propagate_for_distance_energy(energy, distance, nsims)
 
@@ -15,21 +14,17 @@ function propagate_for_distance_energy(energy, distance, nsims)
     direction = [1., 0., 0.]
     final_energies = Float64[]
     propagator = make_propagator(PMuMinus)
+
+    p = Particle(position, direction, 0., energy, 0., PMuMinus)
+    
+
     for _ in 1:nsims
-        initial_state = pp.particle.ParticleState()
-        initial_state.energy = energy * 1E3
-        initial_state.position = pp.Cartesian3D(position[1] * 100, position[2] * 100, position[3] * 100)
-        initial_state.direction = pp.Cartesian3D(direction[1], direction[2], direction[3])
-        initial_state.time = 0
-        
-        secondaries = propagator.propagate(initial_state, max_distance=distance * 100)
-        final_state = secondaries.final_state()
-        push!(final_energies, final_state.energy / 1E3)
+        final_state, stochastic_losses, continuous_losses = propagate_muon(p, propagator=propagator, length=distance)
+        push!(final_energies, final_state.energy)
     end
     return final_energies
 end
     
-
 function make_table(log_energies, log_distances, nsims)
 
     data = DataFrame(:initial_energy => Float64[], :distance => Float64[], :final_energies => Vector{Vector{Float64}}(undef, 0))
@@ -46,7 +41,6 @@ function make_table(args)
     log_distances = args["logdist_min"]:args["logdist_stepsize"]:args["logdist_max"]
     return make_table(log_energies, log_distances, args["nsims"])
 end
-
 
 s = ArgParseSettings()
 
@@ -87,14 +81,7 @@ end
 
 args = parse_args(s)
 table = make_table(args)
-
-
-
-
-#=
-data[!, :energy_loss] .= broadcast((x,y) -> broadcast(-, x, y), data[:, :initial_energy], data[:, :final_energies])
-data[!, :dEdX] .= data[:, :energy_loss] ./ ( data[:, :distance])
-
-data[!, :dEdXE] .= data[:, :energy_loss] ./ ( data[:, :initial_energy] .* data[:, :distance])
-=#
+jldopen(args["outfile"], "w") do file
+    file["table"] = table
+end
 

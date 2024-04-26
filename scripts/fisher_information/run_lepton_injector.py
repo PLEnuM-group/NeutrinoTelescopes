@@ -22,7 +22,7 @@ def select_xs_tag(final1, final2):
 
 def make_injector(final1, final2, n_events):
 
-    xs_folder = "/home/saturn/capn/capn100h/cross-sections/csms_differential_v1.0"
+    xs_folder = "/home/wecapstor3/capn/capn100h/cross-sections/csms_differential_v1.0"
     is_ranged = True
 
     xs_tag = select_xs_tag(final1, final2)
@@ -68,7 +68,10 @@ def run(args):
 
     # specify the output, earth model
 
-    controller.SetEarthModel("Planet", earthmodel_folder)
+    #earth_model = EarthModelService("Planet", earthmodel_folder, ["PREM_mmc"], ["Standard"], "IceSheet", 1600)
+
+    controller.SetEarthModel("Planet", earthmodel_folder, )
+    #controller.SetEarthModel(earth_model)
     controller.NameOutfile(args.outfile)
     controller.NameLicFile(args.outfile_lic)
 
