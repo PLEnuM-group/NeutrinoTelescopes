@@ -2,7 +2,6 @@ module Plotting
 using CairoMakie
 using PhotonPropagation
 using PhysicsTools
-using ...SurrogateModels
 using Flux
 using ParameterSchedulers
 using CUDA
@@ -10,8 +9,10 @@ using Random
 using StaticArrays
 using BSON: @load
 using LinearAlgebra
-using ...Processing
 using DataFrames
+
+using ...Processing
+using ...SurrogateModels
 
 
 export compare_mc_model
@@ -34,7 +35,7 @@ function compare_mc_model(
     feat_buffer = create_input_buffer(first(models)[2], sum(get_pmt_count.(targets)), length(particles))
     out_buffer = create_output_buffer(length(targets))
 
-    samples = sample_multi_particle_event(particles, targets, gpu(first(models)[2]), medium; oversample=oversampling, feat_buffer=feat_buffer, output_buffer=out_buffer)
+    samples = sample_multi_particle_event!(particles, targets, gpu(first(models)[2]), medium; oversample=oversampling, feat_buffer=feat_buffer, output_buffer=out_buffer)
 
     t_geo = calc_tgeo(particles[1], targets[1], medium)
 
@@ -46,6 +47,8 @@ function compare_mc_model(
         hist!(ax, hits[mask, :tres], bins=-20:3:100, color=:orange, normalization=:density, weights=hits[mask, :total_weight]./oversampling)
         hist!(ax, samples[i] .- t_geo .- particles[1].time, bins=-20:3:100, color=:slateblue, normalization=:density, weights=fill(1/oversampling, length(samples[i])))
     end
+
+        linkaxes!(filter(x -> x isa Axis, fig.content)...)
 
     bins = -5:1:100
     hits_per_pmt = combine(groupby(hits, :pmt_id), nrow)
