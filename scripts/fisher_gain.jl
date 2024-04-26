@@ -177,6 +177,7 @@ function calc_fisher(
     event_mask = get_events_in_range(events, targets, fisher_model)
     valid_events = events[event_mask]
     lines = get_detector_lines(detector)
+
     fishers = predict_fisher(valid_events, lines, fisher_model, abs_scale=abs_scale, sca_scale=sca_scale)
     return fishers, event_mask
 end
@@ -212,6 +213,7 @@ struct SingleEventTypeTotalRelativeResolution <: FisherOptimizationMetric end
 struct SingleEventTypePerEventRelativeResolution <: FisherOptimizationMetric end
 struct SingleEventTypeMeanDeviation <: FisherOptimizationMetric end
 struct SingleEventTypePerEventMeanDeviation <: FisherOptimizationMetric end
+struct SingleEventTypePerEventMeanAngularError <: FisherOptimizationMetric end
 struct SingleEventTypeTotalResolutionNoVertex <:  FisherOptimizationMetric end
 struct SingleEventTypeDOptimal <: FisherOptimizationMetric end
 struct SingleEventTypeDNoVertex <: FisherOptimizationMetric end
@@ -237,7 +239,7 @@ end
 
 function get_positional_uncertainty(pos, cov)
     d = MvNormal(pos, cov)
-    smpl = rand(d, 1000)
+    smpl = rand(d, 100)
     dpos = norm.(Ref(pos) .- eachcol(smpl))
     return mean(dpos)
 end
@@ -246,7 +248,7 @@ function get_directional_uncertainty(dir_sph, cov)
     dir_cart = sph_to_cart(dir_sph)
 
     dist = MvNormal(dir_sph, cov)
-    rdirs = rand(dist, 1000)
+    rdirs = rand(dist, 100)
 
     dangles = rad2deg.(acos.(dot.(sph_to_cart.(rdirs[1, :], rdirs[2, :]), Ref(dir_cart))))
     return mean(dangles)
@@ -255,9 +257,13 @@ end
 function evaluate_optimization_metric(::SingleEventTypePerEventMeanDeviation, fishers, events)
     covs = invert_fishers(fishers)
     valid = isposdef.(covs)
+    results = zeros(length(events))
 
-    results = zeros(sum(valid))
-    for (i, (c, e)) in enumerate(zip(covs[valid], events[valid]))
+    for (i, (c, e)) in enumerate(zip(covs, events))
+        if !valid[i]
+            results[i] = NaN
+            continue
+        end
         event_props = get_event_props(e)
         mean_pos_dev = get_positional_uncertainty(event_props[4:6], c[4:6, 4:6])
         mean_ang_dev = get_directional_uncertainty(event_props[2:3], c[2:3, 2:3])
@@ -267,6 +273,25 @@ function evaluate_optimization_metric(::SingleEventTypePerEventMeanDeviation, fi
 
     return results
 end
+
+function evaluate_optimization_metric(::SingleEventTypePerEventMeanAngularError, fishers, events)
+    covs = invert_fishers(fishers)
+    valid = isposdef.(covs)
+    results = zeros(length(events))
+
+    for (i, (c, e)) in enumerate(zip(covs, events))
+        if !valid[i]
+            results[i] = NaN
+            continue
+        end
+        event_props = get_event_props(e)
+        mean_ang_dev = get_directional_uncertainty(event_props[2:3], c[2:3, 2:3])
+        results[i] = mean_ang_dev
+    end
+
+    return results
+end
+
 
 function evaluate_optimization_metric(::SingleEventTypeMeanDeviation, fishers, events)
     m = SingleEventTypePerEventMeanDeviation()
@@ -825,12 +850,12 @@ function setup_fisher_sampler(type)
 end
 
     
-function setup_fisher_surrogate(type)
+function setup_fisher_surrogate(type; max_particles=500, max_targets=70*20)
     model_fname = joinpath(ENV["ECAPSTOR"], "snakemake/fisher_surrogates/fisher_surrogate_$type.bson")
     if occursin("per_string", type)
-        fisher_surrogate = gpu(FisherSurrogateModelPerLine(model_fname))        
+        fisher_surrogate = gpu(FisherSurrogateModelPerLine(model_fname, max_particles, max_targets))        
     else
-        fisher_surrogate = gpu(FisherSurrogateModelPerModule(model_fname))
+        fisher_surrogate = gpu(FisherSurrogateModelPerModule(model_fname, max_particles, max_targets))
     end
     #input_buffer = zeros(8, 20*70*500)
     #diff_cache = FixedSizeDiffCache(input_buffer, 10)
@@ -902,8 +927,6 @@ function combine_proposals_with_current_geo(calc, proposals, proposal_event_mask
 
 end
 
-
-
 function run(type, n_lines_max; extent=1000, n_events=250, same_events=true, seed=42, geo_seed=nothing, inj_radius=400., n_proposals=1000)
     medium = make_cascadia_medium_properties(0.95f0)
     if isnothing(geo_seed)
@@ -942,6 +965,7 @@ function run(type, n_lines_max; extent=1000, n_events=250, same_events=true, see
     metric = SingleEventTypeMeanDeviation()
     #alt_metric = SingleEventTypeDOptimal(events_alt, fisher_model_alt)
 
+    resolution_metric = metric
     calc = FisherCalculator(events, fisher_model)
     calc_alt = FisherCalculator(events_alt, fisher_model_alt)
 
@@ -962,9 +986,7 @@ function run(type, n_lines_max; extent=1000, n_events=250, same_events=true, see
         current_metric = evaluate_optimization_metric(metric, fishers_current, events[mask_current])
 
         all_fishers, valid_mask = combine_proposals_with_current_geo(calc, fisher_line_props, fisher_line_props_masks, fishers_current, mask_current)
-        @show length(valid_mask)
-        @show length(mask_current)
-        metrics_per_pos = evaluate_optimization_metric.(Ref(metric), all_fishers, events[valid_mask])
+        metrics_per_pos = evaluate_optimization_metric.(Ref(metric), all_fishers, Ref(events[mask_current]))
 
         losses = log10.(metrics_per_pos ./ current_metric)
         valid_xys = xys[valid_mask]
@@ -1061,7 +1083,7 @@ function main()
     targets_line = make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 1, DummyTarget)
 
     detector = LineDetector(targets_triang, medium)
-    data = run("per_string_extended", 40, n_events=10000, extent=1200, geo_seed=detector, inj_radius=500.)
+    data = run("per_string_lightsabre", 40, n_events=1000, extent=1200, geo_seed=detector, inj_radius=500.)
     return data
 end
 
@@ -1084,24 +1106,26 @@ targets_single = [
     #make_detector_line(@SVector[sidelen/2, -height, 0f0], 20, 50, 41, DummyTarget),
 ]
 
+targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
+
 medium = make_cascadia_medium_properties(0.95f0)
-detector =  LineDetector(targets_single, medium)
+detector =  LineDetector(targets_hex, medium)
 seed = 42
 
-type = "per_string_extended"
+type = "per_string_lightsabre"
 rng = Random.MersenneTwister(seed)
 same_events = true
 
-radius = 200.
-cylinder = NeutrinoTelescopes.Cylinder(SA[0., 0., -475.], 1100., radius)
-pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
-edist = Dirac(1E4)
-ang_dist = UniformAngularDistribution()
-length_dist = Dirac(0.0)
+cylinder = get_bounding_cylinder(detector)
+pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
+edist = Dirac(1E5)
+ang_dist = LowerHalfSphere()
+length_dist = Dirac(1E4)
 time_dist = Dirac(0.0)
-inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
+inj = SurfaceInjector(CylinderSurface(cylinder), edist, pdist, ang_dist, length_dist, time_dist)
 
-fisher_model, diff_cache = setup_fisher_surrogate(type)
+
+fisher_model, diff_cache = setup_fisher_surrogate(type, max_particles=100000, max_targets=10*20)
 if occursin("per_string", type)        
     alt_type = occursin("extended", type)  ? "per_string_lightsabre" : "per_string_extended"
 else
@@ -1114,34 +1138,37 @@ current_inj = inj
 
 abs_scale = 1.
 sca_scale = 1.
-calc = FisherCalculator(evts, fisher_model)
-metric = SingleEventTypePerEventMeanDeviation()
-
+n_events = 100000
 evts = [rand(rng, current_inj) for _ in 1:n_events]
+calc = FisherCalculator(evts, fisher_model)
+metric = SingleEventTypePerEventMeanAngularError()
+
 fishers_current, mask_current = calc_fisher(calc, current_det, abs_scale=abs_scale, sca_scale=sca_scale)
-covs = invert_fishers(fishers_current)
-
 all_res = evaluate_optimization_metric(metric, fishers_current, evts[mask_current])
+finite_mask = isfinite.(all_res)
 
-plot_resolution_hex(evts[mask_current], all_res, detector)
 
-pos_cov = [c[4:6, 4:6] for c in covs]
-ix = 6
-pos = get_event_props(evts[ix])[4:6]
 
-d = MvNormal(pos, pos_cov[ix])
-smpl = rand(d, 100000)
-dpos = norm.(Ref(pos) .- eachcol(smpl))
+azimuths = Float64[]
+resos = Float64[]
+for (ev, res) in zip(evts[mask_current][finite_mask], all_res[finite_mask])
+    p = first(ev[:particles])
+    p_rel = p.position .- cylinder.center
+    if abs(p_rel[3]) == 1100/2
+        continue
+    end
+    pos_normed = p_rel ./ norm(p_rel)
+    push!(azimuths, cart_to_sph(p.direction)[2])
+    push!(resos, res)
+end
 
-jac = ForwardDiff.gradient(norm, pos)
-var_pos_t = (permutedims(jac) * pos_cov[ix] * permutedims(jac)')[1]
-pos
 
-jac
-sqrt.(diag(pos_cov[ix]))
-sqrt(var_pos_t)
-mean(dpos)
-var_pos_t
+h1 = StatsBase.fit(Histogram, azimuths, 0:0.3:2*π)
+h2 = StatsBase.fit(Histogram, azimuths, Weights(resos), 0:0.3:2*π, )
+
+w = h2.weights ./ h1.weights
+
+stairs(h1.edges[1], [w; w[end]], step=:post)
 
 
 
@@ -1153,7 +1180,8 @@ model = PhotonSurrogate(
 
 input_buffer = create_input_buffer(model, 16*20, 1)
 output_buffer = create_output_buffer(16*20, 100)
-diff_cache = FixedSizeDiffCache(input_buffer, 6)
+diff_cache = DiffCache(input_buffer, 13)
+
 
 hit_generator = SurrogateModelHitGenerator(gpu(model), 200.0, input_buffer, output_buffer)
 
