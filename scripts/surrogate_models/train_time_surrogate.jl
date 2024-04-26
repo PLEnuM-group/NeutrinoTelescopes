@@ -72,10 +72,6 @@ end
 
 data = (tres=hits, label=features)
 
-features
-
-length(hits)*32 / 8 / 1024 / 1024
-
 model_type = parsed_args[:perturb_medium] ? AbsScaRQNormFlowHParams : RQNormFlowHParams
 
 hparams = model_type(
@@ -83,7 +79,7 @@ hparams = model_type(
     batch_size=32768,
     mlp_layers = 3,
     mlp_layer_size = 862,
-    lr = 0.001,
+    lr = 0.0005,
     lr_min = 1E-7,
     epochs = 100,
     dropout = 0.2,

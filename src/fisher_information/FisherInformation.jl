@@ -120,8 +120,7 @@ function _calc_single_fisher_matrix(
     # Test sampling each dimension independently
     targets_range = get_detector_modules(detector)[range_mask]  
 
-   
-   
+     
     p::Particle = event[:particles][1]
 
     if particle_shape(p) == Track()
