@@ -22,7 +22,7 @@ type = "extended"
 
 model = PhotonSurrogate(
 joinpath(workdir, "snakemake/time_surrogate_perturb/$type/amplitude_1_FNL.bson"),
-joinpath(workdir, "snakemake/time_surrogate_perturb/$type/time_uncert_0_2_FNL.bson")
+joinpath(workdir, "snakemake/time_surrogate_perturb/$type/time_uncert_0_1_FNL.bson")
 )
 
 input_buffer = create_input_buffer(model, 16, 1)
