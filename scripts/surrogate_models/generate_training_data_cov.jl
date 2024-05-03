@@ -15,6 +15,8 @@ using DataFrames
 using DataFrames
 using ArgParse
 
+
+
 function make_cascade_injector(vol)
     pdist = CategoricalSetDistribution(OrderedSet([PEPlus, PEMinus]), [0.5, 0.5])
     edist = Pareto(1, 1E3)
@@ -54,11 +56,10 @@ function generate_training_data(args)
         input_buffer = create_input_buffer(model, 16, 1)
         output_buffer = create_output_buffer(16, 100)
     end
-
-    
+   
 
    
-    diff_cache = FixedSizeDiffCache(input_buffer, 6)
+    diff_cache = DiffCache(input_buffer, 13)
     rng = MersenneTwister(args["seed"])
 
     training_data = DataFrame(
@@ -95,7 +96,6 @@ function generate_training_data(args)
         # If we evaluate an entire string, use position SA[0., 0., -475.] as reference
         if args["per_string"]
             raw_input = FisherSurrogate.calculate_model_input([p], [[0f0, 0f0]], transformations, abs_scale=abs_scale, sca_scale=sca_scale)[:, 1]
-            @show size(raw_input)
         else
             raw_input = NeuralFlowSurrogate.create_flow_input(p, targets[1], transformations)
         end
