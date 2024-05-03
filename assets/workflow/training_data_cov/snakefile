@@ -7,26 +7,17 @@ SCRIPT_DIR = "/home/hpc/capn/capn100h/.julia/dev/NeutrinoTelescopes/scripts/surr
 
 NEVENTS_CASC = 7500
 NEVENTS_TRACKS = 15000
+TIME_UNCERT = 2
 
-EVENT_TYPES = ["per_string_lightsabre", "per_string_extended"]
+EVENT_TYPES = ["lightsabre", "extended"]
 SEEDS = range(200)
 
 rule all:
-    input: [expand(os.path.join(OUTDIR, "training_data_cov/training_data_{event_type}_{seed}.jld2"), event_type=EVENT_TYPES, seed=SEEDS)]
-
-rule proc:
-    input: [os.path.join(OUTDIR, "time_surrogate_perturb/{event_type}/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate_perturb/{event_type}/time_uncert_2_1_FNL.bson")]
-    output: os.path.join(OUTDIR, "training_data_cov/training_data_{event_type}_{seed}.jld2")
-    resources:
-        slurm_extra="--gres=gpu:1",
-        clusters="tinygpu",
-        time="4:00:00"
-    shell: 
-        "{JULIA_BIN} {SCRIPT_DIR}/generate_training_data_cov.jl --model_path_amp {input[0]} --model_path_time {input[1]} --nevents {NEVENTS} --type {wildcards.event_type} --outfile {output} --seed {wildcards.seed} --perturb_medium"
+    input: [expand(os.path.join(OUTDIR, "training_data_cov/training_data_per_string_{event_type}_{seed}_{time_uncert}.jld2"), event_type=EVENT_TYPES, seed=SEEDS, time_uncert=TIME_UNCERT)]
 
 rule proc_per_string:
-    input: [os.path.join(OUTDIR, "time_surrogate_perturb/{event_type}/amplitude_1_FNL.bson"), os.path.join(OUTDIR, "time_surrogate_perturb/{event_type}/time_uncert_2_1_FNL.bson")]
-    output: os.path.join(OUTDIR, "training_data_cov/training_data_per_string_{event_type}_{seed}.jld2")
+    input: [os.path.join(OUTDIR, "time_surrogate_perturb/{event_type}/amplitude_2_FNL.bson"), os.path.join(OUTDIR, "time_surrogate_perturb/{event_type}/time_uncert_{time_uncert}_1_FNL.bson")]
+    output: os.path.join(OUTDIR, "training_data_cov/training_data_per_string_{event_type}_{seed}_{time_uncert}.jld2")
     params:
         n_events = lambda wildcards: NEVENTS_TRACKS if wildcards.event_type == "lightsabre" else NEVENTS_CASC
     resources:
@@ -35,3 +26,14 @@ rule proc_per_string:
         time="4:00:00"
     shell: 
         "{JULIA_BIN} {SCRIPT_DIR}/generate_training_data_cov.jl --model_path_amp {input[0]} --model_path_time {input[1]} --nevents {params.n_events} --type {wildcards.event_type} --outfile {output} --seed {wildcards.seed} --per_string --perturb_medium"
+
+
+rule proc:
+    input: [os.path.join(OUTDIR, "time_surrogate_perturb/{event_type}/amplitude_2_FNL.bson"), os.path.join(OUTDIR, "time_surrogate_perturb/{event_type}/time_uncert_{time_uncert}_1_FNL.bson")]
+    output: os.path.join(OUTDIR, "training_data_cov/training_data_{event_type}_{seed}_{time_uncert}.jld2")
+    resources:
+        slurm_extra="--gres=gpu:1",
+        clusters="tinygpu",
+        time="4:00:00"
+    shell: 
+        "{JULIA_BIN} {SCRIPT_DIR}/generate_training_data_cov.jl --model_path_amp {input[0]} --model_path_time {input[1]} --nevents {NEVENTS} --type {wildcards.event_type} --outfile {output} --seed {wildcards.seed} --perturb_medium"
