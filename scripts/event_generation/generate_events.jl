@@ -14,15 +14,28 @@ using DataFrames
 using Arrow
 using JLD2
 using CUDA
+using Unitful
+
+using PhysicalConstants.CODATA2018: c_0
+
+c_vac = ustrip(u"m/ns", c_0)
+
+
 
 
 workdir = ENV["ECAPSTOR"]
 
-model = PhotonSurrogate(
-    joinpath(workdir, "snakemake/time_surrogate_perturb/lightsabre/amplitude_1_FNL.bson"),
+model_lightsabre = PhotonSurrogate(
+    joinpath(workdir, "snakemake/time_surrogate_perturb/lightsabre/amplitude_2_FNL.bson"),
     joinpath(workdir, "snakemake/time_surrogate_perturb/lightsabre/time_uncert_0_1_FNL.bson")
 )
-model = gpu(model)
+model_lightsabre = gpu(model_lightsabre)
+
+model_extended = PhotonSurrogate(
+    joinpath(workdir, "snakemake/time_surrogate_perturb/extended/amplitude_2_FNL.bson"),
+    joinpath(workdir, "snakemake/time_surrogate_perturb/extended/time_uncert_0_1_FNL.bson")
+)
+model_extended = gpu(model_extended)
 
 targets_hex = make_n_hex_cluster_detector(7, 50, 20, 50)
 
@@ -31,42 +44,96 @@ sca_scale = 1f0
 medium = make_cascadia_medium_properties(0.95f0, abs_scale, sca_scale)
 d = LineDetector(targets_hex, medium)
 cylinder = get_bounding_cylinder(d)
-hit_generator = SurrogateModelHitGenerator(model, 200.0, d)
-
+hit_generator_lightsabre = SurrogateModelHitGenerator(model_lightsabre, 200.0, d)
+hit_generator_extended = SurrogateModelHitGenerator(model_extended, 200.0, d)
 li_file = "/home/wecapstor3/capn/capn100h/snakemake/leptoninjector-lightsabre-0.hd5"
 
 injector = LIInjector(li_file, drop_starting=false)
-event = rand(injector)
+prop_mu_minus = ProposalInterface.make_propagator(PMuMinus)
+prop_mu_plus = ProposalInterface.make_propagator(PMuPlus)
+targets = get_detector_modules(d)
 
-muon = event[:particles][1]
-muon_propagated, losses = propagate_muon(muon)
+event_collection = EventCollection(injector)
+for _ in 1:100
+    event = rand(injector)
+    muon = event[:particles][1]
+    isec = get_intersection(cylinder, muon)
 
-muon
+    if isnothing(isec.first) || isec.first < 0
+        event[:hits] = DataFrame()
+        event[:total_hits] = 0
+        push!(event_collection, event)
+        continue
+    end
 
-muon_propagated
-muon
-stochastic_losses = [loss for loss in losses if loss.energy > 50 ]
-continuous_losses = [loss for loss in losses if loss.energy <= 50 ]
-continuous_energy = sum(loss.energy for loss in continuous_losses)
+    this_prop = muon.type == PMuMinus ? prop_mu_minus : prop_mu_plus
+    muon_propagated, stoch, cont = propagate_muon(muon, propagator=this_prop, length=isec.second)
 
-lightsabre = Particle(muon.position, muon.direction, muon.time, continuous_energy, 1E4, muon.type)
-any(get_modules_in_range([lightsabre; stochastic_losses], d, hit_generator.max_valid_distance))
+    stochastic_losses::Vector{Particle} = [loss for loss in stoch if loss.energy > 50 ]
+    continuous_losses = vcat([loss for loss in stoch if loss.energy <= 50 ], cont)
+
+    if !isempty(stochastic_losses)
+        hits, mask = generate_hit_times(stochastic_losses, d, hit_generator_extended; abs_scale=abs_scale, sca_scale=sca_scale)
+        hits_stoch = hit_list_to_dataframe(hits, targets, mask)
+    else
+        hits_stoch = DataFrame()
+    end
+
+    if !isempty(continuous_losses)
+        ls_muon = Particle(
+            muon.position .+  muon.direction .* isec.first,
+            muon.direction,
+            muon.time .+ isec.first / c_vac,
+            sum(loss.energy for loss in continuous_losses),
+            1E4,
+            muon.type)
+        hits, mask = generate_hit_times([ls_muon], d, hit_generator_lightsabre; abs_scale=abs_scale, sca_scale=sca_scale)
+        hits_ls = hit_list_to_dataframe(hits, targets, mask)
+    else
+        hits_ls = DataFrame()
+    end
+    
+    hits = vcat(hits_stoch, hits_ls)
+
+    event[:hits] = hits
+    event[:total_hits] = nrow(hits)
+
+    push!(event_collection, event)
+end
 
 
-hits, mask = generate_hit_times([lightsabre; stochastic_losses], d, hit_generator; abs_scale=abs_scale, sca_scale=sca_scale)
-hit_list_to_dataframe(hits, get_detector_modules(d), mask)
+hits = event_collection[argmax([e[:total_hits] for e in event_collection])][:hits]
+
+grpd = groupby(hits, [:module_id, :pmt_id])
+hits_per_mod = combine(grpd, nrow)
+mrow = argmax(hits_per_mod.nrow)
+
+hits_max_mod = grpd[(module_id=hits_per_mod[mrow, :module_id], pmt_id=hits_per_mod[mrow, :pmt_id])]
+
+hist(hits_max_mod[:, :time])
+
+hits_max_mod = groupby(hits, [:module_id])[(;module_id=hits_per_mod[mrow, :module_id])]
 
 
+all_lc_triggers = []
+
+for (groupn, group) in pairs(groupby(hits, [:module_id]))
+
+    lc_this_mod = lc_trigger(sort(group, :time))
+    if isempty(lc_this_mod)
+        continue
+    end
+    push!(all_lc_triggers, lc_this_mod)
+end
 
 
-
-
+module_trigger(reduce(vcat, all_lc_triggers))
 
 
 
 
 #pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
-pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
+ pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
 edist = Pareto(1, 1E4) + 1E4
 #ang_dist = UniformAngularDistribution()
 ang_dist = LowerHalfSphere()

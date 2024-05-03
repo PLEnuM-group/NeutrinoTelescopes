@@ -75,11 +75,21 @@ function get_bounding_cylinder(d::Detector; padding_top=50., padding_side=50.)
     return Cylinder(SVector{3, Float64}(center_xyz), height.+padding_top, radius.+padding_side)
 end
 
+"""
+    make_detector_line(position, n_modules, vert_spacing, module_id_start=1, mod_constructor=POM)
 
+Creates a detector line.
+# Arguments
+    - `position`: Position of the topmost module
+    - `n_modules`: Number of modules on the line
+    - `vert_spacing`: Vertical module spacing
+    - `module_id_start=1`: Id of the first (topmost) module (optional)
+    - `mod_constructor=POM`: Function to initialize the module (optical)
+"""
 function make_detector_line(position, n_modules, vert_spacing, module_id_start=1, mod_constructor=POM)
 
     line::Vector{mod_constructor} = [
-        mod_constructor(SVector{3}(position .- (i - 1) .* [0, 0, vert_spacing]), i + module_id_start)
+        mod_constructor(SVector{3}(position .- (i - 1) .* [0, 0, vert_spacing]), i + module_id_start - 1)
         for i in 1:n_modules
     ]
     return line
