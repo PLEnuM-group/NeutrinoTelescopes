@@ -155,8 +155,6 @@ likelihoods[!, :p_value_ks_p] .= pvalue.(likelihoods[:, :p_value_ks] )
 combine(groupby(likelihoods, [:amp, :time]), :p_value_ks_p => median)
 
 hist(likelihoods[likelihoods.amp .== 3 .&& likelihoods.time .== 2, :p_value_ks_p])
-
-
 dir_sph = cart_to_sph.(likelihoods.particle_dir)
 
 
