@@ -67,7 +67,7 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 RUN pip install proposal
 RUN pip install jupyterlab awkward numba seaborn tqdm jupyterlab_code_formatter black scipy numpy h5py
 
-RUN curl -fsSL https://install.julialang.org | sh -s -- --yes --default-channel 1.9
+RUN curl -fsSL https://install.julialang.org | sh -s -- --yes --default-channel release
 ENV PATH="/root/.juliaup/bin:$PATH"
 
 RUN mkdir -p /opt/SQuIDS && \
@@ -79,7 +79,7 @@ RUN mkdir -p /opt/SQuIDS && \
     git clone https://github.com/arguelles/nuSQuIDS.git . && \
     ./configure --with-python-bindings --with-squids=/usr/local/ && \
     make && make install && LD_LIBRARY_PATH=/opt/conda/lib/:$LD_LIBRARY_PATH make python && make python-install && \
-    julia -e "using Pkg; Pkg.Registry.add(\"General\"); Pkg.Registry.add(RegistrySpec(url=\"https://github.com/PLEnuM-group/julia-registry.git\")); Pkg.add([\"PhysicsTools\", \"PhotonPropagation\"]); Pkg.add(url=\"https://github.com/PLEnuM-group/NeutrinoTelescopes.git#dev\");"
+    julia -e "using Pkg; Pkg.Registry.add(\"General\"); Pkg.Registry.add(RegistrySpec(url=\"https://github.com/PLEnuM-group/julia-registry.git\")); Pkg.add([\"PhysicsTools\", \"PhotonPropagation\"]); Pkg.add(url=\"https://github.com/PLEnuM-group/NeutrinoTelescopes.git\");"
 
 
 RUN echo "export PATH=${VIRTUAL_ENV}/bin:${PATH}" >> /root/.bashrc && \
