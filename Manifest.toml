@@ -1,6 +1,6 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.10.2"
+julia_version = "1.10.3"
 manifest_format = "2.0"
 project_hash = "8e812b170858c095eaaffb213d31a3687119a72d"
 
@@ -439,7 +439,7 @@ weakdeps = ["Dates", "LinearAlgebra"]
 [[deps.CompilerSupportLibraries_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
-version = "1.1.0+0"
+version = "1.1.1+0"
 
 [[deps.CompositionsBase]]
 git-tree-sha1 = "802bb88cd69dfd1509f6670416bd4434015693ad"
@@ -1745,9 +1745,9 @@ version = "0.2.3"
 
 [[deps.PhysicsTools]]
 deps = ["Conda", "DataStructures", "Distributions", "FastGaussQuadrature", "LinearAlgebra", "Logging", "PhysicalConstants", "Pkg", "Polynomials", "PyCall", "Random", "Reexport", "Roots", "StaticArrays"]
-path = "/home/hpc/capn/capn100h/.julia/dev/PhysicsTools"
+git-tree-sha1 = "49119177cec5e72a55c14666eb0a5ae0d307b2cc"
 uuid = "aacfb283-0df6-49c4-85a4-270b72c3b0a9"
-version = "0.5.4"
+version = "0.5.5"
 
 [[deps.Pipe]]
 git-tree-sha1 = "6842804e7867b115ca9de748a0cf6b364523c16d"
