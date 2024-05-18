@@ -1,10 +1,9 @@
 module Weighting
-
+#=
 export get_total_prob, get_transmission_prob, get_interaction_prob, get_xsec, get_total_xsec
 export get_interaction_coeff
 export WeighterPySpline
 
-using PyCall
 using PhysicsTools
 
 const np = PyNULL()
@@ -127,5 +126,5 @@ function get_transmission_prob(w::Weighter, ::Type{T}, log10_energy, cos_theta) 
 end
 
 get_total_prob(w, ptype, int_type, log10_energy, cos_theta, length)  = get_transmission_prob(w, ptype, log10_energy, cos_theta) * get_interaction_prob(w, int_type, log10_energy, length)
-
+=#
 end
