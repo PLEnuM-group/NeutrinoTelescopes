@@ -1,10 +1,10 @@
 
 module SurrogateModelHits
-
-using ..PhotonSurrogates
 using ...Processing
 using ...EventGeneration.Detectors
 using ...EventGeneration
+
+using PhotonSurrogateModel
 using PhotonPropagation
 using Random
 using LinearAlgebra
@@ -31,29 +31,13 @@ function SurrogateModelHitGenerator(model, max_valid_distance, detector::Detecto
     return SurrogateModelHitGenerator(model, max_valid_distance, input_buffer, output_buffer)
 end
 
-
-function create_input_buffer(input_size::Integer, n_det::Integer, max_particles=500)
-    return zeros(Float32, input_size, n_det*max_particles)
-end
-
-function create_input_buffer(model::PhotonSurrogate, n_det::Integer, max_particles=500)
-    input_size = size(model.time_model.embedding.layers[1].weight, 2)
-    return create_input_buffer(input_size, n_det, max_particles)
-end
-
-function create_input_buffer(model_or_det, detector::Detector, max_particles=500)
+function PhotonSurrogateModel.create_input_buffer(model_or_det, detector::Detector, max_particles=500)
     modules = get_detector_modules(detector)
     return create_input_buffer(model_or_det, get_pmt_count(eltype(modules))*length(modules), max_particles)
 end
 
 
-function create_output_buffer(n_det::Integer, expected_hits_per=100)
-    buffer = VectorOfArrays{Float64, 1}()
-    sizehint!(buffer, n_det, (expected_hits_per, ))
-    return buffer
-end
-
-function create_output_buffer(detector::Detector, expected_hits_per=100)
+function PhotonSurrogateModel.create_output_buffer(detector::Detector, expected_hits_per=100)
     modules = get_detector_modules(detector)
     n_pmts = get_pmt_count(eltype(modules))*length(modules)
     return create_output_buffer(n_pmts, expected_hits_per)

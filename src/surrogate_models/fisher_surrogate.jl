@@ -2,7 +2,7 @@ module FisherSurrogate
 
 using Flux
 using BSON
-using ..PhotonSurrogates: create_model_input!, apply_normalizer, Normalizer, HyperParams, create_mlp_embedding
+using PhotonSurrogateModel: create_model_input!, apply_normalizer, Normalizer, HyperParams, create_mlp_embedding
 using ..SurrogateModelHits
 using ...EventGeneration
 using LinearAlgebra
