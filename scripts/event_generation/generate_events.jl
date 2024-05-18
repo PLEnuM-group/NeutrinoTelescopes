@@ -1,7 +1,8 @@
 using NeutrinoTelescopes
 using PhotonPropagation
 using PhysicsTools
-using PMTSimulation
+using PhotonSurrogateModel
+using NeutrinoSurrogateModelData
 using CairoMakie
 using Distributions
 using Random
@@ -15,192 +16,325 @@ using Arrow
 using JLD2
 using CUDA
 using Unitful
-
+using HDF5
+using Format
 using PhysicalConstants.CODATA2018: c_0
+using ProgressLogging
+using Base.Iterators
+using StatsBase
+using Base.Iterators
+using LinearAlgebra
+using PreallocationTools
+using ProposalInterface
+
+
+function get_events_in_range(events, targets, model)
+    events_range_mask = falses(length(events))
+    for evix in eachindex(events)
+        for t in targets
+            @views if FisherSurrogate.is_in_range(first(events[evix][:particles]), t.shape.position[1:2], model)
+                events_range_mask[evix] = true
+                break
+            end
+        end
+    end
+    return events_range_mask
+end
+
+
+function get_event_props(event::Event)
+    p = first(event[:particles])
+    dir_sph = cart_to_sph(p.direction)
+    shift_to_closest_approach(p, [0., 0., 0.])
+    return [log10(p.energy), dir_sph..., p.position...]
+end
+
+function get_directional_uncertainty(dir_sph, cov)
+    dir_cart = sph_to_cart(dir_sph)
+
+    dist = MvNormal(dir_sph, cov)
+    rdirs = rand(dist, 100)
+
+    dangles = rad2deg.(acos.(dot.(sph_to_cart.(rdirs[1, :], rdirs[2, :]), Ref(dir_cart))))
+    return mean(dangles)
+end
+
+function calc_dir_uncert(fishers, events)
+    covs = invert_fishers(fishers)
+    valid = isposdef.(covs)
+    results = zeros(length(events))
+
+    for (i, (c, e)) in enumerate(zip(covs, events))
+        if !valid[i]
+            results[i] = NaN
+            continue
+        end
+        event_props = get_event_props(e)
+        mean_ang_dev = get_directional_uncertainty(event_props[2:3], c[2:3, 2:3])
+        results[i] = mean_ang_dev
+    end
+
+    return results
+end
+
+function calc_muon_energy_at_entry(muon, t_entry, stoch, cont)
+    energy_loss = 0
+    for p in stoch
+        t_stoch = mean((p.position - muon.position) ./ muon.direction)
+        if t_stoch < t_entry
+            energy_loss += p.energy
+        else
+            break
+        end
+    end
+
+    for p in cont
+        t_cont = mean((p.position - muon.position) ./ muon.direction)
+        if t_cont < t_entry
+            energy_loss += p.energy
+        else
+            break
+        end
+    end
+
+    return muon.energy - energy_loss
+end
+
 
 c_vac = ustrip(u"m/ns", c_0)
 
-
-
-
 workdir = ENV["ECAPSTOR"]
 
-model_lightsabre = PhotonSurrogate(
-    joinpath(workdir, "snakemake/time_surrogate_perturb/lightsabre/amplitude_2_FNL.bson"),
-    joinpath(workdir, "snakemake/time_surrogate_perturb/lightsabre/time_uncert_0_1_FNL.bson")
-)
-model_lightsabre = gpu(model_lightsabre)
+model_lightsabre = gpu(PhotonSurrogate(lightsabre_time_model(2)...))
+model_extended = gpu(PhotonSurrogate(em_cascade_time_model(2)...))
 
-model_extended = PhotonSurrogate(
-    joinpath(workdir, "snakemake/time_surrogate_perturb/extended/amplitude_2_FNL.bson"),
-    joinpath(workdir, "snakemake/time_surrogate_perturb/extended/time_uncert_0_1_FNL.bson")
-)
-model_extended = gpu(model_extended)
-
-targets_hex = make_n_hex_cluster_detector(7, 50, 20, 50)
+targets_hex = make_n_hex_cluster_detector(7, 80, 20, 50)
 
 abs_scale = 1f0
 sca_scale = 1f0
 medium = make_cascadia_medium_properties(0.95f0, abs_scale, sca_scale)
 d = LineDetector(targets_hex, medium)
-cylinder = get_bounding_cylinder(d)
+cylinder = get_bounding_cylinder(d, padding_side=75, padding_top=75)
 hit_generator_lightsabre = SurrogateModelHitGenerator(model_lightsabre, 200.0, d)
 hit_generator_extended = SurrogateModelHitGenerator(model_extended, 200.0, d)
-li_file = "/home/wecapstor3/capn/capn100h/snakemake/leptoninjector-lightsabre-0.hd5"
+li_file = "/home/wecapstor3/capn/capn100h/leptoninjector/muons.hd5"
+
 
 injector = LIInjector(li_file, drop_starting=false)
 prop_mu_minus = ProposalInterface.make_propagator(PMuMinus)
 prop_mu_plus = ProposalInterface.make_propagator(PMuPlus)
 targets = get_detector_modules(d)
 
-event_collection = EventCollection(injector)
-for _ in 1:100
-    event = rand(injector)
-    muon = event[:particles][1]
+event_collection = EventCollection()
+
+for ev in take(injector, 10000)
+    muon = ev[:particles][1]
     isec = get_intersection(cylinder, muon)
 
-    if isnothing(isec.first) || isec.first < 0
-        event[:hits] = DataFrame()
-        event[:total_hits] = 0
-        push!(event_collection, event)
+    # THROW OUT STARTING MUONS
+    if isnothing(isec.first) || isec.first < 0 || muon.energy < 1
+        push!(event_collection, ev)
         continue
     end
 
     this_prop = muon.type == PMuMinus ? prop_mu_minus : prop_mu_plus
-    muon_propagated, stoch, cont = propagate_muon(muon, propagator=this_prop, length=isec.second)
+    muon_propagated, stoch, cont = propagate_muon(muon, propagator=this_prop, length=isec.first)
+
+    muon_energy_at_entry = calc_muon_energy_at_entry(muon, isec.first, stoch, cont)
 
     stochastic_losses::Vector{Particle} = [loss for loss in stoch if loss.energy > 50 ]
     continuous_losses = vcat([loss for loss in stoch if loss.energy <= 50 ], cont)
 
-    if !isempty(stochastic_losses)
-        hits, mask = generate_hit_times(stochastic_losses, d, hit_generator_extended; abs_scale=abs_scale, sca_scale=sca_scale)
-        hits_stoch = hit_list_to_dataframe(hits, targets, mask)
-    else
-        hits_stoch = DataFrame()
-    end
+    ev[:cascade_emitters] = stochastic_losses
+    
+    ls_emitters::Vector{Particle} = []
 
-    if !isempty(continuous_losses)
+    if !isempty(continuous_losses) && isec.first > 0
+        cont_loss = sum(loss.energy for loss in continuous_losses)
         ls_muon = Particle(
             muon.position .+  muon.direction .* isec.first,
             muon.direction,
             muon.time .+ isec.first / c_vac,
-            sum(loss.energy for loss in continuous_losses),
+            cont_loss,
             1E4,
             muon.type)
-        hits, mask = generate_hit_times([ls_muon], d, hit_generator_lightsabre; abs_scale=abs_scale, sca_scale=sca_scale)
-        hits_ls = hit_list_to_dataframe(hits, targets, mask)
-    else
-        hits_ls = DataFrame()
+        push!(ls_emitters, ls_muon)
     end
-    
-    hits = vcat(hits_stoch, hits_ls)
+      
+    ev[:lightsabre_emitters] = ls_emitters
+    ev[:e_entry] = muon_energy_at_entry
+
+    muon_entry = Particle(muon.position + muon.direction * isec.first, muon.direction, muon.time + isec.first / c_vac, muon_energy_at_entry, isec.second - isec.first, muon.type)
+
+    ev[:muon_at_entry] = muon_entry
+    push!(event_collection, ev)
+end
+
+
+@progress for event in event_collection
+    if haskey(event, :cascade_emitters)
+
+        stochastic_losses = event[:cascade_emitters]
+        lightsabre_losses = event[:lightsabre_emitters]
+        muon_entry = event[:muon_at_entry]
+
+
+        println("Event $(event.id) with $(length(stochastic_losses)) stochastic and $(length(lightsabre_losses)) lightsabre emitters")
+
+        if !isempty(stochastic_losses)
+            hits, mask = generate_hit_times(stochastic_losses, d, hit_generator_extended; abs_scale=abs_scale, sca_scale=sca_scale, device=cpu)
+            hits_stoch = hit_list_to_dataframe(hits, targets, mask)
+        else
+            hits_stoch = DataFrame(time = Float64[], module_id = Int64[], pmt_id = Int64[])
+        end
+
+        if !isempty(lightsabre_losses)
+            hits, mask = generate_hit_times(lightsabre_losses, d, hit_generator_lightsabre; abs_scale=abs_scale, sca_scale=sca_scale, device=cpu)
+            hits_ls = hit_list_to_dataframe(hits, targets, mask)
+        else
+            hits_ls = DataFrame(time = Float64[], module_id = Int64[], pmt_id = Int64[])
+        end
+
+        hits_lightsabre, mask = generate_hit_times([muon_entry], d, hit_generator_lightsabre; abs_scale=abs_scale, sca_scale=sca_scale, device=cpu)
+        hits_lightsabre = hit_list_to_dataframe(hits_lightsabre, targets, mask)
+
+        hits = vcat(hits_stoch, hits_ls)
+        event[:cont_hits] = hits_ls
+        event[:stochastic_hits] = hits_stoch
+        event[:lightsabre_hits] = hits_lightsabre
+    else
+        hits = DataFrame(time = Float64[], module_id = Int64[], pmt_id = Int64[])
+    end
 
     event[:hits] = hits
     event[:total_hits] = nrow(hits)
-
-    push!(event_collection, event)
 end
 
+for event in event_collection
 
-hits = event_collection[argmax([e[:total_hits] for e in event_collection])][:hits]
+    module_triggers = ModuleCoincTrigger[]
 
-grpd = groupby(hits, [:module_id, :pmt_id])
-hits_per_mod = combine(grpd, nrow)
-mrow = argmax(hits_per_mod.nrow)
+    if haskey(event, :hits) && nrow( event[:hits]) > 0
+        hits = event[:hits]
+        all_lc_triggers = []
+    
+        for (groupn, group) in pairs(groupby(hits, [:module_id]))
 
-hits_max_mod = grpd[(module_id=hits_per_mod[mrow, :module_id], pmt_id=hits_per_mod[mrow, :pmt_id])]
-
-hist(hits_max_mod[:, :time])
-
-hits_max_mod = groupby(hits, [:module_id])[(;module_id=hits_per_mod[mrow, :module_id])]
-
-
-all_lc_triggers = []
-
-for (groupn, group) in pairs(groupby(hits, [:module_id]))
-
-    lc_this_mod = lc_trigger(sort(group, :time))
-    if isempty(lc_this_mod)
-        continue
+            lc_this_mod = lc_trigger(sort(group, :time))
+            if isempty(lc_this_mod)
+                continue
+            end
+            push!(all_lc_triggers, lc_this_mod)
+        end
+        
+        if !isempty(all_lc_triggers)
+            module_triggers = module_trigger(reduce(vcat, all_lc_triggers))
+        end            
     end
-    push!(all_lc_triggers, lc_this_mod)
+
+    event[:module_triggers] = module_triggers
+end
+
+events = [event for event in event_collection if haskey(event, :muon_at_entry) && event[:muon_at_entry].energy > 100]
+
+event = events[1]
+
+input_buffer = create_input_buffer(model_lightsabre, d, 1)
+#output_buffer = create_output_buffer(d, 100)
+diff_cache = DiffCache(input_buffer, 13)
+
+fishers_calc = [calc_fisher_matrix(event[:muon_at_entry], d, hit_generator_lightsabre, cache=diff_cache, n_samples=100)[1] for event in events]
+dir_uncert = calc_dir_uncert(fishers_calc, events)
+
+
+
+type = "per_string_lightsabre"
+model_fname = joinpath(ENV["ECAPSTOR"], "snakemake/fisher_surrogates/fisher_surrogate_$type.bson")
+max_particles = 1000
+max_targets = 70*20
+if occursin("per_string", type)
+    fisher_surrogate = gpu(FisherSurrogateModelPerLine(model_fname, max_particles, max_targets))        
+else
+    fisher_surrogate = gpu(FisherSurrogateModelPerModule(model_fname, max_particles, max_targets))
+end
+
+det_lines = get_detector_lines(d)
+
+event_mask = get_events_in_range(events, targets, fisher_surrogate)
+valid_events = events[event_mask]
+fishers_pred = predict_fisher(valid_events, det_lines, fisher_surrogate, abs_scale=1., sca_scale=1.)
+dir_uncert_pred = calc_dir_uncert(fishers_pred, valid_events)
+
+
+energies = [e[:muon_at_entry].energy for e in valid_events]
+zeniths = [e[:muon_at_entry].direction[3] for e in valid_events]
+lengths = [e[:muon_at_entry].length for e in valid_events]
+
+fig = Figure()
+ax = Axis(fig[1,1])
+scatter!(ax, log10.(energies), dir_uncert)
+scatter!(ax, log10.(energies), dir_uncert_pred)
+ylims!(0, 2)
+fig
+
+
+energy_bins = 2:0.2:7
+e_center = (energy_bins[2:end] .+ energy_bins[1:end-1]) ./ 2
+median_res = Float64[]
+
+for i in eachindex(energy_bins)
+    if i == length(energy_bins)
+        break
+    end
+
+    low = energy_bins[i]
+    high = energy_bins[i+1]
+
+    mask = (10 .^low .<= energies) .&& (energies .< 10 .^high) .&& (lengths .> 100)
+
+    if any(mask)
+        push!(median_res, median(dir_uncert[mask]))
+    else
+        push!(median_res, 0)
+    end
 end
 
 
-module_trigger(reduce(vcat, all_lc_triggers))
+fig, ax, _ = CairoMakie.lines(e_center, median_res)
+ylims!(ax, 1E-3, 1)
+fig
 
-
-
-
-#pdist = CategoricalSetDistribution(OrderedSet([PEMinus, PEPlus]), [0.5, 0.5])
- pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
-edist = Pareto(1, 1E4) + 1E4
-#ang_dist = UniformAngularDistribution()
-ang_dist = LowerHalfSphere()
-length_dist = Dirac(0.0)
-time_dist = Dirac(0.0)
-#inj = VolumeInjector(cylinder, edist, pdist, ang_dist, length_dist, time_dist)
-inj = SurfaceInjector(CylinderSurface(cylinder), edist, pdist, ang_dist, length_dist, time_dist)
-model = gpu(model)
-hit_generator = SurrogateModelHitGenerator(model, 200.0, d)
-
-
-
-events = Event[]
-event_hits = []
-for _ in 1:10
-    event = rand(inj)
-    hits = generate_hit_times!(event, d, hit_generator)
-    push!(events, event)
-
-    ev_d = Dict(:hits => event[:photon_hits], :mc_truth=>JSON3.write(event[:particles][1]))
-
-    push!(event_hits, ev_d)
-end
-
-events
-
-
-save(joinpath(workdir, "test_muons.jld2"), Dict("event_hits" => event_hits, "geo" => get_detector_pmts(d)))
-
-data = load(joinpath(workdir, "test_cascades.jld2"))
-
-data["event_hits"]
-
-event
-groups = groupby(hits, [:pmt_id, :module_id])
-
-function unfold_per_module(hits)
-    min_time, max_time = extrema(hits[:, :time])
-
-    min_time = div(min_time-20, 1/STD_PMT_CONFIG.sampling_freq) * 1/STD_PMT_CONFIG.sampling_freq
-    max_time = div(max_time+20, 1/STD_PMT_CONFIG.sampling_freq) * 1/STD_PMT_CONFIG.sampling_freq
-
-    per_pmt_pulses = make_reco_pulses(hits, STD_PMT_CONFIG, (min_time, max_time))
-    return per_pmt_pulses
-end
-
-pulsesmap = combine(groups, unfold_per_module)[:, :x1]
-
-bins = 10 .^(-1:0.2:3)
-
-fig, ax = hist(combine(groups, nrow)[:, :nrow], bins=bins, 
-    axis=(;xscale=log10, yscale=log10, limits=(0.1, 1000, 0.1, 500)), fillto=0.1)
-hist!(ax, (get_total_charge.(pulsesmap)), bins=bins, fillto=0.1)
+fig = Figure()
+ax = Axis(fig[1,1], yscale=log10)
+scatter!(ax, lengths, dir_uncert, )
 
 fig
 
-event
-push!(ec, event)
 
-Base.iterate(e::EventCollection) = iterate(e.events)
+geo = DataFrame([(
+    module_id=Int64(target.module_id),
+    pmt_id=Int64(pmt_id),
+    x=target.shape.position[1],
+    y=target.shape.position[2],
+    z=target.shape.position[3],
+    pmt_x=coord[1],
+    pmt_y=coord[2],
+    pmt_z=coord[3])
+    for target in targets
+    for (pmt_id, coord) in enumerate(sph_to_cart.(eachcol(target.pmt_coordinates)))]
+)
 
-open("test.arrow", "w") do io
 
-    for e in ec
-        record = (event_id=[e.id], times=[e[:photon_hits][:, :time]])
-        Arrow.write(io, record)
 
+
+
+
+jldopen("/home/wecapstor3/capn/capn100h/leptoninjector/muons.jld2", "w") do hdl
+    event_group = JLD2.Group(hdl, "events")
+    for ev in event_collection
+        event_group["event_$(ev.id)"] = ev
     end
+    hdl["geo"] = geo
 end
-JSON3.write(ec)
+
+

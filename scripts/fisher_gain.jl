@@ -1,6 +1,7 @@
 using NeutrinoTelescopes
 using PhotonPropagation
 using PhysicsTools
+using PhotonSurrogateModel
 using PreallocationTools
 using Flux
 using Random
@@ -26,6 +27,7 @@ using Hexagons
 using CairoMakie.GeometryBasics
 using DataFrames
 using ForwardDiff
+using ArgParse
 
 
 # superficially similar to StatsBase.Histogram API
@@ -233,6 +235,7 @@ end
 function get_event_props(event::Event)
     p = first(event[:particles])
     dir_sph = cart_to_sph(p.direction)
+    shift_to_closest_approach(p, [0., 0., 0.])
     return [log10(p.energy), dir_sph..., p.position...]
 end
 
@@ -295,7 +298,11 @@ end
 
 function evaluate_optimization_metric(::SingleEventTypeMeanDeviation, fishers, events)
     m = SingleEventTypePerEventMeanDeviation()
-    return mean(evaluate_optimization_metric(m, fishers, events))
+
+    results = evaluate_optimization_metric(m, fishers, events)
+    masked_results = filter!(!isnan, results) 
+
+    return mean(masked_results)
 end
 
 
@@ -640,7 +647,7 @@ function plot_surrogate_anim(data, event, lower, upper)
     end
 end
 
-function plot_surrogate_non_anim(data, event, lower, upper)
+function plot_surrogate_non_anim(data, event, lower, upper, fname)
     y=x = lower:10.:upper
    
     fig = Figure()
@@ -671,7 +678,8 @@ function plot_surrogate_non_anim(data, event, lower, upper)
     ax3 = Axis(fig[2, 1], xlabel="Closest String Distance (m)")
     string_distances = Observable(Float64[])
     hist!(ax3, string_distances, bins=0:10:300)
-
+    med_spacing = Observable([0.0])
+    vlines!(ax3, med_spacing, color=:black)
     g_res_vol = fig[2, 2] = GridLayout()
 
     ax4 = Axis(g_res_vol[1, 1], xlabel="Iteration", ylabel="Resolution", yscale=log10)
@@ -695,14 +703,12 @@ function plot_surrogate_non_anim(data, event, lower, upper)
     lines!(ax5, iteration_range, det_vol)
     
     
-    fig[2, 3] = Legend(fig, ax4,  framevisible = false, labelsize=14)  
-
-   
+    #fig[2, 3] = Legend(fig, ax4,  framevisible = false, labelsize=14)  
  
     xlims!(ax2, lower, upper)
     ylims!(ax2, lower, upper)
 
-    record(fig, "time_non_animation.mp4", framerate = 1) do io
+    record(fig, fname, framerate = 1) do io
         for (iteration, d) in enumerate(data)
             modules = get_detector_modules(d[:detector])
             positions = reduce(hcat, [m.shape.position for m in modules])
@@ -720,6 +726,7 @@ function plot_surrogate_non_anim(data, event, lower, upper)
 
             #pairwise = distances[triu!(trues(size(distances)), 1)]
             string_distances[] = closest
+            med_spacing[] = [median(closest)]
             reset_limits!(ax3)
             
             iteration_range.val = 1:iteration
@@ -736,7 +743,10 @@ function plot_surrogate_non_anim(data, event, lower, upper)
             bpoly = get_polyhedron(d[:detector])
             det_vol[] = push!(det_vol[],  Polyhedra.volume(bpoly) / 1E9)
 
-            reset_limits!(ax4)
+            res_range = extrema(resolutions[1][]) 
+
+            ylims!(ax4, res_range[1]*0.95, res_range[2]*1.05)
+            #reset_limits!(ax4)
             reset_limits!(ax5)
 
             recordframe!(io)
@@ -927,7 +937,7 @@ function combine_proposals_with_current_geo(calc, proposals, proposal_event_mask
 
 end
 
-function run(type, n_lines_max; extent=1000, n_events=250, same_events=true, seed=42, geo_seed=nothing, inj_radius=400., n_proposals=1000)
+function run(type, n_lines_max; vid_fname, extent=1000, n_events=250, same_events=true, seed=42, geo_seed=nothing, inj_radius=400., n_proposals=1000)
     medium = make_cascadia_medium_properties(0.95f0)
     if isnothing(geo_seed)
         targets_line = make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 1, DummyTarget)
@@ -1063,14 +1073,14 @@ function run(type, n_lines_max; extent=1000, n_events=250, same_events=true, see
         current_det = add_line(current_det, new_targets)
         gc()
         if (i+1) % 5 == 0
-            plot_surrogate_non_anim(data, nothing, -extent/2-50, extent/2+50)
+            plot_surrogate_non_anim(data, nothing, -extent/2-50, extent/2+50, "$(vid_fname)_$(type).mp4")
             #plot_surrogate_anim(data, nothing, -250, 250)
         end
     end
     return data
 end
 
-function main()
+function main(args)
     medium = make_cascadia_medium_properties(0.95f0)
     sidelen = 80f0
     height::Float32 = sqrt(3)/2 * sidelen
@@ -1080,213 +1090,235 @@ function main()
         make_detector_line(@SVector[sidelen/2, -height, 0f0], 20, 50, 41, DummyTarget),
     ]
 
-    targets_line = make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 1, DummyTarget)
+    targets_line = [make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 1, DummyTarget)]
 
-    detector = LineDetector(targets_triang, medium)
-    data = run("per_string_lightsabre", 40, n_events=1000, extent=1200, geo_seed=detector, inj_radius=500.)
+    detector = LineDetector(targets_line, medium)
+    data = run("per_string_$(args[:type])", 6, vid_fname="$(args[:prefix])_$(args[:type])", n_events=args[:n_events], extent=args[:extent], geo_seed=detector, inj_radius=args[:inj_radius])
     return data
 end
 
-main()
+
+mode_choices = ["lightsabre", "extended"]
+s = ArgParseSettings()
+@add_arg_table s begin
+    "--type"
+    help = "Event type;  must be one of " * join(mode_choices, ", ", " or ")
+    range_tester = (x -> x in mode_choices)
+    "--inj_radius"
+    arg_type=Float64
+    default=500.
+    "--extent"
+    arg_type=Float64
+    default=1200.
+    "--n_events"
+    default=10000
+    arg_type=Int64
+    "--prefix"
+    default="fisher_gain"
+end
+parsed_args = parse_args(ARGS, s; as_symbols=true)
+
+main(parsed_args)
 
 #data = main()
 #jldsave("fisher_gain_data.jld2", data=data)
+function __stuff__()
+    sidelen = 80f0
+    height::Float32 = sqrt(3)/2 * sidelen
+    targets_triang = [
+        make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 1, DummyTarget),
+        make_detector_line(@SVector[-sidelen/2, -height, 0f0], 20, 50, 21, DummyTarget),
+        make_detector_line(@SVector[sidelen/2, -height, 0f0], 20, 50, 41, DummyTarget),
+    ]
 
-sidelen = 80f0
-height::Float32 = sqrt(3)/2 * sidelen
-targets_triang = [
-    make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 1, DummyTarget),
-    make_detector_line(@SVector[-sidelen/2, -height, 0f0], 20, 50, 21, DummyTarget),
-    make_detector_line(@SVector[sidelen/2, -height, 0f0], 20, 50, 41, DummyTarget),
-]
+    targets_single = [
+        #make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 1, DummyTarget),
+        make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 21, DummyTarget),
+        #make_detector_line(@SVector[sidelen/2, -height, 0f0], 20, 50, 41, DummyTarget),
+    ]
 
-targets_single = [
-    #make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 1, DummyTarget),
-    make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 21, DummyTarget),
-    #make_detector_line(@SVector[sidelen/2, -height, 0f0], 20, 50, 41, DummyTarget),
-]
+    targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
 
-targets_hex = make_hex_detector(3, 50, 20, 50, truncate=1)
+    medium = make_cascadia_medium_properties(0.95f0)
+    detector =  LineDetector(targets_hex, medium)
+    seed = 42
 
-medium = make_cascadia_medium_properties(0.95f0)
-detector =  LineDetector(targets_hex, medium)
-seed = 42
+    type = "per_string_lightsabre"
+    rng = Random.MersenneTwister(seed)
+    same_events = true
 
-type = "per_string_lightsabre"
-rng = Random.MersenneTwister(seed)
-same_events = true
-
-cylinder = get_bounding_cylinder(detector)
-pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
-edist = Dirac(1E5)
-ang_dist = LowerHalfSphere()
-length_dist = Dirac(1E4)
-time_dist = Dirac(0.0)
-inj = SurfaceInjector(CylinderSurface(cylinder), edist, pdist, ang_dist, length_dist, time_dist)
-
-
-fisher_model, diff_cache = setup_fisher_surrogate(type, max_particles=100000, max_targets=10*20)
-if occursin("per_string", type)        
-    alt_type = occursin("extended", type)  ? "per_string_lightsabre" : "per_string_extended"
-else
-    alt_type = occursin("extended", type)  ? "lightsabre" : "extended"
-end
-
-data = []
-current_det = detector
-current_inj = inj
-
-abs_scale = 1.
-sca_scale = 1.
-n_events = 100000
-evts = [rand(rng, current_inj) for _ in 1:n_events]
-calc = FisherCalculator(evts, fisher_model)
-metric = SingleEventTypePerEventMeanAngularError()
-
-fishers_current, mask_current = calc_fisher(calc, current_det, abs_scale=abs_scale, sca_scale=sca_scale)
-all_res = evaluate_optimization_metric(metric, fishers_current, evts[mask_current])
-finite_mask = isfinite.(all_res)
+    cylinder = get_bounding_cylinder(detector)
+    pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
+    edist = Dirac(1E5)
+    ang_dist = LowerHalfSphere()
+    length_dist = Dirac(1E4)
+    time_dist = Dirac(0.0)
+    inj = SurfaceInjector(CylinderSurface(cylinder), edist, pdist, ang_dist, length_dist, time_dist)
 
 
-
-azimuths = Float64[]
-resos = Float64[]
-for (ev, res) in zip(evts[mask_current][finite_mask], all_res[finite_mask])
-    p = first(ev[:particles])
-    p_rel = p.position .- cylinder.center
-    if abs(p_rel[3]) == 1100/2
-        continue
-    end
-    pos_normed = p_rel ./ norm(p_rel)
-    push!(azimuths, cart_to_sph(p.direction)[2])
-    push!(resos, res)
-end
-
-
-h1 = StatsBase.fit(Histogram, azimuths, 0:0.3:2*π)
-h2 = StatsBase.fit(Histogram, azimuths, Weights(resos), 0:0.3:2*π, )
-
-w = h2.weights ./ h1.weights
-
-stairs(h1.edges[1], [w; w[end]], step=:post)
-
-
-
-
-model = PhotonSurrogate(
-    joinpath(ENV["ECAPSTOR"], "snakemake/time_surrogate_perturb/extended/amplitude_1_FNL.bson"),
-    joinpath(ENV["ECAPSTOR"], "snakemake/time_surrogate_perturb/extended/time_uncert_1_2_FNL.bson"))
-
-
-input_buffer = create_input_buffer(model, 16*20, 1)
-output_buffer = create_output_buffer(16*20, 100)
-diff_cache = DiffCache(input_buffer, 13)
-
-
-hit_generator = SurrogateModelHitGenerator(gpu(model), 200.0, input_buffer, output_buffer)
-
-r = 50.
-phi = π/2
-phi = 0.
-p = Particle(SA_F64[r*cos(phi), r*sin(phi), -500], SA_F64[-cos(phi), -sin(phi), 0], 0., 1E4, 0., PEPlus)
-t = POM(SA[0., 0., -500.], 1)
-
-create_model_input!(model.amp_model, [p], [t], input_buffer, abs_scale=1., sca_scale=1.)
-
-detector = LineDetector([make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 21, POM)], medium)
-
-rng = Random.default_rng()
-matrices = first.(calc_fisher_matrix.(evts, Ref(detector), Ref(hit_generator), use_grad=true, rng=rng, cache=diff_cache))
-
-
-valid = isposdef.(matrices)
-valid_events = evts[valid]
-valid_matrices = matrices[valid]
-covs = inv.(valid_matrices)
-all_res = sqrt.(reduce(hcat, diag.(covs)))
-
-plot_resolution_hex(valid_events, sum(all_res, dims=1)[:], detector)
-
-
-cov_pred_sum,_ = predict_cov([event], detector_line, fisher_model, abs_scale=1, sca_scale=1)
-
-hbc, hbg = make_hit_buffers()
-
-r = 30.
-phis = 0:0.2:2*π
-medium = make_cascadia_medium_properties(0.95f0)
-t = POM(SA[0., 0., -500.], 1)
-detector = UnstructuredDetector([t], medium)
-abs_scale = 1.
-sca_scale = 1.
-rng = Random.MersenneTwister(1)
-
-nhits = Int64[]
-nhits_mc = Float64[]
-res = []
-
-for phi in phis
-    p = Particle(SA_F64[r*cos(phi), r*sin(phi), -500], SA_F64[sin(phi), cos(phi), 0], 0., 5E4, 0., PEPlus)
-    hit_times, mask = generate_hit_times(
-            [p],
-            detector,
-            hit_generator,
-            rng,
-            device=gpu,
-            abs_scale=abs_scale,
-            sca_scale=sca_scale,
-            )
-
-    df = hit_list_to_dataframe(hit_times, get_detector_modules(detector), mask)
-
-    push!(nhits, nrow(df))
-
-    e = Event()
-    e[:particles] = [p]
-    f, _ = calc_fisher_matrix(e, detector, hit_generator, use_grad=true, rng=rng, cache=diff_cache, noise_rate=1E4, n_samples=400)
-    cov = inv(f)
-    all_res = sqrt.(diag(cov))
-    push!(res, all_res)
-
-
-    #=
-    hits = propagate_particles([p], [t], 1, medium, hbc, hbg)
-    if !isnothing(hits)
-        push!(nhits_mc, sum(hits[:, :total_weight]))
+    fisher_model, diff_cache = setup_fisher_surrogate(type, max_particles=100000, max_targets=10*20)
+    if occursin("per_string", type)        
+        alt_type = occursin("extended", type)  ? "per_string_lightsabre" : "per_string_extended"
     else
-        push!(nhits_mc, 0)
+        alt_type = occursin("extended", type)  ? "lightsabre" : "extended"
     end
-    =#
 
+    data = []
+    current_det = detector
+    current_inj = inj
+
+    abs_scale = 1.
+    sca_scale = 1.
+    n_events = 100000
+    evts = [rand(rng, current_inj) for _ in 1:n_events]
+    calc = FisherCalculator(evts, fisher_model)
+    metric = SingleEventTypePerEventMeanAngularError()
+
+    fishers_current, mask_current = calc_fisher(calc, current_det, abs_scale=abs_scale, sca_scale=sca_scale)
+    all_res = evaluate_optimization_metric(metric, fishers_current, evts[mask_current])
+    finite_mask = isfinite.(all_res)
+
+
+
+    azimuths = Float64[]
+    resos = Float64[]
+    for (ev, res) in zip(evts[mask_current][finite_mask], all_res[finite_mask])
+        p = first(ev[:particles])
+        p_rel = p.position .- cylinder.center
+        if abs(p_rel[3]) == 1100/2
+            continue
+        end
+        pos_normed = p_rel ./ norm(p_rel)
+        push!(azimuths, cart_to_sph(p.direction)[2])
+        push!(resos, res)
+    end
+
+
+    h1 = StatsBase.fit(Histogram, azimuths, 0:0.3:2*π)
+    h2 = StatsBase.fit(Histogram, azimuths, Weights(resos), 0:0.3:2*π, )
+
+    w = h2.weights ./ h1.weights
+
+    stairs(h1.edges[1], [w; w[end]], step=:post)
+
+
+
+
+    model = PhotonSurrogate(
+        joinpath(ENV["ECAPSTOR"], "snakemake/time_surrogate_perturb/extended/amplitude_1_FNL.bson"),
+        joinpath(ENV["ECAPSTOR"], "snakemake/time_surrogate_perturb/extended/time_uncert_1_2_FNL.bson"))
+
+
+    input_buffer = create_input_buffer(model, 16*20, 1)
+    output_buffer = create_output_buffer(16*20, 100)
+    diff_cache = DiffCache(input_buffer, 13)
+
+
+    hit_generator = SurrogateModelHitGenerator(gpu(model), 200.0, input_buffer, output_buffer)
+
+    r = 50.
+    phi = π/2
+    phi = 0.
+    p = Particle(SA_F64[r*cos(phi), r*sin(phi), -500], SA_F64[-cos(phi), -sin(phi), 0], 0., 1E4, 0., PEPlus)
+    t = POM(SA[0., 0., -500.], 1)
+
+    create_model_input!(model.amp_model, [p], [t], input_buffer, abs_scale=1., sca_scale=1.)
+
+    detector = LineDetector([make_detector_line(@SVector[0f0, 0f0, 0f0], 20, 50, 21, POM)], medium)
+
+    rng = Random.default_rng()
+    matrices = first.(calc_fisher_matrix.(evts, Ref(detector), Ref(hit_generator), use_grad=true, rng=rng, cache=diff_cache))
+
+
+    valid = isposdef.(matrices)
+    valid_events = evts[valid]
+    valid_matrices = matrices[valid]
+    covs = inv.(valid_matrices)
+    all_res = sqrt.(reduce(hcat, diag.(covs)))
+
+    plot_resolution_hex(valid_events, sum(all_res, dims=1)[:], detector)
+
+
+    cov_pred_sum,_ = predict_cov([event], detector_line, fisher_model, abs_scale=1, sca_scale=1)
+
+    hbc, hbg = make_hit_buffers()
+
+    r = 30.
+    phis = 0:0.2:2*π
+    medium = make_cascadia_medium_properties(0.95f0)
+    t = POM(SA[0., 0., -500.], 1)
+    detector = UnstructuredDetector([t], medium)
+    abs_scale = 1.
+    sca_scale = 1.
+    rng = Random.MersenneTwister(1)
+
+    nhits = Int64[]
+    nhits_mc = Float64[]
+    res = []
+
+    for phi in phis
+        p = Particle(SA_F64[r*cos(phi), r*sin(phi), -500], SA_F64[sin(phi), cos(phi), 0], 0., 5E4, 0., PEPlus)
+        hit_times, mask = generate_hit_times(
+                [p],
+                detector,
+                hit_generator,
+                rng,
+                device=gpu,
+                abs_scale=abs_scale,
+                sca_scale=sca_scale,
+                )
+
+        df = hit_list_to_dataframe(hit_times, get_detector_modules(detector), mask)
+
+        push!(nhits, nrow(df))
+
+        e = Event()
+        e[:particles] = [p]
+        f, _ = calc_fisher_matrix(e, detector, hit_generator, use_grad=true, rng=rng, cache=diff_cache, noise_rate=1E4, n_samples=400)
+        cov = inv(f)
+        all_res = sqrt.(diag(cov))
+        push!(res, all_res)
+
+
+        #=
+        hits = propagate_particles([p], [t], 1, medium, hbc, hbg)
+        if !isnothing(hits)
+            push!(nhits_mc, sum(hits[:, :total_weight]))
+        else
+            push!(nhits_mc, 0)
+        end
+        =#
+
+    end
+
+    res = reduce(hcat, res)
+
+    fig = Figure()
+    ax = Axis(fig[1, 1], xlabel="Azimuth", ylabel="Received Amplitude (PE)")
+    ax2 = Axis(fig[1,1], ylabel="Total Uncertainty")
+
+    lines!(ax, phis, nhits)
+
+    ax2.yaxisposition = :right
+    ax2.yticklabelalign = (:left, :center)
+    ax2.xticklabelsvisible = false
+    ax2.xticklabelsvisible = false
+    ax2.xlabelvisible = false
+    ax2.yticklabelcolor = :red
+    linkxaxes!(ax,ax2)
+
+    #lines!(ax, phis, nhits_mc)
+    lines!(ax2, phis, sqrt.(sum(res.^2, dims=1)[:]) , color=:red)
+    fig
+
+    res
+    hit_times = generate_hit_times(
+                [p],
+                det,
+                hit_generator,
+                rng,
+                device=gpu,
+                abs_scale=abs_scale,
+                sca_scale=sca_scale,
+                )
 end
-
-res = reduce(hcat, res)
-
-fig = Figure()
-ax = Axis(fig[1, 1], xlabel="Azimuth", ylabel="Received Amplitude (PE)")
-ax2 = Axis(fig[1,1], ylabel="Total Uncertainty")
-
-lines!(ax, phis, nhits)
-
-ax2.yaxisposition = :right
-ax2.yticklabelalign = (:left, :center)
-ax2.xticklabelsvisible = false
-ax2.xticklabelsvisible = false
-ax2.xlabelvisible = false
-ax2.yticklabelcolor = :red
-linkxaxes!(ax,ax2)
-
-#lines!(ax, phis, nhits_mc)
-lines!(ax2, phis, sqrt.(sum(res.^2, dims=1)[:]) , color=:red)
-fig
-
-res
-hit_times = generate_hit_times(
-            [p],
-            det,
-            hit_generator,
-            rng,
-            device=gpu,
-            abs_scale=abs_scale,
-            sca_scale=sca_scale,
-            )

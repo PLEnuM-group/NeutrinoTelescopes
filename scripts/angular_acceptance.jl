@@ -119,6 +119,12 @@ for f in files
 end
 
 
+
+
+
+
+
+
 azimuth_hit = []
 
 m_accepted = HealpixMap{Float64, RingOrder}(32)
@@ -242,6 +248,18 @@ fig
 
 d1 = Distributions.fit(Rayleigh, (reduce(vcat, all_hc_1))) 
 d2 = Distributions.fit(Rayleigh, (reduce(vcat, all_hc_2))) 
+
+fig = Figure()
+ax = Axis(fig[1, 1], xlabel="Angular Distance to PMT axis (rad)", ylabel="PDF")
+bins = 0:0.1:π
+colors = Makie.wong_colors()
+hist!(ax, (reduce(vcat, all_hc_1)), bins=bins, label="PMT Group 1", normalization=:pdf, color=(colors[1], 0.7))
+hist!(ax, (reduce(vcat, all_hc_2)), bins=bins, label="PMT Group 2", normalization=:pdf, color=(colors[2], 0.7))
+axislegend()
+fig
+
+
+
 
 fname = joinpath(@__DIR__, "../assets/pmt_acc.hd5")
 h5open(fname, "w") do fid
