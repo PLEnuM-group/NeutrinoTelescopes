@@ -9,7 +9,7 @@ using Flux
 using DataFrames
 using PreallocationTools
 using Base.Iterators
-using ...SurrogateModels.PhotonSurrogates
+using PhotonSurrogateModel
 using ...SurrogateModels.SurrogateModelHits
 using ...EventGeneration
 
@@ -93,7 +93,7 @@ end
 
 
 function _calc_single_fisher_matrix(
-    event::Event,
+    particle::Particle,
     detector::Detector,
     generator,
     rng,
@@ -104,7 +104,7 @@ function _calc_single_fisher_matrix(
     sca_scale=1.,
     noise_rate=1E4)
     times, range_mask = generate_hit_times(
-        event,
+        [particle],
         detector,
         generator,
         rng,
@@ -121,9 +121,7 @@ function _calc_single_fisher_matrix(
     targets_range = get_detector_modules(detector)[range_mask]  
 
      
-    p::Particle = event[:particles][1]
-
-    if particle_shape(p) == Track()
+     if particle_shape(particle) == Track()
         n_pmt = get_pmt_count(eltype(targets_range))
         total_hits = sum(length.(times))
 
@@ -134,25 +132,25 @@ function _calc_single_fisher_matrix(
             this_n_hits = sum(length.(times[lin_ixs[:, i]]))
             push!(weighted_pos, t.shape.position .* this_n_hits)
         end
-        cad_com = closest_approach_param(p, sum(weighted_pos) / sum(total_hits))
-        p = shift_particle(p, cad_com)
+        cad_com = closest_approach_param(particle, sum(weighted_pos) / sum(total_hits))
+        particle = shift_particle(particle, cad_com)
     end
 
-    dir = p.direction
+    dir = particle.direction
     dir_theta, dir_phi = cart_to_sph(dir)
-    logenergy = log10(p.energy)
-    pos = p.position
+    logenergy = log10(particle.energy)
+    pos = particle.position
 
     medium = get_detector_medium(detector)
 
     f, fwrapped = make_lh_func(
-        time=p.time,
+        time=particle.time,
         data=times,
         targets=targets_range,
         model=generator.model,
         medium=medium,
         diff_cache=cache,
-        ptype=p.type,
+        ptype=particle.type,
         device=device,
         abs_scale=abs_scale,
         sca_scale=sca_scale,
@@ -168,6 +166,55 @@ function _calc_single_fisher_matrix(
 
     return fi
 end
+
+function calc_fisher_matrix(
+    particle::Particle,
+    detector::Detector{T, MP},
+    generator::SurrogateModelHitGenerator;
+    use_grad=true,
+    rng=Random.GLOBAL_RNG,
+    n_samples=100,
+    cache=nothing,
+    device=gpu,
+    filter_outliers=true,
+    abs_scale=1.,
+    sca_scale=1.,
+    noise_rate=1E4) where {T <: PhotonTarget, MP <: MediumProperties}
+
+    matrices = Matrix[]
+    for __ in 1:n_samples
+        fi = _calc_single_fisher_matrix(
+            particle,
+            detector,
+            generator,
+            rng,
+            device,
+            cache,
+            use_grad,
+            abs_scale=abs_scale,
+            sca_scale=sca_scale,
+            noise_rate=noise_rate)
+        if isnothing(fi)
+            continue
+        end
+        push!(matrices, fi)
+    end
+
+    if (length(matrices) > 0) && filter_outliers
+        matrices = filter_medad_eigen(matrices)
+    end
+    if length(matrices) > 0
+        fisher_matrix = mean(matrices)
+        fisher_matrix = 0.5 * (fisher_matrix + fisher_matrix')
+    else
+        fisher_matrix = zeros(6, 6)
+    end
+
+    return fisher_matrix, matrices
+end
+
+
+
 
 """
     calc_fisher_matrix(
@@ -197,38 +244,26 @@ function calc_fisher_matrix(
     sca_scale=1.,
     noise_rate=1E4) where {T <: PhotonTarget, MP <: MediumProperties}
 
-    matrices = Matrix[]
-    for __ in 1:n_samples
-        fi = _calc_single_fisher_matrix(
-            event,
-            detector,
-            generator,
-            rng,
-            device,
-            cache,
-            use_grad,
-            abs_scale=abs_scale,
-            sca_scale=sca_scale,
-            noise_rate=noise_rate)
-        if isnothing(fi)
-            continue
-        end
-        push!(matrices, fi)
-    end
-
-    if (length(matrices) > 0) && filter_outliers
-        matrices = filter_medad_eigen(matrices)
-    end
-    if length(matrices) > 0
-        fisher_matrix = mean(matrices)
-        fisher_matrix = 0.5 * (fisher_matrix + fisher_matrix')
-    else
-        fisher_matrix = zeros(6, 6)
-    end
-
-    return fisher_matrix, matrices
+    p = event[:particles][1]
+    return calc_fisher_matrix(
+        p,
+        detector,
+        generator,
+        use_grad=use_grad,
+        rng=rng,
+        n_samples=n_samples,
+        cache=cache,
+        device=device,
+        filter_outliers=filter_outliers,
+        abs_scale=abs_scale,
+        sca_scale=sca_scale,
+        noise_rate=noise_rate)
 
 end
+
+
+
+
 
 
 function calc_fisher(
