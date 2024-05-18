@@ -2,7 +2,7 @@ module Triggering
 
 using DataFrames
 
-export LCTrigger
+export LCTrigger, ModuleCoincTrigger
 export lc_trigger, calc_coincs_from_trigger, count_coinc_in_tw, module_trigger
 
 
@@ -24,7 +24,7 @@ end
 
 
 """
-    lc_trigger(sorted_hits::AbstractDataFrame, time_window)
+    lc_trigger(sorted_hits::AbstractDataFrame; time_window=10.)
 
 Calculate local-coincidence triggers for `sorted_hits` in `time_window`.
 
@@ -32,6 +32,10 @@ The algorithm loops through all hits ``h_i``. When the next hit ``h_j`` is close
 time window ``\\delta`` a new trigger is started. The trigger will accumulate all hits
 ``h_j`` that are within ``h_i + \\delta``. Finally, a trigger is emitted when it includes
 hits on at least two different PMTs.
+
+## Arguments
+- `sorted_hits`: An abstract dataframe of sorted hits.
+- `time_window`: The time window (in nanoseconds) within which coincidences are considered. Default value is 10.
 
 Returns a Vector of hit-time vectors.
 """
@@ -78,6 +82,21 @@ function lc_trigger(sorted_hits::AbstractDataFrame; time_window=10.)
 end
 
 
+"""
+    module_trigger(lc_triggers::AbstractVector{<:LCTrigger}; time_window=1E3, lc_level=2)
+
+This function takes a vector of `LCTrigger` objects and returns a vector of `ModuleCoincTrigger` objects. 
+It performs triggering by identifying time coincidences between `LCTrigger` objects based on their start times and module IDs.
+
+## Arguments
+- `lc_triggers`: An abstract vector of `LCTrigger` objects.
+- `time_window`: The time window (in nanoseconds) within which coincidences are considered. Default value is 1E3.
+- `lc_level`: The minimum number of unique PMTs required for an `LCTrigger` object to be considered. Default value is 2.
+
+## Returns
+- `triggers`: A vector of `ModuleCoincTrigger` objects representing the identified coincidences.
+
+"""
 function module_trigger(lc_triggers::AbstractVector{<:LCTrigger}; time_window=1E3, lc_level=2)
     triggers = Vector{ModuleCoincTrigger}()
     i = 1
@@ -114,7 +133,6 @@ function module_trigger(lc_triggers::AbstractVector{<:LCTrigger}; time_window=1E
             trigger = ModuleCoincTrigger(t_start, time_window, unique_modules)
             push!(triggers, trigger)
         end
-
         i = j
     end
     return triggers
