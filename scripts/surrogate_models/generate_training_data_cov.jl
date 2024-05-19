@@ -1,5 +1,7 @@
 using NeutrinoTelescopes
 using PhotonPropagation
+using PhotonSurrogateModel
+using NeutrinoSurrogateModelData
 using PhysicsTools
 using PreallocationTools
 using Random
@@ -41,8 +43,8 @@ end
 
 function generate_training_data(args)
 
-    model_tracks = PhotonSurrogate(args["model_path_amp"], args["model_path_time"])
-    model = gpu(model_tracks)
+    model = args["type"] == "extended" ? PhotonSurrogate(em_cascade_time_model(args["time_uncert"])...) : PhotonSurrogate(lightsabre_time_model(args["time_uncert"])...)
+    model = gpu(model)
 
 
     if args["per_string"]
@@ -112,14 +114,6 @@ type_choices = ["lightsabre", "extended"]
     help = "Output filename"
     arg_type = String
     required = true
-    "--model_path_amp"
-    help = "Amplitude model"
-    arg_type = String
-    required = true
-    "--model_path_time"
-    help = "Time model"
-    arg_type = String
-    required = true
     "--type"
     help = "Particle Type;  must be one of " * join(type_choices, ", ", " or ")
     range_tester = (x -> x in type_choices)
@@ -138,6 +132,10 @@ type_choices = ["lightsabre", "extended"]
     "--perturb_medium"
     help = "perturb optical properties"
     action = :store_true
+    "--time_uncert"
+    help = "Timing uncertainty"
+    arg_type = Int64
+    required = true
 end
 
 parsed_args = parse_args(ARGS, s; as_symbols=false)
