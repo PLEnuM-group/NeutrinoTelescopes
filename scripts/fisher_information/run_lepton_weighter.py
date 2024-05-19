@@ -27,13 +27,13 @@ def get_weight(weighter, props):
     LWevent.z = props[10]
     LWevent.total_column_depth = props[11]
 
-    #weight = weighter.get_oneweight(LWevent)
+    ow = weighter.get_oneweight(LWevent)
     weight = weighter(LWevent)
     # this would alert us that something bad is happening 
     if weight==np.nan:
         raise ValueError("Bad Weight!")
 
-    return weight
+    return weight, ow
 
 
 def run(args):
@@ -55,14 +55,23 @@ def run(args):
     flux = LW.PowerLawFlux( flux_params['constant'] , flux_params['index'] , flux_params['scale'] )
 
 
-    weighter = LW.Weighter(flux, xs, net_generation )
+    weighter = LW.Weighter(flux, xs, net_generation)
 
     # load data
     data_file = h5py.File(args.li_file, "r+")
 
+
     for injector in data_file.keys():
-        weights = [get_weight(weighter, data_file[injector]['properties'][event]) for event in range(len( data_file[injector]['properties']))]
-        data_file[injector+"/weights"] = weights
+        flux_weights = []
+        one_weights = []
+
+        for event in range(len( data_file[injector]['properties'])):
+            weight, ow = get_weight(weighter, data_file[injector]['properties'][event])
+            flux_weights.append(weight)
+            one_weights.append(ow)
+
+        data_file[injector+"/flux_weights"] = flux_weights
+        data_file[injector+"/one_weights"] = one_weights
     data_file.close()
 
 if __name__ == "__main__":
