@@ -1,12 +1,10 @@
-using .Injectors
 using StructTypes
 
-struct EventCollection{E <: Event, I<:Injector}
+struct EventCollection{E <: Event}
     events::Vector{E}
-    injector::I
 end
 
-EventCollection(i::Injector) = EventCollection(Vector{Event}(), i)
+EventCollection() = EventCollection(Vector{Event}())
 
 Base.getindex(e::EventCollection, i) = e.events[i]
 Base.setindex!(e::EventCollection, v, i) = e.events[i] = v
@@ -21,16 +19,13 @@ Base.length(e::EventCollection) = length(e.events)
 
 function Base.vcat(ecs::Vararg{<:EventCollection})
 
-    ij0 = first(ecs).injector
-    for ec in ecs
-        if ec.injector != ij0
-            error("All injectors have to be identical for combination")
-        end
-    end
     combined_events = mapreduce(ec -> getproperty(ec, :events), vcat, ecs)
-
-    return EventCollection(combined_events, ij0)
+    return EventCollection(combined_events)
 end
 
-
 StructTypes.StructType(::Type{<:EventCollection}) = StructTypes.Struct()
+
+
+function write_plain_hdf!(ec::EventCollection)
+end
+

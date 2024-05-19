@@ -561,20 +561,23 @@ function LIInjector(fname::String; drop_starting=false, volume=nothing)
     final1 = []
     final2 = []
     initial = []
-    weights = []
+    one_weights = []
+    flux_weights = []
 
     for inj in hdl
         push!(final1, DataFrame(inj["final_1"][:]))
         push!(final2,  DataFrame(inj["final_2"][:]))
         push!(initial, DataFrame(inj["initial"][:]))
-        push!(weights, inj["weights"][:])
+        push!(one_weights, inj["one_weights"][:])
+        push!(flux_weights, inj["flux_weights"][:])
     end
     close(hdl)
 
     final1 = reduce(vcat, final1)
     final2 = reduce(vcat, final2)
     initial = reduce(vcat, initial)
-    weights = reduce(vcat, weights)
+    one_weights = reduce(vcat, one_weights)
+    flux_weights = reduce(vcat, flux_weights)
     
 
     final1.row_num = 1:nrow(final1)
@@ -583,7 +586,8 @@ function LIInjector(fname::String; drop_starting=false, volume=nothing)
 
     combined = innerjoin(final1, final2, on=:row_num, renamecols = "_final1" => "_final2")
     combined = innerjoin(combined, initial, on=:row_num, renamecols = "" => "_initial")
-    combined[:, :weights] .= weights
+    combined[:, :one_weights] .= one_weights
+    combined[:, :flux_weights] .= flux_weights
 
     if drop_starting
         positions = initial[:, :Position]
@@ -595,17 +599,10 @@ function LIInjector(fname::String; drop_starting=false, volume=nothing)
     return LIInjector(combined, ones(Bool, nrow(combined)))
 end
 
-
 Base.length(inj::LIInjector) = nrow(inj.states)
+Base.size(inj::LIInjector) = (nrow(inj.states),)
 
-function Base.rand(rng::AbstractRNG, inj::LIInjector)
-    if sum(inj.not_sampled) == 0
-        error("Injector ran out of events")
-    end
-    valid_indices = (1:length(inj))[inj.not_sampled]
-    ix = rand(rng, valid_indices)
-    inj.not_sampled[ix] = false
-
+function _sample_event_from_li(inj::LIInjector, ix)
     ptype_f1 = ptype_for_code(inj.states[ix, :ParticleType_final1])
     
     if is_neutrino(ptype_f1)
@@ -634,14 +631,26 @@ function Base.rand(rng::AbstractRNG, inj::LIInjector)
 
     event = Event()
     event[:particles] = [p]
-    event[:weight] = inj.states[ix, :weights]
+    event[:flux_weight] = inj.states[ix, :flux_weights]
+    event[:one_weight] = inj.states[ix, :one_weights]
     event[:initial_energy] = inj.states[ix, :Energy_initial]
     event[:lifile_index] = ix
 
     return event
 end
 
+
+function Base.rand(rng::AbstractRNG, inj::LIInjector)
+    if sum(inj.not_sampled) == 0
+        error("Injector ran out of events")
+    end
+    valid_indices = (1:length(inj))[inj.not_sampled]
+    ix = rand(rng, valid_indices)
+    inj.not_sampled[ix] = false
+    return _sample_event_from_li(inj, ix)
+end
+
 Base.rand(inj::LIInjector) = rand(Random.default_rng(), inj)
-
-
+Base.iterate(inj::LIInjector) = (_sample_event_from_li(inj, 1), 1)
+Base.iterate(inj::LIInjector, state) = state == length(inj) ? nothing : (_sample_event_from_li(inj, state+1), state+1)
 end

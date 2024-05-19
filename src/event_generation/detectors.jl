@@ -148,14 +148,14 @@ function make_hex_detector(n_side, dist, n_per_line, vert_spacing; z_start=0, mo
 end
 
 
-function make_n_hex_cluster_positions(n_clusters, spacing)
+function make_n_hex_cluster_positions(n_clusters, spacing; cluster_rotation=π/2)
     p0 = hex_grid_positions(3, spacing; truncate=1)
     all_pos = [p0]
     
     for phi in LinRange(0, 2*π, n_clusters)[1:end-1]
         center = 3.5*spacing .* [cos(phi), sin(phi)]
 
-        rm = RotMatrix{2}(phi+ π/2)
+        rm = RotMatrix{2}(phi+ cluster_rotation)
 
         positions = hex_grid_positions(3, spacing; truncate=1)
        
