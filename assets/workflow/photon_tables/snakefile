@@ -1,36 +1,46 @@
 
 EVENT_TYPES = ["lightsabre", "extended", "hadronic"]
 N_SIMS = 1000
-N_SIMS_HIGHE = 250
+N_SIMS_HIGHE = 100
+N_SIMS_EHE = 10
 NRESAMPLE = 50
 
 WORKDIR = "/home/wecapstor3/capn/capn100h"
 OUTDIR = os.path.join(WORKDIR, "snakemake")
 JULIA_BIN = "/home/hpc/capn/capn100h/.juliaup/bin/julia"
-SCRIPT_DIR = "/home/hpc/capn/capn100h/.julia/dev/NeutrinoTelescopes/scripts"
-SCRIPT_DIR_PHOTONPROP = "/home/hpc/capn/capn100h/.julia/dev/PhotonPropagation/scripts"
+SCRIPT_DIR = "/home/saturn/capn/capn100h/julia_dev/NeutrinoTelescopes/scripts"
+SCRIPT_DIR_PHOTONPROP = "/home/saturn/capn/capn100h/julia_dev/PhotonPropagation/scripts"
 
 TIME_UNCERTS = [0, 1, 2, 3, 4, 10]
 
-PERTURB_MEDIUM_FLAGS = ["_const_medium", "_perturb"]
-
+#PERTURB_MEDIUM_FLAGS = ["_const_medium", "_perturb"]
+PERTURB_MEDIUM_FLAGS = ["_perturb"]
 def get_nsims(wildcards):
-    if float(wildcards.e_max) > 1E5:
+    if 1E5 < float(wildcards.e_max) <= 5E6:
         return N_SIMS_HIGHE
+    elif 5E6 < float(wildcards.e_max) <= 5E7:
+        return N_SIMS_EHE
     else:
         return N_SIMS
+
+
+def get_runtime(wildcards, attempt):
+    if float(wildcards.e_max) > 1E5:
+        return 20*60 * ( 1 + (attempt-1)/6)
+    else:
+        return 2*60 * ( 1 + (attempt-1)/2)
 
 rule photon_tables:
     output: os.path.join(OUTDIR, "photon_tables{perturb_medium_flag}/{event_type}/photon_table_{event_type}_dmin_{dist_min}_dmax_{dist_max}_emin_{e_min}_emax_{e_max}_{photon_table_index,\d+}.hd5")
     resources:
         slurm_extra="--gres=gpu:1",
         clusters="tinygpu",
-        time="12:00:00"
+        time=get_runtime
     params:
         n_sims = get_nsims,
         perturb_medium = lambda wildcards: "--perturb_medium" if wildcards.perturb_medium_flag == "_perturb" else ""  
     shell:
-        "{JULIA_BIN} {SCRIPT_DIR_PHOTONPROP}/photon_tables/photon_tables_photons.jl --n_sims={params.n_sims} --n_skip={wildcards.photon_table_index} --output {output} --dist_min={wildcards.dist_min} --dist_max={wildcards.dist_max} --mode {wildcards.event_type} --e_min {wildcards.e_min} --e_max {wildcards.e_max} {params.perturb_medium}"
+        "ls -l /home/hpc/capn/capn100h/ && ls -l {OUTDIR} && ls -l $WORK && {JULIA_BIN} {SCRIPT_DIR_PHOTONPROP}/photon_tables/photon_tables_photons.jl --n_sims={params.n_sims} --n_skip={wildcards.photon_table_index} --output {output} --dist_min={wildcards.dist_min} --dist_max={wildcards.dist_max} --mode {wildcards.event_type} --e_min {wildcards.e_min} --e_max {wildcards.e_max} {params.perturb_medium}"
 
 
 rule photon_table_hits:
@@ -41,27 +51,46 @@ rule photon_table_hits:
         time="2:00:00",
         partition="work",
         cpus_per_task=1,
-        slurm_extra="--mem-per-cpu=5000"
     shell:
         "{JULIA_BIN} {SCRIPT_DIR_PHOTONPROP}/photon_tables/photon_tables_hits.jl --infile {input} --outfile {output} --resample {NRESAMPLE}"
 
-
 rule all_photon_tables:
-    input: expand(rules.photon_table_hits.output, event_type=EVENT_TYPES, dist_min=1, dist_max=200, e_min=100, e_max=1E5, photon_table_index=range(20), perturb_medium_flag=PERTURB_MEDIUM_FLAGS), expand(rules.photon_table_hits.output, event_type=EVENT_TYPES, dist_min=1, dist_max=200, e_min=1E5, e_max=5E6, photon_table_index=range(5), perturb_medium_flag=PERTURB_MEDIUM_FLAGS)
+    input: 
+        expand(rules.photon_table_hits.output, event_type=EVENT_TYPES, dist_min=1, dist_max=200, e_min=100, e_max=1E5, photon_table_index=range(20), perturb_medium_flag=PERTURB_MEDIUM_FLAGS),
+        expand(rules.photon_table_hits.output, event_type=EVENT_TYPES, dist_min=1, dist_max=200, e_min=1E5, e_max=5E6, photon_table_index=range(5), perturb_medium_flag=PERTURB_MEDIUM_FLAGS),
+        expand(rules.photon_table_hits.output, event_type=EVENT_TYPES, dist_min=1, dist_max=200, e_min=5E6, e_max=5E7, photon_table_index=range(5), perturb_medium_flag=PERTURB_MEDIUM_FLAGS)
     
 rule time_model_inputs:
-    input: expand(rules.photon_table_hits.output, dist_min=1, dist_max=200, e_min=100, e_max=1E5, photon_table_index=range(20), allow_missing=True), expand(rules.photon_table_hits.output, dist_min=1, dist_max=200, e_min=1E5, e_max=5E6, photon_table_index=range(8), allow_missing=True)
+    input: 
+        expand(rules.photon_table_hits.output, dist_min=1, dist_max=200, e_min=100, e_max=1E5, photon_table_index=range(20), allow_missing=True),
+        expand(rules.photon_table_hits.output, dist_min=1, dist_max=200, e_min=1E5, e_max=5E6, photon_table_index=range(8), allow_missing=True),
+        expand(rules.photon_table_hits.output, dist_min=1, dist_max=200, e_min=5E6, e_max=5E7, photon_table_index=range(5), allow_missing=True)
     output: os.path.join(OUTDIR, "training_inputs/time_input_{perturb_medium_flag}_{event_type}.jld2")
     resources:
         clusters="tinyfat",
         time="6:00:00",
         partition="work",
-        cpus_per_task=1,
-        slurm_extra="--mem-per-cpu=15000"
     params:
         perturb_medium = lambda wildcards: "--perturb_medium" if wildcards.perturb_medium_flag == "_perturb" else ""  
+    threads: 4
     shell:
-       "{JULIA_BIN} {SCRIPT_DIR}/surrogate_models/create_training_inputs_time.jl -i {input} -o {output} {params.perturb_medium}"
+       "ls -l /home/hpc/capn/capn100h/ && ls -l {OUTDIR} && ls -l $WORK && {JULIA_BIN} --threads 4 {SCRIPT_DIR}/surrogate_models/create_training_inputs_time.jl -i {input} -o {output} {params.perturb_medium}"
+
+rule amplitude_model_inputs:
+    input: 
+        expand(rules.photon_table_hits.output, dist_min=1, dist_max=200, e_min=100, e_max=1E5, photon_table_index=range(20), allow_missing=True),
+        expand(rules.photon_table_hits.output, dist_min=1, dist_max=200, e_min=1E5, e_max=5E6, photon_table_index=range(8), allow_missing=True),
+        expand(rules.photon_table_hits.output, dist_min=1, dist_max=200, e_min=5E6, e_max=5E7, photon_table_index=range(5), allow_missing=True),
+    output: os.path.join(OUTDIR, "training_inputs/amplitude_input_{perturb_medium_flag}_{event_type}.jld2")
+    resources:
+        clusters="tinyfat",
+        time="6:00:00",
+        partition="work",
+    params:
+        perturb_medium = lambda wildcards: "--perturb_medium" if wildcards.perturb_medium_flag == "_perturb" else ""  
+    threads: 4
+    shell:
+       "ls -l /home/hpc/capn/capn100h/ && ls -l {OUTDIR} && ls -l $WORK && {JULIA_BIN} --threads 4 {SCRIPT_DIR}/surrogate_models/create_training_inputs_amplitude.jl -i {input} -o {output} {params.perturb_medium}"
 
 
 rule train_time_model:
@@ -77,7 +106,7 @@ rule train_time_model:
        "{JULIA_BIN} {SCRIPT_DIR}/surrogate_models/train_time_surrogate.jl -i {input} -o {OUTDIR}/time_surrogate{wildcards.perturb_medium_flag}/{wildcards.event_type}/ --model_name time_uncert_{wildcards.time_uncert} -s {wildcards.time_uncert} {params.perturb_medium}"
 
 rule train_amp_model:
-    input: expand(rules.photon_table_hits.output, dist_min=1, dist_max=200, e_min=100, e_max=1E5, photon_table_index=range(20), allow_missing=True), expand(rules.photon_table_hits.output, dist_min=1, dist_max=200, e_min=1E5, e_max=5E6, photon_table_index=range(8), allow_missing=True)
+    input: os.path.join(OUTDIR, "training_inputs/amplitude_input_{perturb_medium_flag}_{event_type}.jld2")
     output: os.path.join(OUTDIR, "time_surrogate{perturb_medium_flag}/{event_type}/amplitude_1_FNL.bson")
     resources:
         slurm_extra="--gres=gpu:1",
@@ -92,4 +121,3 @@ rule train_amp_model:
 rule train_models:
     input: expand(rules.train_time_model.output, time_uncert=TIME_UNCERTS, event_type=EVENT_TYPES, perturb_medium_flag=PERTURB_MEDIUM_FLAGS), expand(rules.train_amp_model.output, event_type=EVENT_TYPES, perturb_medium_flag=PERTURB_MEDIUM_FLAGS)
     default_target: True
-

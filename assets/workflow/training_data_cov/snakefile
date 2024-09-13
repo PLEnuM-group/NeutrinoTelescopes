@@ -3,7 +3,7 @@ WORKDIR = "/home/wecapstor3/capn/capn100h"
 OUTDIR = os.path.join(WORKDIR, "snakemake")
 
 JULIA_BIN = "/home/hpc/capn/capn100h/.juliaup/bin/julia"
-SCRIPT_DIR = "/home/hpc/capn/capn100h/.julia/dev/NeutrinoTelescopes/scripts/surrogate_models"
+SCRIPT_DIR = "/home/saturn/capn/capn100h/julia_dev/NeutrinoTelescopes/scripts/surrogate_models"
 
 NEVENTS_CASC = 7500
 NEVENTS_TRACKS = 15000

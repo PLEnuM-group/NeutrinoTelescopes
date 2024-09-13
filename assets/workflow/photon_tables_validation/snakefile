@@ -1,12 +1,12 @@
 
-EVENT_TYPES = ["lightsabre", "extended"]
+EVENT_TYPES = ["lightsabre", "extended", "hadronic"]
 N_SIMS = 1000
 
 
 WORKDIR = "/home/wecapstor3/capn/capn100h"
 OUTDIR = os.path.join(WORKDIR, "snakemake/surrogate_validation_sets")
 JULIA_BIN = "/home/hpc/capn/capn100h/.juliaup/bin/julia"
-SCRIPT_DIR = "/home/hpc/capn/capn100h/.julia/dev/PhotonPropagation/scripts"
+SCRIPT_DIR = "/home/saturn/capn/capn100h/julia_dev/PhotonPropagation/scripts"
 PHOTON_SCALING = 5.
 N_PER_FILE = 50
 SEEDS = range(10)

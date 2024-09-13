@@ -1,0 +1,33 @@
+OUTDIR = "/home/wecapstor3/capn/capn100h/snakemake/muon_eff_area"
+JULIA_BIN = "/home/hpc/capn/capn100h/.juliaup/bin/julia"
+SCRIPT_DIR = "/home/saturn/capn/capn100h/julia_dev/NeutrinoTelescopes/scripts/event_generation"
+
+vert_spacings = [30, 40, 50]
+hor_spacings = [50, 60, 70, 80, 100]
+
+N_EVENTS = 200
+seeds = range(50)
+
+rule eff_area:
+    output: os.path.join(OUTDIR, "muon_eff_area_{vert_spacing}_{hor_spacing}_{seed,\d+}.jld2")
+    resources:
+        slurm_extra="--gres=gpu:1",
+        clusters="tinygpu",
+        time="6:00:00"
+    shell:
+        "{JULIA_BIN} {SCRIPT_DIR}/calculate_muon_eff_area.jl --n_events {N_EVENTS} --vert_spacing {wildcards.vert_spacing} --hor_spacing {wildcards.hor_spacing} --outfile {output} --seed {wildcards.seed}"
+
+rule extract_weights:
+    input: rules.eff_area.output
+    output: os.path.join(OUTDIR, "muon_eff_area_{vert_spacing}_{hor_spacing}_{seed,\d+}_weights.jld2")
+    resources:
+        clusters="tinyfat",
+        time="2:00:00",
+        partition="work"
+    group: "extract_weights"
+    shell:
+        "{JULIA_BIN} {SCRIPT_DIR}/extract_weights.jl --infile {input} --outfile {output}"
+
+rule all:
+    input: expand(rules.extract_weights.output, vert_spacing=vert_spacings, hor_spacing=hor_spacings, seed=seeds)
+    default_target: True
