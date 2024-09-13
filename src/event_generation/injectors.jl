@@ -27,7 +27,7 @@ export maximum_proj_area, projected_area
 export get_volume
 export is_volume, is_surface
 export point_in_volume
-
+export acceptance
 
 """
     VolumeType
@@ -300,7 +300,7 @@ get_intersection(::VolumeType, position, direction) = error("Not implemented")
 
     Code adapted from Jakob van Santen.
 """
-function get_intersection(c::Cylinder{T}, position, direction) where {T <: Real}
+function get_intersection(c::CylinderSurface{T}, position, direction) where {T <: Real}
     
     x, y, z = position .- c.center
 
@@ -353,12 +353,12 @@ function get_intersection(c::Cylinder{T}, position, direction) where {T <: Real}
     return i1
 end
 
-get_intersection(c::CylinderSurface, position, direction) = get_intersection(Cylinder(c), position, direction)
-get_intersection(volume::VolumeType, particle::Particle) = get_intersection(volume, particle.position, particle.direction)
+get_intersection(c::Cylinder, position, direction) = get_intersection(CylinderSurface(c), position, direction)
+get_intersection(vol_or_surface, particle::Particle) = get_intersection(vol_or_surface, particle.position, particle.direction)
 
 projected_area(::VolumeType, direction) = error("not implemented")
 function projected_area(c::Cylinder, direction::AbstractArray)
-    projected_area(c, cos(cart_to_sph(direction)[1]))
+    projected_area(c, direction[3])
 	
 end
 
@@ -370,6 +370,34 @@ end
 
 maximum_proj_area(::VolumeType) = error("not implemented")
 maximum_proj_area(c::Cylinder) = projected_area(c, cos(atan(2*c.height/(π*c.radius))))
+
+
+acceptance(::VolumeType, cos_min, cos_max) = error("not implemented")
+
+
+"""
+    acceptance(cyl::Cylinder, cos_min=-1, cos_max=1)
+
+Calculate the acceptance of a cylinder for a given range of cosine values.
+
+## Arguments
+- `cyl::Cylinder`: The cylinder object representing the detector.
+- `cos_min::Float64`: The minimum value of the cosine.
+- `cos_max::Float64`: The maximum value of the cosine.
+
+## Returns
+- `Float64`: The acceptance of the cylinder.
+
+The acceptance is calculated by integrating the surface area of the cylinder over the range of cosine values.
+"""
+function acceptance(cyl::Cylinder, cos_min=-1, cos_max=1) 
+
+    cap = π*cyl.radius^2
+    sides = 2*cyl.radius*cyl.height
+
+    return π*(cap*(cos_max*abs(cos_max)-cos_min*abs(cos_min)) +
+                sides*(acos(cos_min) - acos(cos_max) - sqrt(1-cos_min^2)*cos_min + sqrt(1-cos_max^2)*cos_max));
+end
 
 
 sample_uniform_ray(::SurfaceType) = error("not defined")

@@ -2,7 +2,7 @@ module FisherSurrogate
 
 using Flux
 using BSON
-using PhotonSurrogateModel: create_model_input!, apply_normalizer, Normalizer, HyperParams, create_mlp_embedding
+using PhotonSurrogateModel: create_model_input!, apply_transformation, Normalizer, HyperParams, create_mlp_embedding
 using ..SurrogateModelHits
 using ...EventGeneration
 using LinearAlgebra
@@ -223,7 +223,7 @@ function _predict_fisher(all_particles::AbstractVector{<:Particle}, targets, mod
     inp = @view calc_model_input!(all_particles, targets, model.tf_in, model.input_buffer, abs_scale=abs_scale, sca_scale=sca_scale)[:, 1:(length(all_particles) * length(targets))]
 
     
-    triu_pred = cpu(apply_normalizer(model.model(gpu(inp)), inv_y_tf).^3)
+    triu_pred = cpu(apply_transformation(model.model(gpu(inp)), inv_y_tf).^3)
     triu_pred = reshape(triu_pred, (size(triu_pred, 1), n_events, length(targets)))
 
     triu = zeros(6,6)
@@ -260,21 +260,26 @@ function predict_fisher(events::Vector{<:Event}, targets, model::FisherSurrogate
     
 end
 
-function predict_fisher(events::Vector{<:Event}, lines, model::FisherSurrogateModelPerLine; abs_scale, sca_scale)
-    all_particles::Vector{Particle{Float32}} = [first(event[:particles]) for event in events]
+
+
+
+
+
+function predict_fisher(particles::Vector{<:Particle}, lines, model::FisherSurrogateModelPerLine; abs_scale, sca_scale)
+    
     line_xys = [[first(l).shape.position[1], first(l).shape.position[2]] for l in lines]
 
-    n_events = length(events)
+    n_events = length(particles)
 
     normalizers::Vector{Normalizer{Float32}} = model.tf_out
 
     inv_y_tf = inv.(normalizers)
     # particles is the inner loop
    
-    inp = @view calculate_model_input!(all_particles, line_xys, model.tf_in, model.input_buffer, abs_scale=abs_scale, sca_scale=sca_scale)[:, 1:(length(all_particles) * length(line_xys))]
+    inp = @view calculate_model_input!(particles, line_xys, model.tf_in, model.input_buffer, abs_scale=abs_scale, sca_scale=sca_scale)[:, 1:(length(particles) * length(line_xys))]
     
 
-    triu_pred = cpu(apply_normalizer(model.model(gpu(inp)), inv_y_tf).^3)
+    triu_pred = cpu(apply_transformation(model.model(gpu(inp)), inv_y_tf).^3)
     triu_pred = reshape(triu_pred, (size(triu_pred, 1), n_events, length(line_xys)))
 
     triu = zeros(6,6)
@@ -282,12 +287,12 @@ function predict_fisher(events::Vector{<:Event}, lines, model::FisherSurrogateMo
 
     all_fishers = zeros(n_events, 6, 6)
 
-    # Loop over events
+    # Loop over particles
     for (i, tp) in enumerate(eachslice(triu_pred, dims=2))
         # Loop over targets
         @inbounds for (j, trl) in enumerate(eachslice(tp, dims=2))
 
-            p = all_particles[i]
+            p = particles[i]
             xy = line_xys[j]
 
             if !is_in_range(p, xy, model)
@@ -300,6 +305,11 @@ function predict_fisher(events::Vector{<:Event}, lines, model::FisherSurrogateMo
     end
 
     return all_fishers
+end
+
+function predict_fisher(events::Vector{<:Event}, lines, model::FisherSurrogateModelPerLine; abs_scale, sca_scale)
+    all_particles::Vector{Particle{Float32}} = [first(event[:particles]) for event in events]
+    return predict_fisher(all_particles, lines, model, abs_scale=abs_scale, sca_scale=sca_scale)
 end
 
 function invert_fishers(all_fishers)

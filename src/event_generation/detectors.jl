@@ -7,6 +7,7 @@ using PhysicsTools
 using StatsBase
 using LinearAlgebra
 using ..Injectors
+using AbstractMediumProperties
 export make_detector_line, make_hex_detector
 export make_n_hex_cluster_positions, make_n_hex_cluster_detector
 export Detector, LineDetector, get_detector_modules, get_detector_medium, get_detector_pmts

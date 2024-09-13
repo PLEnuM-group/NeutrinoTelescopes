@@ -1,10 +1,28 @@
 using StructTypes
+using .Injectors
 
-struct EventCollection{E <: Event}
-    events::Vector{E}
+export EventCollection, GenerationInfo
+
+mutable struct GenerationInfo{I <: Union{Nothing, <:Injector}}
+    injector::I
+    n_events::Int64
 end
 
-EventCollection() = EventCollection(Vector{Event}())
+function Base.:+(g::GenerationInfo, g2::GenerationInfo)
+    if g.injector != g2.injector
+        error("Injectors do not match")
+    end
+
+    return GenerationInfo(g.injector, g.n_events + g2.n_events)
+end
+
+
+mutable struct EventCollection{E <: Event, G <: Union{Nothing, <:GenerationInfo}}
+    events::Vector{E}
+    gen_info::G
+end
+
+EventCollection() = EventCollection(Vector{Event}(), nothing)
 
 Base.getindex(e::EventCollection, i) = e.events[i]
 Base.setindex!(e::EventCollection, v, i) = e.events[i] = v
@@ -16,12 +34,6 @@ Base.iterate(e::EventCollection) = iterate(e.events)
 Base.iterate(e::EventCollection, state) = iterate(e.events, state)
 Base.length(e::EventCollection) = length(e.events)
 
-
-function Base.vcat(ecs::Vararg{<:EventCollection})
-
-    combined_events = mapreduce(ec -> getproperty(ec, :events), vcat, ecs)
-    return EventCollection(combined_events)
-end
 
 StructTypes.StructType(::Type{<:EventCollection}) = StructTypes.Struct()
 

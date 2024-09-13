@@ -39,7 +39,7 @@ hits on at least two different PMTs.
 
 Returns a Vector of hit-time vectors.
 """
-function lc_trigger(sorted_hits::AbstractDataFrame; time_window=10.)
+function lc_trigger(sorted_hits::AbstractDataFrame; time_window=10.,)
 
     triggers = Vector{LCTrigger}()
     i = 1

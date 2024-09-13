@@ -9,6 +9,7 @@ using Flux
 using DataFrames
 using PreallocationTools
 using Base.Iterators
+using AbstractMediumProperties
 using PhotonSurrogateModel
 using ...SurrogateModels.SurrogateModelHits
 using ...EventGeneration
@@ -121,7 +122,8 @@ function _calc_single_fisher_matrix(
     targets_range = get_detector_modules(detector)[range_mask]  
 
      
-     if particle_shape(particle) == Track()
+    #=
+    if particle_shape(particle) == Track()
         n_pmt = get_pmt_count(eltype(targets_range))
         total_hits = sum(length.(times))
 
@@ -136,6 +138,7 @@ function _calc_single_fisher_matrix(
         particle = shift_particle(particle, cad_com)
     end
 
+    =#
     dir = particle.direction
     dir_theta, dir_phi = cart_to_sph(dir)
     logenergy = log10(particle.energy)

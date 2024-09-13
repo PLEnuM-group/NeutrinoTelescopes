@@ -4,6 +4,7 @@ using ...Processing
 using ...EventGeneration.Detectors
 using ...EventGeneration
 
+using AbstractMediumProperties
 using PhotonSurrogateModel
 using PhotonPropagation
 using Random
