@@ -23,6 +23,7 @@ using HyperTuning
 using TensorBoardLogger
 using Logging
 using MultivariateStats
+using NeutrinoSurrogateModelData
 
 
 include("train_cov_utils.jl")
@@ -104,10 +105,10 @@ logdir = joinpath(ENV["ECAPSTOR"], "tensorboard/cov_model_prod_per_string")
 hparams = FisherSurrogateModelParams(
     mlp_layers = 3,
     mlp_layer_size = 968,
-    lr = 0.0005,
-    lr_min = 1E-5,
+    lr = 0.0008,
+    lr_min = 1E-6,
     l2_norm_alpha =4E-7,
-    dropout = 0.1,
+    dropout = 0.15,
     non_linearity=relu,
     epochs = 150
 )
@@ -128,7 +129,7 @@ save(model_fname,
 
 
 
-model_fname = joinpath(ENV["ECAPSTOR"], "snakemake/fisher_surrogates/fisher_surrogate_per_string_extended.bson") 
+model_fname = joinpath(ENV["ECAPSTOR"], "snakemake/fisher_surrogates/fisher_surrogate_per_string_lightsabre.bson") 
 
 fisher_model = gpu(FisherSurrogateModelPerLine(model_fname))
 
@@ -139,28 +140,31 @@ detector_line = LineDetector([targets_line], medium)
 
 cylinder = Cylinder(SA[0., 0., -475.], 1100., 100.)
 
-pdist = CategoricalSetDistribution(OrderedSet([PEPlus, PEMinus]), [0.5, 0.5])
+pdist = CategoricalSetDistribution(OrderedSet([PMuPlus, PMuMinus]), [0.5, 0.5])
 ang_dist = LowerHalfSphere()
 length_dist = Dirac(1E4)
 edist = Pareto(1, 1E4)
 time_dist = Dirac(0.)
 inj = SurfaceInjector(CylinderSurface(cylinder), edist, pdist, ang_dist, length_dist, time_dist)
 
-model = PhotonSurrogate(
-    joinpath(ENV["ECAPSTOR"], "snakemake/time_surrogate_perturb/extended/amplitude_1_FNL.bson"),
-    joinpath(ENV["ECAPSTOR"], "snakemake/time_surrogate_perturb/extended/time_uncert_2_1_FNL.bson"))
+model = PhotonSurrogate(lightsabre_time_model(2)...)
 
 
 input_buffer = create_input_buffer(model, 16*20, 1)
 output_buffer = create_output_buffer(16*20, 100)
-diff_cache = FixedSizeDiffCache(input_buffer, 6)
+diff_cache = DiffCache(input_buffer, 13)
 
 hit_generator = SurrogateModelHitGenerator(gpu(model), 200.0, input_buffer, output_buffer)
 
 rng = Random.default_rng()
 
 event = rand(inj)
-m, = calc_fisher_matrix(event, detector_line, hit_generator, use_grad=true, rng=rng, cache=diff_cache)
+
+p = first(event[:particles])
+p_shift = shift_to_closest_approach(p, [0, 0, -475])
+
+
+m, = calc_fisher_matrix(p_shift, detector_line, hit_generator, use_grad=true, rng=rng, cache=diff_cache, n_samples=200)
 covm = inv(m)
 cov_pred_sum,_ = predict_cov([event], detector_line, fisher_model, abs_scale=1, sca_scale=1)
 diag(covm)

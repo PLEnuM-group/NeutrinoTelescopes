@@ -1,4 +1,4 @@
-using NeutrinoTelescopes
+using PhotonSurrogateModel
 using HDF5
 using DataFrames
 using CairoMakie
@@ -14,6 +14,8 @@ using ArgParse
 using JSON3
 using JLD2
 
+
+event_choices = ["extended", "lightsabre", "hadronic"]
 
 s = ArgParseSettings()
 @add_arg_table s begin
@@ -33,6 +35,10 @@ s = ArgParseSettings()
     "--perturb_medium"
     help = "Train a model with medium perturbation"
     action = :store_true
+    "--event_type"
+    help = "Event type; must be one of " * join(event_choices, ", ", " or ")
+    range_tester = (x -> x in event_choices)
+    default = "extended"
 end
 parsed_args = parse_args(ARGS, s; as_symbols=true)
 
@@ -73,23 +79,26 @@ end
 data = (tres=hits, label=features)
 
 model_type = parsed_args[:perturb_medium] ? AbsScaRQNormFlowHParams : RQNormFlowHParams
-
-hparams = model_type(
-    K=10,
-    batch_size=32768,
-    mlp_layers = 3,
-    mlp_layer_size = 862,
-    lr = 0.0005,
-    lr_min = 1E-7,
-    epochs = 100,
-    dropout = 0.2,
-    non_linearity = "relu",
-    seed = 31338,
-    l2_norm_alpha = 2E-5,
-    adam_beta_1 = 0.9,
-    adam_beta_2 = 0.999,
-    resnet = false
-)
+if parsed_args[:event_type] == "extended"
+    hparams = model_type(
+        K=10,
+        batch_size=65536,
+        mlp_layers = 2,
+        mlp_layer_size = 768,
+        lr = 0.0024,
+        lr_min = 1E-8,
+        epochs = 80,
+        dropout = 0.05,
+        non_linearity = "gelu",
+        seed = 31338,
+        l2_norm_alpha = 0.0045,
+        adam_beta_1 = 0.9,
+        adam_beta_2 = 0.999,
+        resnet = false
+    )
+else
+    error("Unknown type")
+end
 
 ptm_flag = parsed_args[:perturb_medium] ? "perturb" : "const_medium"
 

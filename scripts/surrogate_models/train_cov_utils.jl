@@ -2,6 +2,7 @@ using Glob
 using LinearAlgebra
 using JLD2
 using NeutrinoTelescopes
+using PhotonSurrogateModel
 
 function load_data_from_dir(path, type, nfiles=nothing)
 

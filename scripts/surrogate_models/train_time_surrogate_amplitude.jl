@@ -1,4 +1,4 @@
-using NeutrinoTelescopes
+using PhotonSurrogateModel
 using HDF5
 using DataFrames
 using CairoMakie
@@ -17,13 +17,11 @@ using MLUtils
 
 s = ArgParseSettings()
 
-event_choices = ["extended", "lightsabre"]
+event_choices = ["extended", "lightsabre", "hadronic"]
 
 @add_arg_table s begin
     "-i"
-    help = "Input files"
-    nargs = '+'
-    action => :store_arg
+    help = "Input file"
     "-o"
     help = "Output path"
     required = true
@@ -40,69 +38,93 @@ event_choices = ["extended", "lightsabre"]
 end
 parsed_args = parse_args(ARGS, s; as_symbols=true)
 
-fnames_casc = parsed_args[:i]
+fnames = parsed_args[:i]
 outpath = parsed_args[:o]
 model_name = parsed_args[:model_name]
 
 
 rng = MersenneTwister(31338)
-nsel_frac = 0.9
 
 feature_length = parsed_args[:perturb_medium] ? 8 + 2 : 8
 
+fid = jldopen(fname) 
+hits = fid["hits"][:]
+features = fid["features"][:, :]
+close(fid)
 
-hit_buffer = Matrix{Float64}(undef, 16, Int64(1E8))
-features_buffer = Matrix{Float64}(undef, feature_length, Int64(1E8))
 
-
-hits, features = read_amplitudes_from_hdf5!(fnames_casc, hit_buffer, features_buffer, nsel_frac, nothing)
-
-tf_vec = Vector{Normalizer}(undef, 0)
-
+tf_vec = Vector{UnitRangeScaler}(undef, 0)
 @views for row in eachrow(features[1:feature_length, :])
-    _, tf = fit_normalizer!(row)
+    _, tf = fit_transformation!(UnitRangeScaler, row)
     push!(tf_vec, tf)
 end
 
-data = (nhits=hits, labels=features)
 
-model_type = parsed_args[:perturb_medium] ? AbsScaPoissonExpModelParams : PoissonExpModelParams
+
+model_type = parsed_args[:perturb_medium] ? AbsScaPoissonExpFourierModelParams : PoissonExpFourierModelParams
 
 if parsed_args[:event_type] == "lightsabre"
     hparams = model_type(
-        batch_size=8192,
+        batch_size=16384,
         mlp_layers = 3,
         mlp_layer_size = 768,
-        lr = 0.0035,
+        lr = 0.002,
         lr_min = 1E-8,
         epochs = 100,
-        dropout = 0.0015,
+        dropout = 0.0046,
         non_linearity = "relu",
         seed = 31338,
-        l2_norm_alpha = 0.000658,
+        l2_norm_alpha = 0.039,
         adam_beta_1 = 0.9,
         adam_beta_2 = 0.999,
-        resnet = false
+        resnet = false,
+        fourier_gaussian_scale=0.0977,
+        fourier_mapping_size=64,
     )
 elseif parsed_args[:event_type] == "extended"
     hparams = model_type(
-        batch_size=8192,
+        batch_size = 16384,
         mlp_layers = 3,
-        mlp_layer_size = 916,
-        lr = 0.001,
+        mlp_layer_size = 768,
+        lr = 0.0023,
         lr_min = 1E-8,
         epochs = 150,
-        dropout = 0.05,
-        non_linearity = "relu",
+        dropout = 0.0044,
+        non_linearity = "gelu",
         seed = 31338,
-        l2_norm_alpha = 0,
+        l2_norm_alpha = 0.1,
         adam_beta_1 = 0.9,
         adam_beta_2 = 0.999,
-        resnet = false
+        resnet = false,
+        fourier_gaussian_scale = 0.1,
+        fourier_mapping_size = 64
     )
+elseif parsed_args[:event_type] == "hadronic"
+    hparams = model_type(
+        batch_size = 16384,
+        mlp_layers = 3,
+        mlp_layer_size = 768,
+        lr = 0.00058,
+        lr_min = 1E-8,
+        epochs = 150,
+        dropout = 0.0044,
+        non_linearity = "gelu",
+        seed = 31338,
+        l2_norm_alpha = 0.29,
+        adam_beta_1 = 0.9,
+        adam_beta_2 = 0.999,
+        resnet = false,
+        fourier_gaussian_scale = 0.116,
+        fourier_mapping_size = 64
+    )
+else
 else
     error("Unknown event type")
 end
+
+rand_mat = randn(rng, (hparams.fourier_mapping_size, feature_length))
+
+data = (nhits=hits, labels=fourier_input_mapping(features, rand_mat*fourier_feature_scale))
 
 
 ptm_flag = parsed_args[:perturb_medium] ? "perturb" : "const_medium"
@@ -111,4 +133,34 @@ logdir = joinpath(ENV["ECAPSTOR"], "tensorboard/kfold_$(model_name)_$(ptm_flag)"
 
 flds = kfolds(data; k=3)
 
-kfold_train_model(data, outpath, model_name, tf_vec, 3, hparams, logdir)
+for (model_num, (train_data, val_data)) in enumerate(kfolds(shuffleobs(data); k=n_folds))
+
+    model, loss_f = setup_model(hparams, tf_vec, rand_mat)
+    model = gpu(model)
+
+    opt_state, train_loader, test_loader, lg, schedule = setup_training(
+        train_data, val_data, tf_vec, hparams, logdir
+    )
+
+    device = gpu
+    model, final_test_loss, best_test_loss, best_test_epoch, time_elapsed = train_model!(
+        optimizer=opt_state,
+        train_loader=train_loader,
+        test_loader=test_loader,
+        model=model,
+        loss_function=loss_f,
+        hparams=hparams,
+        logger=lg,
+        device=device,
+        use_early_stopping=false,
+        checkpoint_path=nothing,
+        schedule=schedule)
+
+    model_path = joinpath(outpath, "$(model_name)_$(model_num)_FNL.bson")
+    model = cpu(model)
+    @save model_path model hparams
+end
+
+
+
+

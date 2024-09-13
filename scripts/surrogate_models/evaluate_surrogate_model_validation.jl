@@ -17,7 +17,29 @@ using UMAP
 using LinearAlgebra
 using MultivariateStats
 using ProgressLogging
+using PhotonSurrogateModel
 workdir = "/home/wecapstor3/capn/capn100h/"#ENV["ECAPSTOR"]
+
+
+function copy_best_models(likelihoods, type, outpath, overwrite=false)
+
+    median_pvals = combine(groupby(likelihoods, [:amp, :time, :time_uncert]), :p_value_ks_p => median)
+    best_models = combine(groupby(median_pvals, :time_uncert), sdf -> sdf[argmax(sdf.p_value_ks_p_median), :])
+
+    best_amp_model = argmax(counts(best_models.amp, 1:3))
+    fname_best_amp = joinpath(workdir, "snakemake/time_surrogate_perturb/$type/amplitude_$(best_amp_model)_FNL.bson")
+    cp(fname_best_amp, joinpath(outpath, type, "amp.bson"), force=overwrite)
+
+    for row in eachrow(best_models)
+        fname_time = joinpath(workdir, "snakemake/time_surrogate_perturb/$type/time_uncert_$(row.time_uncert)_$(row.time)_FNL.bson")
+        cp(fname_time, joinpath(outpath, type, "time_$(row.time_uncert).bson"), force=overwrite)
+    end
+end
+
+
+medium = make_cascadia_medium_properties(0.95f0)
+target = POM(SA[0.0, 0.0, 0.0], 1)
+
 
 type = "lightsabre"
 model = PhotonSurrogate(
@@ -29,10 +51,6 @@ input_buffer = create_input_buffer(model, 16, 1)
 output_buffer = create_output_buffer(16, 100)
 diff_cache = FixedSizeDiffCache(input_buffer, 6)
 
-medium = make_cascadia_medium_properties(0.95f0)
-
-type == "lightsabre" ? "tracks" : "cascades"
-target = POM(SA[0.0, 0.0, 0.0], 1)
 
 d = UnstructuredDetector([target], medium)
 
@@ -137,36 +155,34 @@ likelihoods = DataFrame()
     end
 end
 
-jldsave(joinpath(workdir, "surrogate_validation.jld2"), data = likelihoods)
-likelihoods = jldopen(joinpath(workdir, "surrogate_validation.jld2"))["data"]
+
+jldsave(joinpath(workdir, "surrogate_validation_$type.jld2"), data = likelihoods)
+likelihoods = jldopen(joinpath(workdir, "surrogate_validation_$type.jld2"))["data"]
 likelihoods[!, :p_value_ks_p] .= pvalue.(likelihoods[:, :p_value_ks])
 
-likelihoods
 
+sort(combine(groupby(likelihoods, [:amp, :time, :time_uncert]), :p_value_ks_p => median), :p_value_ks_p_median)
 
-function copy_best_models(likelihoods, type, outpath)
-
-    median_pvals = combine(groupby(likelihoods, [:amp, :time, :time_uncert]), :p_value_ks_p => median)
-    best_models = combine(groupby(median_pvals, :time_uncert), sdf -> sdf[argmax(sdf.p_value_ks_p_median), :])
-
-    best_amp_model = argmax(counts(best_models.amp, 1:3))
-    fname_best_amp = joinpath(workdir, "snakemake/time_surrogate_perturb/$type/amplitude_$(best_amp_model)_FNL.bson")
-    cp(fname_best_amp, joinpath(outpath, type, "amp.bson"))
-
-    for row in eachrow(best_models)
-        fname_time = joinpath(workdir, "snakemake/time_surrogate_perturb/$type/time_uncert_$(row.time_uncert)_$(row.time)_FNL.bson")
-        cp(fname_time, joinpath(outpath, type, "time_$(row.time_uncert).bson"))
-    end
-end
-
-
-copy_best_models(likelihoods, type, "/home/hpc/capn/capn100h/.julia/dev/NeutrinoSurrogateModelData/model_data/time_surrogate_perturb")
+out_folder = "/home/saturn/capn/capn100h/julia_dev/NeutrinoSurrogateModelData/model_data/time_surrogate_perturb"
+copy_best_models(
+    likelihoods,
+    type,
+    out_folder,
+    true
+     )
 
 key = "dataset_3"
 dset = "1"
+unique(likelihoods.time_uncert)
+
+likelihoods[likelihoods.event .== key .&& likelihoods.dset .== dset .&& likelihoods.time_uncert .== 1. .&& likelihoods.time .== 1, :]
+
+likelihoods[
+    likelihoods.event .== key .&& likelihoods.dset .== dset .&& likelihoods.time .== 2 .&& likelihoods.amp .== 3,
+    :time_uncert] .== 1
 
 mask = likelihoods.event .== key .&& likelihoods.dset .== dset .&&
-       likelihoods.time .== 2 .&& likelihoods.amp .== 3 .&& time_uncert == 1
+       likelihoods.time .== 2 .&& likelihoods.amp .== 3 .&& likelihoods.time_uncert .== 1
 mc_ts = first(likelihoods[mask, :ts_mc])
 model_ts = first(likelihoods[mask, :ts_model])
 

@@ -86,7 +86,10 @@ function generate_training_data(args)
         end
         
         event = rand(rng, inj)
-        m, = calc_fisher_matrix(event, detector, hit_generator, use_grad=true, rng=rng, cache=diff_cache, abs_scale=abs_scale, sca_scale=sca_scale, n_samples=200)
+
+        particle = shift_to_closest_approach(first(event[:particles]), [0f0, 0f0, -475f0])
+
+        m, = calc_fisher_matrix(particle, detector, hit_generator, use_grad=true, rng=rng, cache=diff_cache, abs_scale=abs_scale, sca_scale=sca_scale, n_samples=200)
         #cov = inv(m)
         #cov = 0.5* (cov + cov')
         l = cholesky(m, check = false)
@@ -94,12 +97,11 @@ function generate_training_data(args)
             continue
         end
 
-        p = first(event[:particles])
         # If we evaluate an entire string, use position SA[0., 0., -475.] as reference
         if args["per_string"]
-            raw_input = FisherSurrogate.calculate_model_input([p], [[0f0, 0f0]], transformations, abs_scale=abs_scale, sca_scale=sca_scale)[:, 1]
+            raw_input = FisherSurrogate.calculate_model_input([particle], [[0f0, 0f0]], transformations, abs_scale=abs_scale, sca_scale=sca_scale)[:, 1]
         else
-            raw_input = NeuralFlowSurrogate.create_flow_input(p, targets[1], transformations)
+            raw_input = NeuralFlowSurrogate.create_flow_input(particle, targets[1], transformations)
         end
         push!(training_data, (raw_input=raw_input, fi=m, chol_upper=l.U[triu!((trues(6,6)))]))
     end
