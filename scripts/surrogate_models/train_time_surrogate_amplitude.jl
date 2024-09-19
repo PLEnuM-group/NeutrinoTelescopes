@@ -13,7 +13,7 @@ using BSON: @save, @load
 using ArgParse
 using JSON3
 using MLUtils
-
+using JLD2
 
 s = ArgParseSettings()
 
@@ -38,7 +38,7 @@ event_choices = ["extended", "lightsabre", "hadronic"]
 end
 parsed_args = parse_args(ARGS, s; as_symbols=true)
 
-fnames = parsed_args[:i]
+fname = parsed_args[:i]
 outpath = parsed_args[:o]
 model_name = parsed_args[:model_name]
 
@@ -48,7 +48,7 @@ rng = MersenneTwister(31338)
 feature_length = parsed_args[:perturb_medium] ? 8 + 2 : 8
 
 fid = jldopen(fname) 
-hits = fid["hits"][:]
+hits = fid["hits"][:, :]
 features = fid["features"][:, :]
 close(fid)
 
@@ -118,28 +118,26 @@ elseif parsed_args[:event_type] == "hadronic"
         fourier_mapping_size = 64
     )
 else
-else
     error("Unknown event type")
 end
 
 rand_mat = randn(rng, (hparams.fourier_mapping_size, feature_length))
-
-data = (nhits=hits, labels=fourier_input_mapping(features, rand_mat*fourier_feature_scale))
-
+data = (nhits=hits, labels=fourier_input_mapping(features, rand_mat*hparams.fourier_gaussian_scale))
 
 ptm_flag = parsed_args[:perturb_medium] ? "perturb" : "const_medium"
 
 logdir = joinpath(ENV["ECAPSTOR"], "tensorboard/kfold_$(model_name)_$(ptm_flag)")
 
-flds = kfolds(data; k=3)
+
+n_folds = 3
 
 for (model_num, (train_data, val_data)) in enumerate(kfolds(shuffleobs(data); k=n_folds))
 
     model, loss_f = setup_model(hparams, tf_vec, rand_mat)
     model = gpu(model)
 
-    opt_state, train_loader, test_loader, lg, schedule = setup_training(
-        train_data, val_data, tf_vec, hparams, logdir
+    opt_state, train_loader, test_loader, lg, schedule = setup_training(model, 
+        train_data, val_data, hparams, logdir
     )
 
     device = gpu

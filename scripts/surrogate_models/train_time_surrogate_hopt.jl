@@ -32,7 +32,7 @@ end
 
 function load_data()
 
-    fname = "/home/wecapstor3/capn/capn100h/snakemake/training_inputs/time_input__perturb_hadronic.jld2"
+    fname = "/home/wecapstor3/capn/capn100h/snakemake/training_inputs/time_input__perturb_lightsabre.jld2"
     fid = jldopen(fname) 
     hits = fid["hits"][:]
     features = fid["features"][:, :]
@@ -71,7 +71,7 @@ rng = MersenneTwister(31338)
 
 @everywhere function objective(trial)
 
-    logdir = joinpath(ENV["ECAPSTOR"], "tensorboard/hopt_time_hadronic/time_surrogate")
+    logdir = joinpath(ENV["ECAPSTOR"], "tensorboard/hopt_time_lightsabre/time_surrogate")
 
     logger = TBLogger(logdir)
     # fix seed for the RNG
@@ -107,7 +107,8 @@ rng = MersenneTwister(31338)
     data = (tres=hits_s, label=features_s)
     train_loader, test_loader = PhotonSurrogateModel.setup_dataloaders(data, 31338, batch_size)
     
-    @suggest K in trial
+    #@suggest K in trial
+    K = 10
     hparams = AbsScaRQNormFlowFourierHParams(
         K=K,
         batch_size=batch_size,
@@ -189,17 +190,15 @@ rng = MersenneTwister(31338)
     return test_loss
 end
 
-
-
 scenario = Scenario(### hyperparameters
-                    lr = BoxConstrainedSpace(1E-4, 5E-3),
-                    l2_norm_alpha = 10 .^ (-3:0.5:-1),
-                    fourier_feature_scale = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.5],
+                    lr = BoxConstrainedSpace(0.001, 0.0025),
+                    l2_norm_alpha = BoxConstrainedSpace(0, 0.0001),
+                    fourier_feature_scale = [0.001, 0.01, 0.05, 0.1, 0.15, 0.2],
                     dropout = BoxConstrainedSpace(0, 0.2),
-                    K = [8, 9, 10, 11, 12],
-                    epochs = [80, 100],
+                    #K = [8, 9, 10, 11, 12],
+                    epochs = [80, 100, 120],
                     mlp_layers = [2, 3],
-                    mlp_layer_size = [512, 768, 1024],
+                    mlp_layer_size = [768, 1024],
                     #non_lin = ["gelu", "relu"],
                     pruner= NeverPrune(),
                     verbose = true, # show the log
