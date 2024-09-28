@@ -1,0 +1,18 @@
+[input]
+filename = "/home/wecapstor3/capn/capn100h/symbolic_regression/sr_dataset_full.jld2"
+variables = ["energy", "distance", "theta_pos", "theta_dir", "delta_phi", "abs_scale", "sca_scale"]
+fit_variables = ["energy", "distance", "abs_scale", "sca_scale"]
+train_size = 20000
+units = ["Constants.GeV", "m", "", ""]
+
+[[selection]]
+name = "theta_pos"
+range = [0.5, 0.7]
+
+[[selection]]
+name = "theta_dir"
+range = [0.8, 1.0]
+
+[[selection]]
+name = "delta_phi"
+range = [0.4, 0.6]

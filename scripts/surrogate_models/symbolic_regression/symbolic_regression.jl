@@ -10,7 +10,10 @@ using ArgParse
 using Logging
 using TOML
 using PoissonRandom
+using SHA
+using Random
 
+loss_functions = ["poisson", "l2", "l1", "logl1", "logl2"]
 
 s = ArgParseSettings()
 @add_arg_table s begin
@@ -19,9 +22,39 @@ s = ArgParseSettings()
     "--config"
     help = "Config file"
     required=true
+    "--train"
+    help = "Training dataset"
+    required=true
+    "--output"
+    help = "Output dir"
+    required=true
     "--multiproc"
     action = :store_true
     help = "Use multiprocessing"
+    "--use_trig"
+    action = :store_true
+    help = "Use trig function"
+    "--use_weights"
+    action = :store_true
+    help = "Use weighted loss"
+    "--loss"
+    help = "Loss functions to use"
+    required=true
+    range_tester = in(loss_functions)
+    "--niterations"
+    help = "Number of SR iterations"
+    required=true
+    arg_type = Int64
+    "--maxsize"
+    help = "Max equation size"
+    required=true
+    arg_type = Int64
+    "--verbose"
+    action = :store_true
+    help = "Show progress"
+    "--use_dim_constraints"
+    action = :store_true
+    help = "Use dimensional constraints"
 end
 
 parsed_args = parse_args(ARGS, s)
@@ -56,77 +89,109 @@ end
 @everywhere using SymbolicRegression, LoopVectorization, SpecialFunctions, Bumper, SymbolicUtils
 @everywhere include("utils.jl")
 
+chash = bytes2hex(sha256(read(parsed_args["config"])))
 config = TOML.parsefile(parsed_args["config"])
 
-outdir = config["output"]["dir"]
+outdir = parsed_args["output"]
 
 if !isdir(outdir)
     mkdir(outdir)
 end
 
-if isfile(joinpath(outdir, "dataset.jld2"))
-    dsel = JLD2.load(joinpath(outdir, "dataset.jld2"))["data"]
+
+if isfile(parsed_args["train"])
+    train = JLD2.load(parsed_args["train"])["train"]
 else
-    data = JLD2.load(config["input"]["filename"])["data"]
-    dsel = apply_selection(data, config["selection"])
-    jldsave(joinpath(outdir, "dataset.jld2"), data=dsel)
+    error("Training dataset not found.")
 end
-
-X = Matrix(dsel[:, Symbol.(config["run"]["variables"])])'
-y = dsel.nhits
-y_resampled = pois_rand.(y)
-
-Xs, ys = shuffleobs((X, y_resampled))
-
-@everywhere Xs = $Xs
-@everywhere ys = $ys
-
-unary_operators = [exp, log, exp_minus, one_over_square, square]
-nested_constraints = [
-    log => [log => 0, exp => 0],
-    exp => [exp => 0, log => 0, exp_minus => 0],
-    exp_minus => [exp_minus => 0, exp => 0],
-    one_over_square => [one_over_square => 0]
-]
-
 
 run_config = get(config, "run", Dict())
 
-if get(run_config, "use_trig", false)
-    push!(unary_operators, cos)
-    push!(unary_operators, tan)
-    push!(unary_operators, tanh)
+X = Matrix(train[:, Symbol.(config["input"]["fit_variables"])])'
+y = train.nhits
+w = train.variance
 
-    push!(nested_constraints, cos => [cos => 0, tan => 0])
-    push!(nested_constraints, tan => [tan => 0, cos => 0])
+loss_func = select_loss_func(parsed_args["loss"])
+
+if parsed_args["loss"] == "poisson"
+    y = pois_rand.(y)
+end
+sel = y .> 0
+X = X[:, sel]
+y = y[sel]
+w = w[sel]
+
+
+Xs, ys, ws = shuffleobs((X, y, w))
+
+@everywhere Xs = $Xs
+@everywhere ys = $ys
+@everywhere ws = $ws
+
+
+if parsed_args["use_trig"]
+    unary_operators = [exp, log, exp_minus, one_over_square, square, cos, tan, sqrt]
+    nested_constraints = [
+        log => [log => 0, exp => 0,],
+        exp => [exp => 0, log => 0, exp_minus => 0,],
+        exp_minus => [exp_minus => 0, exp => 0, log => 0],
+        one_over_square => [one_over_square => 0, square => 0],
+        square => [exp => 0, exp_minus => 0, log => 0, one_over_square => 0],
+        sqrt => [sqrt => 1, exp => 0, exp_minus => 0, log => 0, one_over_square => 0],
+        cos => [cos => 0, tan => 0, exp => 0, exp_minus => 0, square => 0, log => 0],
+        tan => [tan => 0, cos => 0, exp => 0, exp_minus => 0, square => 0, log => 0],
+        square => [exp => 0, exp_minus => 0, log => 0, one_over_square => 0, square => 1],
+        (^) => [exp => 0, exp_minus => 0, log => 0]
+    ]
+else
+    unary_operators = [exp, log, exp_minus, one_over_square, square, sqrt]
+    nested_constraints = [
+        log => [log => 0, exp => 0],
+        exp => [exp => 0, log => 0, exp_minus => 0],
+        exp_minus => [exp_minus => 0, exp => 0, log => 0],
+        one_over_square => [one_over_square => 0, square => 0],
+        square => [exp => 0, exp_minus => 0, log => 0, one_over_square => 0, square => 1],
+        sqrt => [sqrt => 1, exp => 0, exp_minus => 0, log => 0, one_over_square => 0],
+        (^) => [exp => 0, exp_minus => 0, log => 0]
+    ]
 end
 
-
+X_units = nothing
+dimensional_constraint_penalty = nothing
+if parsed_args["use_dim_constraints"]
+    X_units = config["input"]["units"]
+    dimensional_constraint_penalty = 10^5
+end
 
 opt = Options(
     binary_operators=[+, *, /, -, ^],
     unary_operators=unary_operators,
     populations=3*n_workers,
-    population_size=100,
+    population_size=150,
     batching=true,
-    batch_size=500,
-    elementwise_loss=poisson_loss,
+    batch_size=1000,
+    elementwise_loss=loss_func,
     #elementwise_loss=HuberLoss(1),
-    maxsize=25,
-    #maxdepth=5,
+    maxsize=parsed_args["maxsize"],
+    #maxdepth=7,
     turbo = true,
     nested_constraints = nested_constraints,
-    ncycles_per_iteration=800,
+    ncycles_per_iteration=750,
     should_simplify=true,
-    mutation_weights = MutationWeights(optimize=0.001),
+    mutation_weights = MutationWeights(optimize=0.005),
     bumper = true,
-    #warmup_maxsize_by=0.1,
-    complexity_of_constants=2,
-    complexity_of_variables=2,
+    warmup_maxsize_by=0.3,
+    complexity_of_constants=1,
+    complexity_of_variables=1,
     complexity_of_operators = [
-        (^) => 2        
+        (^) => 2,
     ],
-    output_file = joinpath(outdir, "hof_$(now).csv")
+    parsimony = 0.002,
+    adaptive_parsimony_scaling=100,
+    output_file = joinpath(outdir, "hof_$(now()).csv"),
+    progress=parsed_args["verbose"],
+    fraction_replaced_hof=0.1,
+    dimensional_constraint_penalty=dimensional_constraint_penalty
 
 )
 
@@ -137,23 +202,33 @@ if !isnothing(parsed_args["continue"])
     state = (f["state"], f["hof"])
 end
 
+weights = nothing
+if parsed_args["use_weights"]
+    weights = ys ./ sqrt.(ws)
+end
+
+
+
+
+
+jldsave(joinpath(parsed_args["output"], "config.jld2"), config=parsed_args)
+
+
 
 if parsed_args["multiproc"]
 
     state, hof = equation_search(
         Xs,
         ys,
-        niterations=500,
+        weights=weights,
+        niterations=parsed_args["niterations"],
         options=opt,
         parallelism=:multiprocessing,
         procs = workers(),
-        #numprocs=40,
-        #variable_names=["energy", "distance", "theta_pos", "theta_dir", "delta_phi", "abs_scale", "sca_scale"],
-        variable_names=["energy", "distance"],
-        #X_units=["Constants.GeV", "m", "", "", "", "", ""],
+        variable_names=config["input"]["fit_variables"],
+        X_units=X_units,
         runtests=false,
         return_state=true,
-        verbosity=2,
         saved_state=state
     )
 
@@ -161,19 +236,16 @@ else
     state, hof = equation_search(
         Xs,
         ys,
-        niterations=500,
+        weights=weights,
+        niterations=parsed_args["niterations"],
         options=opt,
         parallelism=:multithreading,
-        #variable_names=["energy", "distance", "theta_pos", "theta_dir", "delta_phi", "abs_scale", "sca_scale"],
-        variable_names=["energy", "distance", "abs_scale"],
-        #X_units=["Constants.GeV", "m", "", "", "", "", ""],
+        variable_names=config["input"]["fit_variables"],
+        X_units=X_units,
         runtests=false,
         return_state=true,
-        verbosity=2,
         saved_state=state
     )
 end
 
-
-
-jldsave(joinpath(outdir), "sr_state_$(now()).jld2", state=state, hof=hof, options=opt)
+jldsave(joinpath(parsed_args["output"], "sr_state.jld2"), state=state, hof=hof, options=opt)

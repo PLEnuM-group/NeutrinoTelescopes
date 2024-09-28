@@ -22,255 +22,250 @@ using Bumper
 using SpecialFunctions
 using Glob
 using Latexify
+using TOML
+using SHA
+using CSV
+using LossFunctions
+using Random
 include("utils.jl")
 
+#data = load_data(glob("*.hd5", "/home/wecapstor3/capn/capn100h/snakemake/photon_tables_perturb/extended/hits/"))
+#jldsave("/home/wecapstor3/capn/capn100h/symbolic_regression/sr_dataset_full.jld2", data=data)
 
+runs = glob("sr_e*", "/home/wecapstor3/capn/capn100h/symbolic_regression/")
 
-function load_data()
+finished_runs = []
 
-    files = glob("*.hd5", "/home/wecapstor3/capn/capn100h/snakemake/photon_tables_perturb/extended/hits/")
-
-    target = POM(SA_F32[0, 0, 0], 1)
-    r = RotMatrix3(I)
-    pmt_positions = get_pmt_positions(target, r)
-
-    params = []
-
-    for fname in files
-        fid = h5open(fname)
-
-        datasets = keys( fid["pmt_hits"])
-        
-        for ds in datasets
-            hits = fid["pmt_hits/$ds"][:, :]
-            attributes = attrs(fid["pmt_hits/$ds"])
-
-            pos = attributes["distance"] * sph_to_cart(attributes["pos_theta"], attributes["pos_phi"])
-            dir = sph_to_cart(attributes["dir_theta"], attributes["dir_phi"])
-            particle = Particle(pos, dir, 0., attributes["energy"], 0, PEMinus)
-
-            if length(hits) == 0
-                continue
-            end
-
-            if size(hits, 2) != 3
-                @show fname, ds
-                continue
-            end
-
-            df = DataFrame(hits, [:time, :pmt_ix, :weight])
-            df[!, :time] .+= randn(length(df.time))*2
-
-            for pmt_ix in 1:16
-
-                pmt_pos = pmt_positions[pmt_ix]
-
-                rot = calc_rot_matrix(pmt_pos, [0, 0, 1])
-
-                part_pos_rot = rot * pos
-                part_dir_rot = rot * dir
-
-                part_pos_rot_sph = cart_to_sph(part_pos_rot ./ norm(part_pos_rot))
-                part_dir_rot_sph = cart_to_sph(part_dir_rot)
-                delta_phi = part_pos_rot_sph[2] - part_dir_rot_sph[2]
-
-                sel = df[df.pmt_ix .== pmt_ix, :]
-
-                push!(
-                        params,
-                        (
-                            nhits = sum(sel.weight, init=0),
-                            variance = sum(sel.weight .^2, init=0),
-                            pmt_ix=pmt_ix,
-                            pos=pos,
-                            dir=dir,
-                            tshift=NaN,
-                            gfit_alpha=NaN,
-                            gfit_theta=NaN,
-                            energy=particle.energy,
-                            delta_phi=delta_phi,
-                            theta_pos=part_pos_rot_sph[1],
-                            theta_dir=part_dir_rot_sph[1],
-                            abs_scale=attributes["abs_scale"],
-                            sca_scale=attributes["sca_scale"],
-                            distance=attributes["distance"],
-                        )
-                    )
-                    
-
-                #=
-                if nrow(sel) < 10
-                    push!(
-                        params,
-                        (
-                            nhits = sum(sel.weight, init=0),
-                            variance = sum(sel.weight .^2, init=0),
-                            pmt_ix=pmt_ix,
-                            pos=pos,
-                            dir=dir,
-                            tshift=NaN,
-                            gfit_alpha=NaN,
-                            gfit_theta=NaN,
-                            energy=particle.energy,
-                            delta_phi=delta_phi,
-                            theta_pos=part_pos_rot_sph[1],
-                            theta_dir=part_dir_rot_sph[1],
-                            abs_scale=attributes["abs_scale"],
-                            sca_scale=attributes["sca_scale"],
-                            distance=attributes["distance"],))
-                    continue
-                end
-
-                
-                tshift = minimum(sel[:, :time])
-                #@show sel.time .- tshift .+ 1E-10
-                gfit = nothing
-                gfit = fit_mle(Gamma, sel.time .- tshift .+ 1E-10, sel.weight)
-            
-
-                push!(
-                    params,
-                    (
-                        nhits = sum(sel.weight, init=0),
-                        variance = sum(sel.weight .^2, init=0),
-                        pmt_ix=pmt_ix,
-                        pos=pos,
-                        dir=dir,
-                        tshift=tshift,
-                        gfit_alpha=gfit.α,
-                        gfit_theta=gfit.θ,
-                        energy=particle.energy,
-                        delta_phi=delta_phi,
-                        theta_pos=part_pos_rot_sph[1],
-                        theta_dir=part_dir_rot_sph[1],
-                        abs_scale=attributes["abs_scale"],
-                        sca_scale=attributes["sca_scale"],
-                        distance=attributes["distance"],
-                        )
-                )
-            =#
-            end
-        end
+for run in runs
+    if isfile(joinpath(run, "sr_state.jld2"))
+        push!(finished_runs, run)
     end
-    params = DataFrame(params)
-    return params
 end
 
+show(collect(zip(eachindex(finished_runs), basename.(finished_runs))))
 
-function weighted_subsample(df, n, weighting_func)
+data = load("/home/wecapstor3/capn/capn100h/symbolic_regression/sr_dataset_full.jld2")["data"]
 
-    weights = weighting_func(df)
-    ixs = 1:nrow(df)
+hist(log10.(data.energy), bins=100)
 
-    selected_ixs = StatsBase.sample(ixs, Weights(weights), n, replace=false)
 
-    return df[selected_ixs, :]
-    
-end
 
-function weight_func(df) 
-
-    cnt_1 = sum(df.energy .< 1E5)
-    cnt_2 = sum(df.energy .>= 1E5)
-
-    weight = zeros(nrow(df))
-
-    weight[df.energy .< 1E5] .= (log10(1E5)-log10(1E2)) / cnt_1
-    weight[df.energy .>= 1E5] .= (log10(5E6)-log10(1E5)) / cnt_2
-
-    weight .*= df.energy .* df.distance
-
-    return weight
-end
-
-function plot_result(func, X, y)
-    
-    log_ebins =1:0.5:8
-    ebins = 10 .^(log_ebins)
-
-    xs = 10 .^ (0:0.01:log10(200))
-
-    cmap = cgrad(:viridis)
-
-    get_color_e(val) = cmap[(val-log10(minimum(ebins))) / (log10(maximum(ebins)) - log10(minimum(ebins)))]
-
-    fig = Figure(size=(1000, 1000))
-    ax = Axis(fig[1, 1], yscale=log10, xscale=log10, xlabel="Distance", ylabel="Number of Hits")
-    scatter!(ax, X[2, :], y, color=get_color_e.(log10.(X[1, :])))
-
-    bin_centers = 10 .^ (0.5 * (log_ebins[1:end-1] + log_ebins[2:end]))
-
-    xeval = zeros(3, length(xs))
-
-    for ebin in bin_centers
-        xeval[1, :] .= ebin
-        xeval[2, :] .= xs
-        xeval[3, :] .= 1
-        #ys, _ = eval_tree_array(eq_sel, xeval, opt)
-        
-        ys = func(xeval)
-        
-        lines!(ax, xs, ys, color=get_color_e(log10(ebin)))
+variable_configs = ["e_dist_abs_sca_True_logl2_400_True", "e_dist_abs_sca_2_True_logl2_400_True", "e_dist_abs_sca_3_True_logl2_400_True"]
+fig = Figure(size=(400 * length(variable_configs), 1600))
+for (vix, variable_config) in enumerate(variable_configs)
+    sel_run = "/home/wecapstor3/capn/capn100h/symbolic_regression/sr_$(variable_config)/"
+    if !isfile(joinpath(sel_run, "sr_state.jld2"))
+        continue
     end
-    ylims!(ax, 1E-2, 1E5)
-    
-    ax2 = Axis(fig[1, 2], yscale=log10, xscale=log10, xlabel="Distance", ylabel="Number of Hits")
-    xeval[1, :] .= 1E4
-    ys = func(xeval)
-    sel = (X[1, :] .> 9E3) .&& (X[1, :] .< 2E4)
-    scatter!(ax2, X[2, sel], y[sel], color=get_color_e.(log10.(X[1, sel])))        
-    lines!(ax2, xs, ys, color=get_color_e(log10(1E4)))
 
-    xeval[1, :] .= 1E3
-    ys = func(xeval)
-    sel = (X[1, :] .> 9E2) .&& (X[1, :] .< 2E3)
-    scatter!(ax2, X[2, sel], y[sel], color=get_color_e.(log10.(X[1, sel])))        
-    lines!(ax2, xs, ys, color=get_color_e(log10(1E3)))
+    X, y, w, sr_summary = read_results(sel_run)
 
-    ylims!(ax2, 1E-2, 1E5, )
+    six = searchsortedfirst(sr_summary.complexity, 15)
+
+    eq_sel = sr_summary.equation[six]
+    eq_text_simpl = string(simplify(sr_summary.eq_sym[six]))
+    println("Equation at index $six (complexity: $(sr_summary.complexity[six]) for $variable_config: $(eq_text_simpl)")
 
 
-    ax3 = Axis(fig[2, 1], yscale=log10, xscale=log10, xlabel="Distance", ylabel="Number of Hits")
-    get_color_a(val) = cmap[(val-0.9) / (1.1 - 0.9)]
+    ax = Axis(fig[1, vix], yscale=log10, xlabel="Complexity", ylabel="Loss", title="Variable Config: $variable_config")
+    lines!(ax, sr_summary.complexity, sr_summary.train_loss)
+    lines!(ax, sr_summary.complexity, sr_summary.val_loss)
+    ax = Axis(fig[2, vix], yscale=log10, xscale=log10, xlabel="Truth", ylabel="Prediction")
+    plot_pred_target(X, y, eq_sel, ax)
+    ax = Axis(fig[3, vix], yscale=log10, xscale=log10, xlabel="Distance", ylabel="Prediction")
+    plot_distance_energy(X, y, eq_sel, [(3, 1.0), (4, 1.0)], ax)
+    ax = Axis(fig[4, vix], yscale=log10, xscale=log10, xlabel="Energy", ylabel="Number of Hits")
+    plot_energy_distance(X, y, eq_sel, [(3, 1.0), (4, 1.0)], ax)
 
-    xeval[1, :] .= 1E3
-    xeval[3, :] .= 0.9
-    ys = func(xeval)
-    sel = (X[1, :] .> 9E2) .&& (X[1, :] .< 2E3)
-    scatter!(ax3, X[2, sel], y[sel], color=get_color_a.(X[3, sel]))        
-    lines!(ax3, xs, ys, color=get_color_a(0.9))
-
-    xeval[3, :] .= 1.0
-    ys = func(xeval)
-    lines!(ax3, xs, ys, color=get_color_a(1.0))
-
-    xeval[3, :] .= 1.1
-    ys = func(xeval)
-    lines!(ax3, xs, ys, color=get_color_a(1.0))
-
-    ylims!(ax3, 1E-2, 1E5, )
-    fig
 
 end
+fig
+
+
+sel_run = "/home/wecapstor3/capn/capn100h/symbolic_regression/sr_e_dist_phi_abs_sca_theta_dir_True_logl1_1000_True/"
+X, y, w, sr_summary = read_results(sel_run)
+six = searchsortedfirst(sr_summary.complexity, 30)
+eq_sel = sr_summary.equation[six]
+
+@show sr_summary.eq_str[six]
+
+begin
+fig = Figure(size=(400*3, 400*3))
+ax = Axis(fig[1, 1], yscale=log10, xlabel="Complexity", ylabel="Loss")
+lines!(ax, sr_summary.complexity, sr_summary.train_loss)
+lines!(ax, sr_summary.complexity, sr_summary.val_loss)
+scatter!(ax, sr_summary.complexity[six], sr_summary.train_loss[six], color=:red)
+ax = Axis(fig[1, 2], yscale=log10, xscale=log10, xlabel="Truth", ylabel="Prediction")
+plot_pred_target(X, y, eq_sel, ax)
+
+
+yscaling = Makie.Symlog10(1E1)
+yscaling = log10
+if size(X, 1) == 6
+    ax = Axis(fig[2, 1], yscale=yscaling, xscale=log10, xlabel="Distance", ylabel="Prediction")
+    sel = (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> -1.5)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(3, 1.0), (4, 1.0), (5, 0.0), (6, 1.4)], [2, 1:1:200], [1, range(2, 7, 7), true], ax)
+    ax = Axis(fig[2, 2], yscale=yscaling, xscale=log10, xlabel="Energy", ylabel="Number of Hits")
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(3, 1.0), (4, 1.0), (5, 0.0), (6, 1.4)], [1, 10 .^(2:0.1:7.5)], [2, range(0, log10(200), 7), true], ax)
+    
+    ax = Axis(fig[1, 3], yscale=yscaling, xlabel="Abs Scale", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> -1.5)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (4, 1.0), (5, 0.0), (6, 1.4)], [3, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
+    ax = Axis(fig[2, 3], yscale=yscaling, xlabel="Sca Scale", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> -1.5)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (5, 0.0), (6, 1.4)], [4, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
+
+    ax = Axis(fig[3, 1], yscale=yscaling, xlabel="Delta Phi", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> -1.5)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (4, 1.0), (6, 1.4)], [5, -2π:0.01:2π], [1, range(2, 7, 7), true], ax)
+
+    ax = Axis(fig[3, 2], yscale=yscaling, xlabel="Theta Dir", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (4, 1.0), (5, 0.0)], [6, 0:0.01:π], [1, range(2, 7, 7), true], ax)
+elseif size(X, 1) == 5
+    ax = Axis(fig[2, 1], yscale=yscaling, xscale=log10, xlabel="Distance", ylabel="Prediction")
+    sel = (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(3, 1.0), (4, 1.0), (5, 0.0)], [2, 1:1:200], [1, range(2, 7, 7), true], ax)
+    ax = Axis(fig[2, 2], yscale=yscaling, xscale=log10, xlabel="Energy", ylabel="Number of Hits")
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(3, 1.0), (4, 1.0), (5, 0.0)], [1, 10 .^(2:0.1:7.5)], [2, range(0, log10(200), 7), true], ax)
+    
+    ax = Axis(fig[1, 3], yscale=yscaling, xlabel="Abs Scale", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (4, 1.0), (5, 0.0)], [3, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
+    ax = Axis(fig[2, 3], yscale=yscaling, xlabel="Sca Scale", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (5, 0.0)], [4, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
+
+    ax = Axis(fig[3, 1], yscale=yscaling, xlabel="Delta Phi", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (4, 1.0)], [5, -2π:0.01:2π], [1, range(2, 7, 7), true], ax)
+else
+
+    fig = Figure(size=(400*3, 400*2))
+    ax = Axis(fig[1, 1], yscale=log10, xlabel="Complexity", ylabel="Loss")
+    lines!(ax, sr_summary.complexity, sr_summary.train_loss)
+    lines!(ax, sr_summary.complexity, sr_summary.val_loss)
+    scatter!(ax, sr_summary.complexity[six], sr_summary.train_loss[six], color=:red)
+    ax = Axis(fig[1, 2], yscale=log10, xscale=log10, xlabel="Truth", ylabel="Prediction")
+    plot_pred_target(X, y, eq_sel, ax)
+    ax = Axis(fig[2, 1], yscale=log10, xscale=log10, xlabel="Distance", ylabel="Prediction")
+    plot_variable_slice(X, y, eq_sel, [(3, 1.0), (4, 1.0)], [2, 1:1:200], [1, range(2, 7, 7), true], ax)
+    ax = Axis(fig[2, 2], yscale=log10, xscale=log10, xlabel="Energy", ylabel="Number of Hits")
+    plot_variable_slice(X, y, eq_sel, [(3, 1.0), (4, 1.0)], [1, 10 .^(2:0.1:7.5)], [2, range(0, log10(200), 7), true], ax)
+
+    ax = Axis(fig[1, 3], yscale=log10, xscale=log10, xlabel="Abs Scale", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (4, 1.0)], [3, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
+
+    ax = Axis(fig[2, 3], yscale=log10, xscale=log10, xlabel="Sca Scale", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0)], [4, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
+end
+fig
+end
+
+X, y, w, sr_summary = read_results("/home/wecapstor3/capn/capn100h/symbolic_regression/sr_e_dist_abs_sca_False_logl2_400_True")
+
+
+hist(w)
+
+
+using PhotonSurrogateModel
+using PhotonPropagation
+using BSON
+medium = CascadiaMediumProperties(0.95, 1.0, 1.0)
+rng = MersenneTwister(31338)
+
+target = POM(SA_F32[0., 0., 0.], 1);
+
+model_path = "/home/wecapstor3/capn/capn100h/snakemake/time_surrogate_perturb/extended/amplitude_1_FNL.bson"
+model = load(model)[:model]
+
+feat_buffer = create_input_buffer(model, 16, 1);
+
+
+model = gpu(PhotonSurrogate(model_type(1)...))
+input_size = size(model.embedding.layers[1].weight, 2)
+
+feat_buffer = create_input_buffer(input_size, 16, 1);
+
+azimuths = 0:0.1:2π
+
+particle_azimuth =  0.9
+particle_zenith = 0.5
+particle_pos = SA[-15.0, 0., 25.]
+particle_dir = sph_to_cart(particle_zenith,particle_azimuth)
+particle_energy = 7e4
+particle_type = PEPlus
+
+amps = Float64[]
+
+pmt_positions = get_pmt_positions(target, RotMatrix3(I))
+
+tpos, tdir, dphi = transform_input(pmt_positions[1], particle_pos, particle_dir)
+
+cos(tdir)
+
+
+for azimuth in azimuths
+
+    particle_dir = sph_to_cart(particle_zenith,azimuth)
+    create_model_input!(
+        particle_pos,
+        particle_dir,
+        particle_energy,
+        target.shape.position, 
+        feat_buffer,
+        model.transformations,
+        abs_scale=1.0,
+        sca_scale=1.0)
+
+    feat_buffer[:, 1] .= fourier_input_mapping(feat_buffer[1:10, 1], model.embedding_matrix)
+
+
+    push!(amps, sum(exp.(model(feat_buffer)[:, 1])))
+end
+
+lines(azimuths, amps)
 
 
 
 
-#=data = load_data()
-jldsave("/home/wecapstor3/capn/capn100h/sr_dataset_full.jld2", data=data)
+
+#=
+#func(energy, distance, abs_scale, delta_phi) = exp_minus(cos(delta_phi)) * (energy / ((531.98652551418 / distance) + square((cos(delta_phi) - -1.7549204269503753) * distance)))
+# ((energy ^ 0.86009) / (square(2.6646 - distance) + 45.157)) * square(abs_scale)
+#y = (energy / (square(5.0384 - distance) + 41.002)) ^ 0.87882
+
+hof_files = glob("*.csv", "/home/wecapstor3/capn/capn100h/symbolic_regression/sr_e_dist_abs_sca_False_logl1_100/")
+hof_file = sort(hof_files, by=filename -> mtime(filename))[end]
+sr_result_csv = CSV.read(hof_file, DataFrame)
+
+cfile = "/home/saturn/capn/capn100h/julia_dev/NeutrinoTelescopes/scripts/surrogate_models/symbolic_regression/configs/sr_e_dist_abs_sca.toml"
+
+config = TOML.parsefile(cfile)
+
+Xs, ys, weight = prepare_data(cfile)
+
+Xs
+#X, y, weights = prepare_data(config)
+
+X
 =#
 
-data = load("/home/wecapstor3/capn/capn100h/sr_dataset_full.jld2")["data"]
 
-config = TOML.parsefile("/home/saturn/capn/capn100h/julia_dev/NeutrinoTelescopes/scripts/surrogate_models/symbolic_regression/sr_run.toml")
-data = JLD2.load(config["input"]["filename"])["data"]
-
-dsel = apply_selection(data, config["selection"])
-X = Matrix(dsel[:, Symbol.(config["run"]["variables"])])'
-y = dsel.nhits
-y_resampled = pois_rand.(y)
 
 #jldsave("/home/wecapstor3/capn/capn100h/sr_dataset_e_dist.jld2", X=X, y=y_resampled)
+
+
+ selected_data = apply_selection(data, selection)
+
+    # Split the data into training and testing sets
+    if nrow(selected_data) > 40000
+        wfunc = make_weight_func(selected_data)
+        selected_data = weighted_subsample(selected_data, 40000, wfunc)
+        train_data = selected_data[1:20000, :]
+        test_data = selected_data[20001:end, :]
 
 
 sr_result = load("/home/wecapstor3/capn/capn100h/sr_state_2024-09-19T10:07:01.488.jld2")
@@ -299,29 +294,32 @@ plot_result(x -> eval_tree_array(eq_sel, x, opt)[1], X, y)
 #func(energy, distance) = ((energy / ((distance * distance) + 33.99)) ^ 0.92311) * 0.38275
 #yeval = func.(dsel.energy, dsel.distance)
 
-func(energy, distance, abs_scale) =(energy / (square(square(distance * 0.21846)) + 55.481)) ^ 0.89596
-# ((energy ^ 0.86009) / (square(2.6646 - distance) + 45.157)) * square(abs_scale)
-#y = (energy / (square(5.0384 - distance) + 41.002)) ^ 0.87882
 
-(energy / (square(distance) + 85.966)) ^ 0.94623
 
-func(X) = func.(X[1, :], X[2, :], X[3, :])
-plot_result(func, X, y)
+
+
+
+
+yeval = func(X)
 
 
 h2d = Hist2D((y, yeval), binedges=(10 .^ (-2:0.1:6), 10 .^ (-2:0.1:6)))
 h2d.bincounts ./= sum(h2d.bincounts, dims=2)
 
 fig = Figure()
-ax = Axis(fig[1, 1], yscale=log10, xscale=log10, xlabel="Truth", ylabel="Prediction")
-plot!(ax, h2d)
 
-xs = 10 .^ (-2:0.1:5)
-lines!(ax, xs, xs, color=:black)
+
 fig
 
 
 
+xsel = ones(size(X, 2), Bool)
+
+if !isnothing(fixed_vars)
+    for (var, (minval, maxval)) in fixed_vars
+        xsel .&= (X[var, :] .> minval) .& (X[var, :] .< maxval)
+    end
+end 
 
 
 
@@ -459,7 +457,15 @@ lines!(ax, xs, output)
 
 poisson_loss(3, 2)
 
+exps = 10 .^ (-2:0.1:6)
 
-fig
+mean_lhs = [mean(poisson_loss.(e, [pois_rand(e) for _ in 1:10000])) for e in exps]
+
+
+
+
+
+
+hist(poisson_loss.(1.4, [pois_rand(1.4) for _ in 1:10000]))
 
 

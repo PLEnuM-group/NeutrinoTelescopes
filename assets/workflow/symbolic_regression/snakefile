@@ -1,0 +1,67 @@
+config_dir = "/home/saturn/capn/capn100h/julia_dev/NeutrinoTelescopes/scripts/surrogate_models/symbolic_regression/configs"
+SCRIPT_DIR = "/home/saturn/capn/capn100h/julia_dev/NeutrinoTelescopes/scripts/surrogate_models/symbolic_regression/"
+
+CONFIGS =  [
+    "sr_e_dist_abs_sca",
+    #"sr_e_dist_abs_sca_2",
+    #"sr_e_dist_abs_sca_3",
+    "sr_e_dist_phi_abs_sca",
+    "sr_e_dist_phi_abs_sca_theta_dir",
+    #"sr_e_dist_phi_abs_sca_theta_dir_more_data",
+    "sr_e_dist_phi_abs_sca_theta_dir_theta_pos",
+    "sr_phi_pos_dir",
+    "sr_phi_pos_dir_2"]
+LOSSES = ["logl1", "logl2"]
+#WEIGHTS = ["True", "False"]
+WEIGHTS = "True"
+DATASET_DIR = "/home/wecapstor3/capn/capn100h/symbolic_regression/datasets"
+#ITERATIONS = [100, 200, 400, 600]
+ITERATIONS = [600, 800, 1000]
+localrules: create_datasets
+
+rule create_datasets:
+    input:
+        os.path.join(config_dir, "{configname}.toml")
+    output:
+        train=os.path.join(DATASET_DIR, "{configname}/train.jld2"),
+        test=os.path.join(DATASET_DIR, "{configname}/test.jld2")
+    shell:
+        "julia {SCRIPT_DIR}/prepare_dataset.jl --config {input} --output {DATASET_DIR}/{wildcards.configname}"
+
+
+
+def choose_maxsize(wildcards):
+    if "theta_pos" in wildcards.configname:
+        return 75
+    elif "theta_dir" in wildcards.configname:
+        return 65
+    elif "phi" in wildcards.configname:
+        return 45
+    else:
+        return 30
+
+rule run_sr:
+    input:
+        configfile=os.path.join(config_dir, "{configname}.toml"),
+        train=rules.create_datasets.output.train
+    output:
+        directory("/home/wecapstor3/capn/capn100h/symbolic_regression/{configname}_{use_weights}_{loss}_{niterations}_{use_dim_constraints}")
+    resources:
+        time="20:00:00",
+        clusters="woody"
+    threads: 32
+    params:
+        use_weights_flag = lambda wildcards: " --use_weights" if wildcards.use_weights == "True" else "",
+        use_trig_flag = lambda wildcards: " --use_trig" if "phi" in wildcards.configname else "",
+        use_dim_constr_flag = lambda wildcards: " --use_dim_constraints" if wildcards.use_dim_constraints == "True" else "",
+        maxsize = choose_maxsize
+    shell:
+        "julia --threads {threads} {SCRIPT_DIR}/symbolic_regression.jl --config {input.configfile} --train {input.train} --output {output} {params.use_dim_constr_flag} {params.use_weights_flag} {params.use_trig_flag} --loss {wildcards.loss} --niterations {wildcards.niterations} --maxsize {params.maxsize}"
+
+rule all:
+    input:
+        expand(rules.run_sr.output, configname=CONFIGS, loss=LOSSES, use_weights=WEIGHTS, niterations=ITERATIONS, use_dim_constraints="True"),
+        #expand(rules.run_sr.output, configname=CONFIGS, loss=LOSSES, use_weights=True, niterations=1000, use_dim_constraints="True"),
+    default_target: True
+
+    

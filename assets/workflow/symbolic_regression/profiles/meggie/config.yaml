@@ -1,0 +1,4 @@
+set-resources:
+  run_sr:
+    clusters: "meggie"
+set-threads: run_sr=20
