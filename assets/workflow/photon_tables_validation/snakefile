@@ -1,6 +1,5 @@
-
 EVENT_TYPES = ["lightsabre", "extended", "hadronic"]
-N_SIMS = 1000
+N_SIMS = 200
 
 
 WORKDIR = "/home/wecapstor3/capn/capn100h"
@@ -9,14 +8,14 @@ JULIA_BIN = "/home/hpc/capn/capn100h/.juliaup/bin/julia"
 SCRIPT_DIR = "/home/saturn/capn/capn100h/julia_dev/PhotonPropagation/scripts"
 PHOTON_SCALING = 5.
 N_PER_FILE = 50
-SEEDS = range(10)
+SEEDS = range(50)
 
 rule photon_tables:
     output: os.path.join(OUTDIR, "validation_set_{seed}_{mode}.jld2")
     resources:
         slurm_extra="--gres=gpu:1",
         clusters="tinygpu",
-        time="2:00:00"
+        time="10:00:00"
     shell:
         "{JULIA_BIN} {SCRIPT_DIR}/photon_tables/create_validation_set.jl -o {output} -s {wildcards.seed} --mode {wildcards.mode} --photon_scaling {PHOTON_SCALING} -n {N_PER_FILE}"
 

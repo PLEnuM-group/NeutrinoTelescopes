@@ -1,0 +1,5 @@
+set-resources:
+    photon_tables:
+        slurm_extra: "'--gres=gpu:a40:1'"
+        clusters: "alex"
+        partition: "a40"

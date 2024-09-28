@@ -3,3 +3,11 @@ set-resources:
         slurm_extra: "'--gres=gpu:a40:1'"
         clusters: "alex"
         partition: "a40"
+    train_amp_model:
+        slurm_extra: "'--gres=gpu:a40:1'"
+        clusters: "alex"
+        partition: "a40"
+    train_time_model:
+        slurm_extra: "'--gres=gpu:a40:1'"
+        clusters: "alex"
+        partition: "a40"

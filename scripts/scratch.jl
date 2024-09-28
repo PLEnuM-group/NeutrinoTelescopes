@@ -3,52 +3,47 @@ using DataFrames
 using HDF5
 using NeutrinoTelescopes
 using StatsBase
+using PhotonSurrogateModel
+using Glob
 
-fname = "/home/wecapstor3/capn/capn100h/snakemake/training_inputs/time_input__perturb_extended.jld2"
+files = glob("*.hd5", "/home/wecapstor3/capn/capn100h/snakemake/photon_tables_perturb/lightsabre/hits/")
+files[1]
+outdir = "/home/wecapstor3/capn/capn100h/share_for_rasmus/"
+#mkdir(outdir, exist_ok=true)
+for fname in files
+    f = h5open(fname)
 
-data = jldopen(fname)
+    outfile_name = joinpath(outdir, basename(fname))
 
-data["hits"]
-data["features"]
+    h5open(outfile_name, "w") do fout
+        for groupn in keys(f["pmt_hits"])
+            grp = f["pmt_hits"][groupn]
 
-out = h5open("/home/wecapstor3/capn/capn100h/snakemake/training_inputs/time_input__perturb_extended.hd5", "w")
-out["hits"] = data["hits"]
-out["features"] = data["features"]
-close(out)
-close(data)
+            sumw = sum(grp[:, 3])
+            weights = FrequencyWeights(grp[:, 3], sumw)
+            grplen = size(grp, 1)
 
-f = h5open("/home/wecapstor3/capn/capn100h/snakemake/photon_tables_perturb/extended/hits/photon_table_hits_extended_dmin_1_dmax_200_emin_100000.0_emax_5000000.0_0.hd5")
+            outlen = min(grplen, sumw)
+            sampled = sample(1:grplen, weights, ceil(Int64, outlen), replace=true)
+            resampled_hits = grp[:, :][sampled, 1:2]
+            out_vector = zeros(Float32, 26)
+            PhotonSurrogateModel._convert_grp_attrs_to_features!(attrs(grp), out_vector)
 
-mkdir("/home/wecapstor3/capn/capn100h/share_for_rasmus/")
+            fout[groupn] = resampled_hits
 
+            out_attrs = Dict(attrs(grp))
+            out_attrs["transformed_features"] = out_vector
+            out_attrs["total_hits"] = sumw
 
-h5open("/home/wecapstor3/capn/capn100h/share_for_rasmus/test.hdf5", "w") do fout
-    for groupn in keys(f["pmt_hits"])
-        grp = f["pmt_hits"][groupn]
+            f_attrs = HDF5.attrs(fout[groupn])
 
-        sumw = sum(grp[:, 3])
-        weights = FrequencyWeights(grp[:, 3], sumw)
-        grplen = size(grp, 1)
-
-        outlen = min(grplen, sumw)
-        sampled = sample(1:grplen, weights, ceil(Int64, outlen), replace=true)
-        resampled_hits = grp[:, :][sampled, 1:2]
-        out_vector = zeros(Float32, 26)
-        PhotonSurrogates._convert_grp_attrs_to_features!(attrs(grp), out_vector)
-
-        fout[groupn] = resampled_hits
-
-        out_attrs = Dict(attrs(grp))
-        out_attrs["transformed_features"] = out_vector
-        out_attrs["total_hits"] = sumw
-
-        f_attrs = HDF5.attrs(fout["dataset_1"])
-
-        for (k, v) in pairs(out_attrs)
-            f_attrs[k] = v
+            for (k, v) in pairs(out_attrs)
+                f_attrs[k] = v
+            end
         end
     end
+
+    close(f)
+
+
 end
-
-
-

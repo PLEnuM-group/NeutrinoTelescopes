@@ -27,7 +27,7 @@ using LinearAlgebra
 using PreallocationTools
 using ProposalInterface
 
-
+device = cpu
 function get_events_in_range(events, targets, model)
     events_range_mask = falses(length(events))
     for evix in eachindex(events)
@@ -77,36 +77,13 @@ function calc_dir_uncert(fishers, events)
     return results
 end
 
-function calc_muon_energy_at_entry(muon, t_entry, stoch, cont)
-    energy_loss = 0
-    for p in stoch
-        t_stoch = mean((p.position - muon.position) ./ muon.direction)
-        if t_stoch < t_entry
-            energy_loss += p.energy
-        else
-            break
-        end
-    end
-
-    for p in cont
-        t_cont = mean((p.position - muon.position) ./ muon.direction)
-        if t_cont < t_entry
-            energy_loss += p.energy
-        else
-            break
-        end
-    end
-
-    return muon.energy - energy_loss
-end
-
 
 c_vac = ustrip(u"m/ns", c_0)
 
 workdir = ENV["ECAPSTOR"]
 
-model_lightsabre = gpu(PhotonSurrogate(lightsabre_time_model(2)...))
-model_extended = gpu(PhotonSurrogate(em_cascade_time_model(2)...))
+model_lightsabre = device(PhotonSurrogate(lightsabre_time_model(2)...))
+model_extended = device(PhotonSurrogate(em_cascade_time_model(2)...))
 
 targets_hex = make_n_hex_cluster_detector(7, 80, 20, 50)
 
@@ -127,7 +104,8 @@ targets = get_detector_modules(d)
 
 event_collection = EventCollection()
 
-for ev in take(injector, 10000)
+
+for ev in take(injector, 100)
     muon = ev[:particles][1]
     isec = get_intersection(cylinder, muon)
 
@@ -171,7 +149,7 @@ for ev in take(injector, 10000)
 end
 
 
-@progress for event in event_collection
+@time for event in event_collection
     if haskey(event, :cascade_emitters)
 
         stochastic_losses = event[:cascade_emitters]
@@ -182,20 +160,20 @@ end
         println("Event $(event.id) with $(length(stochastic_losses)) stochastic and $(length(lightsabre_losses)) lightsabre emitters")
 
         if !isempty(stochastic_losses)
-            hits, mask = generate_hit_times(stochastic_losses, d, hit_generator_extended; abs_scale=abs_scale, sca_scale=sca_scale, device=cpu)
+            hits, mask = generate_hit_times(stochastic_losses, d, hit_generator_extended; abs_scale=abs_scale, sca_scale=sca_scale, device=device)
             hits_stoch = hit_list_to_dataframe(hits, targets, mask)
         else
             hits_stoch = DataFrame(time = Float64[], module_id = Int64[], pmt_id = Int64[])
         end
 
         if !isempty(lightsabre_losses)
-            hits, mask = generate_hit_times(lightsabre_losses, d, hit_generator_lightsabre; abs_scale=abs_scale, sca_scale=sca_scale, device=cpu)
+            hits, mask = generate_hit_times(lightsabre_losses, d, hit_generator_lightsabre; abs_scale=abs_scale, sca_scale=sca_scale, device=device)
             hits_ls = hit_list_to_dataframe(hits, targets, mask)
         else
             hits_ls = DataFrame(time = Float64[], module_id = Int64[], pmt_id = Int64[])
         end
 
-        hits_lightsabre, mask = generate_hit_times([muon_entry], d, hit_generator_lightsabre; abs_scale=abs_scale, sca_scale=sca_scale, device=cpu)
+        hits_lightsabre, mask = generate_hit_times([muon_entry], d, hit_generator_lightsabre; abs_scale=abs_scale, sca_scale=sca_scale, device=device)
         hits_lightsabre = hit_list_to_dataframe(hits_lightsabre, targets, mask)
 
         hits = vcat(hits_stoch, hits_ls)
@@ -242,8 +220,9 @@ event = events[1]
 input_buffer = create_input_buffer(model_lightsabre, d, 1)
 #output_buffer = create_output_buffer(d, 100)
 diff_cache = DiffCache(input_buffer, 13)
+a= 1
 
-fishers_calc = [calc_fisher_matrix(event[:muon_at_entry], d, hit_generator_lightsabre, cache=diff_cache, n_samples=100)[1] for event in events]
+@time fishers_calc = [calc_fisher_matrix(event[:muon_at_entry], d, hit_generator_lightsabre, cache=diff_cache, n_samples=100, device=device)[1] for event in events]
 dir_uncert = calc_dir_uncert(fishers_calc, events)
 
 
@@ -262,7 +241,7 @@ det_lines = get_detector_lines(d)
 
 event_mask = get_events_in_range(events, targets, fisher_surrogate)
 valid_events = events[event_mask]
-fishers_pred = predict_fisher(valid_events, det_lines, fisher_surrogate, abs_scale=1., sca_scale=1.)
+fishers_pred = predict_fisher([p[:muon_at_entry] for p in valid_events], det_lines, fisher_surrogate, abs_scale=1., sca_scale=1.)
 dir_uncert_pred = calc_dir_uncert(fishers_pred, valid_events)
 
 
@@ -272,36 +251,40 @@ lengths = [e[:muon_at_entry].length for e in valid_events]
 
 fig = Figure()
 ax = Axis(fig[1,1])
-scatter!(ax, log10.(energies), dir_uncert)
+scatter!(ax, log10.(energies), dir_uncert[event_mask])
 scatter!(ax, log10.(energies), dir_uncert_pred)
 ylims!(0, 2)
 fig
 
 
-energy_bins = 2:0.2:7
-e_center = (energy_bins[2:end] .+ energy_bins[1:end-1]) ./ 2
-median_res = Float64[]
+function median_per_bin(var_x, var_y, bins)
+    medians = zeros(eltype(var_x), length(bins)-1)
+    for i in eachindex(bins)
+        if i == length(bins)
+            break
+        end
+    
+        low = bins[i]
+        high = bins[i+1]
+    
+        mask = (low .<= var_x) .&& (var_x .< high)
 
-for i in eachindex(energy_bins)
-    if i == length(energy_bins)
-        break
+        if any(mask)
+            medians[i] =  median(var_y[mask])
+        end
     end
-
-    low = energy_bins[i]
-    high = energy_bins[i+1]
-
-    mask = (10 .^low .<= energies) .&& (energies .< 10 .^high) .&& (lengths .> 100)
-
-    if any(mask)
-        push!(median_res, median(dir_uncert[mask]))
-    else
-        push!(median_res, 0)
-    end
+    return medians
 end
 
 
+energy_bins = 2:0.2:7
+e_center = (energy_bins[2:end] .+ energy_bins[1:end-1]) ./ 2
+median_res = median_per_bin(energies, dir_uncert, 10 .^energy_bins)
+median_res_pred = median_per_bin(energies, dir_uncert_pred, 10 .^energy_bins)
+
 fig, ax, _ = CairoMakie.lines(e_center, median_res)
-ylims!(ax, 1E-3, 1)
+CairoMakie.lines!(ax, e_center, median_res_pred)
+ylims!(ax, 1E-3, 2)
 fig
 
 fig = Figure()

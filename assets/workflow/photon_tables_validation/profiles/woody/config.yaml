@@ -1,0 +1,13 @@
+set-resources:
+    photon_table_hits:
+        slurm_extra: "''"
+        clusters: "woody"
+        partition: "work"
+    time_model_inputs:
+        slurm_extra: "''"
+        clusters: "woody"
+        partition: "work"
+    amplitude_model_inputs:
+        slurm_extra: "''"
+        clusters: "woody"
+        partition: "work"
