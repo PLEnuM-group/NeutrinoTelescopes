@@ -4,8 +4,10 @@ using LossFunctions
 import LossFunctions: SupervisedLoss
 using StaticArrays
 using ProgressLogging
+using SymbolicUtils
 
-function transform_input(pmt_pos, particle_pos, particle_dir)
+
+function transform_input_old(pmt_pos, particle_pos, particle_dir)
 
     rot = calc_rot_matrix(pmt_pos, [0, 0, 1])
 
@@ -18,6 +20,33 @@ function transform_input(pmt_pos, particle_pos, particle_dir)
 
     return part_pos_rot_sph[1], part_dir_rot_sph[1], delta_phi
 end
+
+function transform_input(pmt_axis, module_pos, particle_pos, particle_dir)
+
+
+    # Calculate vector from particle to module
+    rel_pos = module_pos - particle_pos
+    rel_pos_norm = norm(rel_pos)
+    rel_pos_normed = rel_pos ./ rel_pos_norm
+
+
+    # Assume Cherenkov emission is cylindrically symmetric around particle direction
+    # Hence the emitted intensity depends only on the angle to the particle direction
+    ang_dist = acos(dot(particle_dir, rel_pos_normed))
+
+    # Rotate to particle axis frame
+    rot = calc_rot_matrix(particle_dir, [0, 0, 1])
+
+    # Calculate PMT axis in particle frame
+    pmt_axis_rot = rot * pmt_axis
+
+    pmt_axis_rot_sph = cart_to_sph(pmt_axis_rot)
+ 
+
+    return pmt_axis_rot_sph[1], pmt_axis_rot_sph[2], ang_dist
+end
+
+
 
 function load_data(files, fit_gamma=false)
 
@@ -56,7 +85,7 @@ function load_data(files, fit_gamma=false)
 
                 pmt_pos = pmt_positions[pmt_ix]
 
-                part_pos_pos_theta, part_pos_dir_theta, delta_phi = transform_input(pmt_pos, pos, dir)
+                theta_pos, theta_dir, delta_phi = transform_input_old(pmt_pos, pos, dir)
 
                 sel = df[df.pmt_ix .== pmt_ix, :]
 
@@ -84,9 +113,9 @@ function load_data(files, fit_gamma=false)
                             gfit_alpha=gfit_alpha,
                             gfit_theta=gfit_theta,
                             energy=particle.energy,
+                            theta_pos=theta_pos,
+                            theta_dir=theta_dir,
                             delta_phi=delta_phi,
-                            theta_pos=part_pos_pos_theta,
-                            theta_dir=part_pos_dir_theta,
                             abs_scale=attributes["abs_scale"],
                             sca_scale=attributes["sca_scale"],
                             distance=attributes["distance"],
@@ -469,6 +498,50 @@ function plot_variable_slice(X, y, func, fixed_vars, plot_variable, slice_variab
 end
 
 
+function plot_ratio(X, y, func, fixed_vars, plot_variable_x, plot_variable_y, ax=nothing)
+    if isnothing(ax)
+        fig = Figure()
+        ax = Axis(fig[1, 1], yscale=log10, xscale=log10, xlabel="Variable 1", ylabel="Variable 2")
+    end
+
+    plot_var_x_ix, plot_var_x_bin_edges = plot_variable_x
+    plot_var_y_ix, plot_var_y_bin_edges = plot_variable_y
+
+
+    hw = Hist2D((X[plot_var_x_ix, :], X[plot_var_y_ix, :]), weights=y, binedges=(plot_var_x_bin_edges, plot_var_y_bin_edges))
+    hu = Hist2D((X[plot_var_x_ix, :], X[plot_var_y_ix, :]), binedges=(plot_var_x_bin_edges, plot_var_y_bin_edges))
+    h_avg = hw ./ hu
+
+    bc_x = 0.5 * (plot_var_x_bin_edges[1:end-1] .+ plot_var_x_bin_edges[2:end])
+    bc_y = 0.5 * (plot_var_y_bin_edges[1:end-1] .+ plot_var_y_bin_edges[2:end])
+
+    xeval = zeros(size(X, 1), length(bc_x)*length(bc_y))
+
+    for (i, val) in fixed_vars
+        xeval[i, :] .= val
+    end
+
+    lix = LinearIndices((length(bc_x), length(bc_y)))
+
+    for i in eachindex(bc_x)
+        for j in eachindex(bc_y)
+            flat_x = lix[i, j]
+            xeval[plot_var_x_ix, flat_x] = bc_x[i]
+            xeval[plot_var_y_ix, flat_x] = bc_y[j]
+        end
+    end
+
+
+    yeval = func(xeval)
+    yeval = reshape(yeval, length(bc_x), length(bc_y))
+
+    ratio = (h_avg.bincounts .- yeval) ./ yeval
+  
+    hm = heatmap!(ax, plot_var_x_bin_edges, plot_var_y_bin_edges, ratio, colorrange=(-1, 1), colormap=:RdBu_11)
+    return ax, hm
+end
+
+
 function plot_pred_target(X, y, func, ax=nothing)
     
     if isnothing(ax)
@@ -567,4 +640,14 @@ function read_results(result_dir, verbose=false)
     end
 
     return Xs, ys, weights, sr_summary
+end
+
+function literaltoreal(x)
+    if SymbolicUtils.issym(x)
+        return SymbolicUtils.Sym{Real}(nameof(x))
+    elseif istree(x) && SymbolicUtils.symtype(x) <: LiteralReal
+        return similarterm(x, operation(x), arguments(x), Real)
+    else
+        return x
+    end
 end

@@ -15,4 +15,4 @@ range = [0.8, 1.0]
 
 [[selection]]
 name = "delta_phi"
-range = [0.4, 0.6]
+range = [1.0, 1.2]

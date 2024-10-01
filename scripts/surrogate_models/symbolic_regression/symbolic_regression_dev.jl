@@ -27,11 +27,26 @@ using SHA
 using CSV
 using LossFunctions
 using Random
+using Symbolics
+
 include("utils.jl")
 
-#data = load_data(glob("*.hd5", "/home/wecapstor3/capn/capn100h/snakemake/photon_tables_perturb/extended/hits/"))
-#jldsave("/home/wecapstor3/capn/capn100h/symbolic_regression/sr_dataset_full.jld2", data=data)
+#=data = load_data(glob("*.hd5", "/home/wecapstor3/capn/capn100h/snakemake/photon_tables_perturb/extended/hits/"))
 
+e_sel = (data.energy .> 1E4) .&& (data.energy .< 3E4) .&& ((data.distance .> 15) .&& (data.distance .< 20))
+dsel = data[e_sel, :]
+
+h = Hist2D((dsel.delta_phi, dsel.theta_dir), binedges=(-2π:0.2:2π, 0:0.2:π), weights=dsel.nhits)
+plot(h, colorscale=log10)
+
+h = Hist2D((dsel.delta_phi, dsel.theta_pos ), binedges=(-2π:0.2:2π, 0:0.2:π), weights=dsel.nhits)
+plot(h, colorscale=log10)
+
+h = Hist2D((dsel.theta_dir, dsel.theta_pos), binedges=(0:0.2:π, 0:0.2:π), weights=dsel.nhits)
+plot(h, colorscale=log10)
+
+#jldsave("/home/wecapstor3/capn/capn100h/symbolic_regression/sr_dataset_full.jld2", data=data)
+=#
 runs = glob("sr_e*", "/home/wecapstor3/capn/capn100h/symbolic_regression/")
 
 finished_runs = []
@@ -46,8 +61,9 @@ show(collect(zip(eachindex(finished_runs), basename.(finished_runs))))
 
 data = load("/home/wecapstor3/capn/capn100h/symbolic_regression/sr_dataset_full.jld2")["data"]
 
-hist(log10.(data.energy), bins=100)
+any(data.variance[data.nhits .> 0] .==0 )
 
+(data.nhits ./ sqrt.(data.variance))[(data.nhits .<= 1E-10) .&& (data.nhits .> 0)]
 
 
 variable_configs = ["e_dist_abs_sca_True_logl2_400_True", "e_dist_abs_sca_2_True_logl2_400_True", "e_dist_abs_sca_3_True_logl2_400_True"]
@@ -82,15 +98,239 @@ end
 fig
 
 
-sel_run = "/home/wecapstor3/capn/capn100h/symbolic_regression/sr_e_dist_phi_abs_sca_theta_dir_True_logl1_1000_True/"
+
+
+const VARIABLE_MAPPING = Dict(
+    :energy => 1,
+    :distance => 2,
+    :abs_scale => 3,
+    :sca_scale => 4,
+    :delta_phi => 5,
+    :theta_pos => 6,
+    :theta_dir => 7,
+)
+
+const VARIABLE_NAMES = Dict(
+    :energy => "Energy",
+    :distance => "Distance",
+    :abs_scale => "Abs Scale",
+    :sca_scale => "Sca Scale",
+    :delta_phi => "Delta Phi",
+    :theta_pos => "Theta Pos",
+    :theta_dir => "Theta Dir",
+)
+
+
+function make_slice_plot(config_dict::Dict, grid_location, X, y, eq)
+    plot_variable = config_dict[:plot_variable]
+    plot_range = config_dict[:plot_range]
+    xscale = config_dict[:xscale]
+    yscale = config_dict[:yscale]
+    fixed_vars = config_dict[:fixed_vars]
+    slice_variable = config_dict[:slice_variable]
+    slice_points = config_dict[:slice_points]
+    slice_log = config_dict[:slice_log]
+    variable_cuts = config_dict[:variable_cuts]
+
+    fixed_vars_parsed = [(VARIABLE_MAPPING[var], val) for (var, val) in fixed_vars]
+    plot_var_parsed = [VARIABLE_MAPPING[plot_variable], plot_range]
+    slice_var_parsed = [VARIABLE_MAPPING[slice_variable], slice_points, slice_log]
+
+
+    ax = Axis(
+        grid_location,
+        yscale=yscale,
+        xscale=xscale,
+        xlabel=VARIABLE_NAMES[plot_variable],
+        ylabel="Prediction")
+
+    selection = ones(Bool, size(X, 2))
+
+    for (vname, vcut) in variable_cuts
+        vix = VARIABLE_MAPPING[vname]
+
+        if vix > size(X, 1)
+            continue
+        end
+
+        selection = selection .& (X[vix, :] .> vcut[1]) .& (X[vix, :] .< vcut[2])
+        push!(fixed_vars_parsed, (vix, mean(vcut)))
+    end
+
+    plot_variable_slice(X[:, selection], y[selection], eq, fixed_vars_parsed, plot_var_parsed, slice_var_parsed, ax)
+
+    ylims!(ax, config_dict[:ylims])
+
+    return ax
+end
+
+
+function make_ratio_plot(config_dict::Dict, grid_location, X, y, eq)
+    plot_variable_x = config_dict[:plot_variable_x]
+    plot_range_x = config_dict[:plot_range_x]
+    plot_variable_y = config_dict[:plot_variable_y]
+    plot_range_y = config_dict[:plot_range_y]
+    xscale = config_dict[:xscale]
+    yscale = config_dict[:yscale]
+    fixed_vars = config_dict[:fixed_vars]
+    variable_cuts = config_dict[:variable_cuts]
+
+
+    fixed_vars_parsed = [(VARIABLE_MAPPING[var], val) for (var, val) in fixed_vars]
+    plot_var_parsed_x = [VARIABLE_MAPPING[plot_variable_x], plot_range_x]
+    plot_var_parsed_y = [VARIABLE_MAPPING[plot_variable_y], plot_range_y]
+
+
+    ax = Axis(
+        grid_location[1, 1],
+        yscale=yscale,
+        xscale=xscale,
+        xlabel=VARIABLE_NAMES[plot_variable_x],
+        ylabel=VARIABLE_NAMES[plot_variable_y],)
+
+    selection = ones(Bool, size(X, 2))
+
+    for (vname, vcut) in variable_cuts
+        vix = VARIABLE_MAPPING[vname]
+
+        if vix > size(X, 1)
+            continue
+        end
+
+        selection = selection .& (X[vix, :] .> vcut[1]) .& (X[vix, :] .< vcut[2])
+        push!(fixed_vars_parsed, (vix, mean(vcut)))
+    end
+
+    _, hm = plot_ratio(X[:, selection], y[selection], eq, fixed_vars_parsed, plot_var_parsed_x, plot_var_parsed_y, ax)
+
+    Colorbar(grid_location[1, 2], hm)
+
+    return ax
+end
+
+
+
+function parse_plot_config(config_dict::Dict, grid_location, X, y, w, eq_sel)
+    plot_type = config_dict[:plot_type]
+   
+    if plot_type == :slice
+        return make_slice_plot(config_dict, grid_location, X, y, eq_sel)
+    elseif plot_type == :ratio
+        return make_ratio_plot(config_dict, grid_location, X, y, eq_sel)
+    else
+        error("Unknown plot type: $plot_type")
+    end
+end
+
+plot_configs = [
+    Dict(
+        :plot_type => :slice,
+        :plot_variable => :distance,
+        :plot_range => 1:0.1:200,
+        :xscale => log10,
+        :yscale => log10,
+        :ylims => (1E-2, 1E7),
+        :fixed_vars => [:abs_scale => 1.0, :sca_scale => 1.0],
+        :slice_variable => :energy,
+        :slice_points => range(2, 7.5, 10),
+        :slice_log => true,
+        :variable_cuts => Dict(:delta_phi => (0.4, 0.6), :theta_pos => (0.9, 1.1), :theta_dir => (1.3, 1.5))
+        ),
+
+    Dict(
+        :plot_type => :ratio,
+        :plot_variable_x => :distance,
+        :plot_range_x => 10 .^range(0, log10(200), 7),
+        :plot_variable_y => :energy,
+        :plot_range_y => 10 .^range(2, 7, 7),
+        :xscale => log10,
+        :yscale => log10,
+        :fixed_vars => [:abs_scale => 1.0, :sca_scale => 1.0],
+        :variable_cuts => Dict(:delta_phi => (0.4, 0.6), :theta_pos => (0.9, 1.1), :theta_dir => (1.3, 1.5))
+        ),
+
+    Dict(
+        :plot_type => :slice,
+        :plot_variable => :delta_phi,
+        :plot_range => -2π:0.01:2π,
+        :xscale => identity,
+        :yscale => log10,
+        :ylims => (1E-2, 1E7),
+        :fixed_vars => [:abs_scale => 1.0, :sca_scale => 1.0],
+        :slice_variable => :energy,
+        :slice_points => range(2, 7, 10),
+        :slice_log => true,
+        :variable_cuts => Dict(:distance => (10, 15), :theta_pos => (0.9, 1.1), :theta_dir => (1.3, 1.5))
+        ),
+
+    Dict(
+        :plot_type => :ratio,
+        :plot_variable_x => :delta_phi,
+        :plot_range_x => range(-2π, 2π, 10),
+        :plot_variable_y => :energy,
+        :plot_range_y => 10 .^range(2, 7, 7),
+        :xscale => identity,
+        :yscale => log10,
+        :fixed_vars => [:abs_scale => 1.0, :sca_scale => 1.0],
+        :variable_cuts => Dict(:distance => (10, 15), :theta_pos => (0.9, 1.1), :theta_dir => (1.3, 1.5))
+        ),
+]
+
+
+
+sel_run = "/home/wecapstor3/capn/capn100h/symbolic_regression/sr_e_dist_phi_abs_sca_True_logl1_400_True/"
 X, y, w, sr_summary = read_results(sel_run)
-six = searchsortedfirst(sr_summary.complexity, 30)
+six = searchsortedfirst(sr_summary.complexity, 45)
 eq_sel = sr_summary.equation[six]
+
+sr_summary
+
+
+  # finally walk and apply
 
 @show sr_summary.eq_str[six]
 
 begin
-fig = Figure(size=(400*3, 400*3))
+    fig = Figure(size=(400*3, 400*4))
+    ax = Axis(fig[1, 1], yscale=log10, xlabel="Complexity", ylabel="Loss")
+    lines!(ax, sr_summary.complexity, sr_summary.train_loss)
+    lines!(ax, sr_summary.complexity, sr_summary.val_loss)
+    scatter!(ax, sr_summary.complexity[six], sr_summary.train_loss[six], color=:red)
+    ax = Axis(fig[1, 2], yscale=log10, xscale=log10, xlabel="Truth", ylabel="Prediction")
+    plot_pred_target(X, y, eq_sel, ax)
+
+    parse_plot_config(plot_configs[1], fig[2, 1], X, y, w, eq_sel)
+    parse_plot_config(plot_configs[2], fig[2, 2], X, y, w, eq_sel)
+    parse_plot_config(plot_configs[3], fig[3, 1], X, y, w, eq_sel)
+    parse_plot_config(plot_configs[4], fig[3, 2], X, y, w, eq_sel)
+
+end
+fig
+
+
+
+vars = Symbolics.get_variables(sr_summary.eq_sym[six])
+
+eq_rw = Rewriters.Postwalk(literaltoreal)(sr_summary.eq_sym[six])
+erw = Rewriters.Postwalk(literaltoreal).(vars)
+D = Differential(erw)
+
+
+
+
+f_expr = build_function(Symbolics.toexpr(Symbolics.gradient(eq_rw, erw)), erw)
+fev = eval(f_expr[1])
+
+fev([1, 2, 3])
+
+D(sr_summary.eq_sym[six])
+
+
+
+
+
+begin
+fig = Figure(size=(400*3, 400*4))
 ax = Axis(fig[1, 1], yscale=log10, xlabel="Complexity", ylabel="Loss")
 lines!(ax, sr_summary.complexity, sr_summary.train_loss)
 lines!(ax, sr_summary.complexity, sr_summary.val_loss)
@@ -101,23 +341,62 @@ plot_pred_target(X, y, eq_sel, ax)
 
 yscaling = Makie.Symlog10(1E1)
 yscaling = log10
-if size(X, 1) == 6
+
+
+
+a = Figure()
+
+
+if size(X, 1) == 7
     ax = Axis(fig[2, 1], yscale=yscaling, xscale=log10, xlabel="Distance", ylabel="Prediction")
-    sel = (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> -1.5)
-    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(3, 1.0), (4, 1.0), (5, 0.0), (6, 1.4)], [2, 1:1:200], [1, range(2, 7, 7), true], ax)
+    sel = (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> -1.5) .&& (X[7, :] .< 1.1) .&& (X[7, :] .> 0.9)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(3, 1.0), (4, 1.0), (5, 0.0), (6, 1.4),(7, 1.0)], [2, 1:1:200], [1, range(2, 7, 7), true], ax)
     ax = Axis(fig[2, 2], yscale=yscaling, xscale=log10, xlabel="Energy", ylabel="Number of Hits")
-    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(3, 1.0), (4, 1.0), (5, 0.0), (6, 1.4)], [1, 10 .^(2:0.1:7.5)], [2, range(0, log10(200), 7), true], ax)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(3, 1.0), (4, 1.0), (5, 0.0), (6, 1.4),(7, 1.0)], [1, 10 .^(2:0.1:7.5)], [2, range(0, log10(200), 7), true], ax)
     
     ax = Axis(fig[1, 3], yscale=yscaling, xlabel="Abs Scale", ylabel="Number of Hits")
-    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> -1.5)
-    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (4, 1.0), (5, 0.0), (6, 1.4)], [3, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> -1.5) .&& (X[7, :] .< 1.1) .&& (X[7, :] .> 0.9)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (4, 1.0), (5, 0.0), (6, 1.4), (7, 1.0)], [3, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
     ax = Axis(fig[2, 3], yscale=yscaling, xlabel="Sca Scale", ylabel="Number of Hits")
-    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> -1.5)
-    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (5, 0.0), (6, 1.4)], [4, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> -1.5) .&& (X[7, :] .< 1.1) .&& (X[7, :] .> 0.9)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (5, 0.0), (6, 1.4), (7, 1.0)], [4, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
 
     ax = Axis(fig[3, 1], yscale=yscaling, xlabel="Delta Phi", ylabel="Number of Hits")
-    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> -1.5)
-    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (4, 1.0), (6, 1.4)], [5, -2π:0.01:2π], [1, range(2, 7, 7), true], ax)
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> 1.1) .&& (X[7, :] .< 1.1) .&& (X[7, :] .> 0.9)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (4, 1.0), (6, 1.2), (7, 1.0)], [5, -2π:0.01:2π], [1, range(2, 7, 7), true], ax)
+
+    ax = Axis(fig[3, 2], yscale=yscaling, xlabel="Theta Dir", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (4, 1.0), (5, 0.0)], [6, 0:0.01:π], [1, range(2, 7, 7), true], ax)
+
+
+    ax = Axis(fig[4, 1], yscale=yscaling, xlabel="Theta Pos", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1) .&& (X[6, :] .< 1.1) .&& (X[6, :] .> 0.9)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (4, 1.0), (5, 0.0)], [7, 0:0.01:π], [1, range(2, 7, 7), true], ax)
+
+    ax = Axis(fig[4, 2], yscale=yscaling, xlabel="Theta Pos", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1)  .&& (X[1, :] .< 5E4) .&& (X[1, :] .> 3E4)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(1, 4E4), (2, 25), (3, 1.0), (4, 1.0), (5, 0.0)], [7, 0:0.01:π], [6, range(0, 2π, 8), true], ax)
+
+    
+
+elseif size(X, 1) == 6
+    ax = Axis(fig[2, 1], yscale=yscaling, xscale=log10, xlabel="Distance", ylabel="Prediction")
+    sel = (X[5, :] .< 3.3) .&& (X[5, :] .> 3.1) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> 1.1)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(3, 1.0), (4, 1.0), (5, 3.2), (6, 1.2)], [2, 1:1:200], [1, range(2, 7, 7), true], ax)
+    ax = Axis(fig[2, 2], yscale=yscaling, xscale=log10, xlabel="Energy", ylabel="Number of Hits")
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(3, 1.0), (4, 1.0), (5, 0.0), (6, 1.2)], [1, 10 .^(2:0.1:7.5)], [2, range(0, log10(200), 7), true], ax)
+    
+    ax = Axis(fig[1, 3], yscale=yscaling, xlabel="Abs Scale", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> 1.1)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (4, 1.0), (5, 0.0), (6, 1.2)], [3, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
+    ax = Axis(fig[2, 3], yscale=yscaling, xlabel="Sca Scale", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> 1.1)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (5, 0.0), (6, 1.2)], [4, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
+
+    ax = Axis(fig[3, 1], yscale=yscaling, xlabel="Delta Phi", ylabel="Number of Hits")
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[6, :] .< 1.3) .&& (X[6, :] .> 1.1)
+    plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (4, 1.0), (6, 1.2)], [5, -2π:0.01:2π], [1, range(2, 7, 7), true], ax)
 
     ax = Axis(fig[3, 2], yscale=yscaling, xlabel="Theta Dir", ylabel="Number of Hits")
     sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1)
@@ -133,12 +412,17 @@ elseif size(X, 1) == 5
     sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1)
     plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (4, 1.0), (5, 0.0)], [3, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
     ax = Axis(fig[2, 3], yscale=yscaling, xlabel="Sca Scale", ylabel="Number of Hits")
-    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30)
+    sel = (X[2, :] .> 20) .&& (X[2, :] .< 30) .&& (X[5, :] .< 0.1) .&& (X[5, :] .> -0.1)
     plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (5, 0.0)], [4, 0.8:0.01:1.2], [1, range(2, 7, 7), true], ax)
 
     ax = Axis(fig[3, 1], yscale=yscaling, xlabel="Delta Phi", ylabel="Number of Hits")
     sel = (X[2, :] .> 20) .&& (X[2, :] .< 30)
     plot_variable_slice(X[:, sel], y[sel], eq_sel, [(2, 25), (3, 1.0), (4, 1.0)], [5, -2π:0.01:2π], [1, range(2, 7, 7), true], ax)
+
+    sel = (X[1, :] .> 1E3) .&& (X[1, :] .< 3E3)
+    ax = Axis(fig[3, 2][1, 1], xlabel="Distance", ylabel="Delta Phi")
+    _, hm = plot_ratio(X[:, sel], y[sel], eq_sel, [(1, 2E3), (3, 1.0), (4, 1.0), ], [2, 1:5:50], [5, range(-2π, 2π, 15)], ax)
+    Colorbar(fig[3, 2][1, 2], hm)
 else
 
     fig = Figure(size=(400*3, 400*2))
@@ -170,6 +454,7 @@ X, y, w, sr_summary = read_results("/home/wecapstor3/capn/capn100h/symbolic_regr
 hist(w)
 
 
+
 using PhotonSurrogateModel
 using PhotonPropagation
 using BSON
@@ -178,35 +463,40 @@ rng = MersenneTwister(31338)
 
 target = POM(SA_F32[0., 0., 0.], 1);
 
-model_path = "/home/wecapstor3/capn/capn100h/snakemake/time_surrogate_perturb/extended/amplitude_1_FNL.bson"
-model = load(model)[:model]
+model_path = "/home/wecapstor3/capn/capn100h/snakemake/time_surrogate_perturb/extended/amplitude_2_FNL.bson"
+model = load(model_path)[:model]
 
-feat_buffer = create_input_buffer(model, 16, 1);
+hparams = load(model_path)[:hparams]
 
-
-model = gpu(PhotonSurrogate(model_type(1)...))
 input_size = size(model.embedding.layers[1].weight, 2)
-
 feat_buffer = create_input_buffer(input_size, 16, 1);
 
-azimuths = 0:0.1:2π
-
-particle_azimuth =  0.9
-particle_zenith = 0.5
-particle_pos = SA[-15.0, 0., 25.]
-particle_dir = sph_to_cart(particle_zenith,particle_azimuth)
-particle_energy = 7e4
-particle_type = PEPlus
-
-amps = Float64[]
 
 pmt_positions = get_pmt_positions(target, RotMatrix3(I))
 
-tpos, tdir, dphi = transform_input(pmt_positions[1], particle_pos, particle_dir)
+function predict_sr(target_pos, pmt_pos, pos, dir, energy)
 
-cos(tdir)
+    rpos = pos - target_pos
+    distance = norm(rpos)
+    theta_pos, theta_dir, delta_phi = transform_input_old(pmt_pos, rpos, dir)
+    abs_scale = 1.0
+    sca_scale = 1.0
+
+    return sqrt(theta_pos) * ((((((((energy / 10.27729310492359) + 2.281475231675802) / ((((cos(delta_phi * 1.0037058977062525) - -1.2592755464425704) * (theta_pos ^ (theta_dir - 0.6116821727100822))) ^ ((sqrt(theta_pos) * 1.3273037859357315) ^ 1.4293860003709848)) ^ theta_dir)) ^ 0.8775619398688311) / (sqrt((((3.3892622706077162 / distance) ^ (((0.8035604305233338 / 1.1218453402020847) - ((theta_pos ^ theta_pos) * 0.7477722525620631)) + theta_dir)) + 0.2792340028894907) / abs_scale) ^ theta_dir)) + ((1.329906979942511 * 1.2530095663885246) / theta_pos)) / 0.27935327069921206) / exp_minus(sqrt(distance) / -0.8192681986376636))
+end
+
+particle_azimuth = 0.9
+particle_zenith = 0.7
+
+particle_pos = SA[-10.0, 15., 25.]
+particle_dir = sph_to_cart(particle_zenith,particle_azimuth)
+particle_energy = 7e4
+particle_type = PEPlus
+azimuths = 0:0.05:2π
 
 
+amps = Float64[]
+amps_sr = Float64[]
 for azimuth in azimuths
 
     particle_dir = sph_to_cart(particle_zenith,azimuth)
@@ -220,14 +510,70 @@ for azimuth in azimuths
         abs_scale=1.0,
         sca_scale=1.0)
 
-    feat_buffer[:, 1] .= fourier_input_mapping(feat_buffer[1:10, 1], model.embedding_matrix)
+    feat_buffer[:, 1] .= fourier_input_mapping(feat_buffer[1:10, 1], model.embedding_matrix * hparams.fourier_gaussian_scale)
 
 
-    push!(amps, sum(exp.(model(feat_buffer)[:, 1])))
+    push!(amps, sum(exp.(model(feat_buffer[1:128, 1]))))
+
+    amp_sr = 0
+    for ppos in pmt_positions
+        amp_sr += predict_sr(target.shape.position, ppos, particle_pos, particle_dir, particle_energy)
+    end
+
+    push!(amps_sr, amp_sr)
 end
 
-lines(azimuths, amps)
+fig = Figure()
+ax = Axis(fig[1, 1], yscale=log10)
+lines!(ax, azimuths, amps)
+lines!(ax, azimuths, amps_sr)
+fig
 
+
+distances = 1:0.1:200
+
+particle_pos_theta = 0.94
+particle_pos_phi = 1.3
+particle_azimuth = 0.9
+particle_zenith = 1.7
+particle_dir = sph_to_cart(particle_zenith,particle_azimuth)
+
+amps = Float64[]
+amps_sr = Float64[]
+
+for dist in distances
+    particle_pos = sph_to_cart(particle_pos_theta, particle_pos_phi) * dist
+
+    create_model_input!(
+        particle_pos,
+        particle_dir,
+        particle_energy,
+        target.shape.position, 
+        feat_buffer,
+        model.transformations,
+        abs_scale=1.0,
+        sca_scale=1.0)
+
+    feat_buffer[:, 1] .= fourier_input_mapping(feat_buffer[1:10, 1], model.embedding_matrix* hparams.fourier_gaussian_scale)
+
+
+    push!(amps, sum(exp.(model(feat_buffer[1:128, 1]))))
+
+    amp_sr = 0
+    for ppos in pmt_positions
+        amp_sr += predict_sr(target.shape.position, ppos, particle_pos, particle_dir, particle_energy)
+    end
+
+    push!(amps_sr, amp_sr)
+end
+
+
+
+fig = Figure()
+ax = Axis(fig[1, 1], yscale=log10)
+lines!(ax, distances, amps)
+lines!(ax, distances, amps_sr)
+fig
 
 
 

@@ -116,10 +116,14 @@ loss_func = select_loss_func(parsed_args["loss"])
 if parsed_args["loss"] == "poisson"
     y = pois_rand.(y)
 end
-sel = y .> 0
+sel = y .> 1E-3
 X = X[:, sel]
 y = y[sel]
 w = w[sel]
+
+if any(.!isfinite.(X)) || any(.!isfinite.(y)) || any(.!isfinite.(w))
+    error("Non-finite values in training data")
+end
 
 
 Xs, ys, ws = shuffleobs((X, y, w))
@@ -205,6 +209,9 @@ end
 weights = nothing
 if parsed_args["use_weights"]
     weights = ys ./ sqrt.(ws)
+    if any(.!isfinite.(weights))
+        error("Non-finite weights")
+    end
 end
 
 
