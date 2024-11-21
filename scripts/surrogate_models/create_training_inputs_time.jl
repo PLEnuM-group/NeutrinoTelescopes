@@ -26,9 +26,9 @@ parsed_args = parse_args(ARGS, s; as_symbols=true)
 fnames = parsed_args[:i]
 outfile = parsed_args[:o]
 
-hit_buffer = Vector{Float32}(undef, Int64(1E8))
+hit_buffer = Vector{Float32}(undef, Int64(2E8))
 feature_length = parsed_args[:perturb_medium] ? 24 + 2 : 24
-features_buffer = Matrix{Float32}(undef, feature_length, Int64(1E8))
+features_buffer = Matrix{Float32}(undef, feature_length, Int64(2E8))
 
 rng = MersenneTwister(31338)
 nsel_frac = 0.9

@@ -121,8 +121,8 @@ else
     error("Unknown event type")
 end
 
-rand_mat = randn(rng, (hparams.fourier_mapping_size, feature_length))
-data = (nhits=hits, labels=fourier_input_mapping(features, rand_mat*hparams.fourier_gaussian_scale))
+rand_mat = randn(rng, (hparams.fourier_mapping_size, feature_length)) .* hparams.fourier_gaussian_scale
+data = (nhits=hits, labels=features)
 
 ptm_flag = parsed_args[:perturb_medium] ? "perturb" : "const_medium"
 

@@ -12,8 +12,9 @@ using TOML
 using PoissonRandom
 using SHA
 using Random
+using TensorBoardLogger
 
-loss_functions = ["poisson", "l2", "l1", "logl1", "logl2"]
+loss_functions = ["poisson", "l2", "l1", "logl1", "logl2", "chi2", "logchi2"]
 
 s = ArgParseSettings()
 @add_arg_table s begin
@@ -134,29 +135,30 @@ Xs, ys, ws = shuffleobs((X, y, w))
 
 
 if parsed_args["use_trig"]
-    unary_operators = [exp, log, exp_minus, one_over_square, square, cos, tan, sqrt]
+    unary_operators = [exp, exp_minus, one_over_square, square, cos, tan, sqrt, tanh, abs]
     nested_constraints = [
-        log => [log => 0, exp => 0,],
-        exp => [exp => 0, log => 0, exp_minus => 0,],
-        exp_minus => [exp_minus => 0, exp => 0, log => 0],
+        exp => [exp => 0, exp_minus => 0,],
+        exp_minus => [exp_minus => 0, exp => 0],
         one_over_square => [one_over_square => 0, square => 0],
-        square => [exp => 0, exp_minus => 0, log => 0, one_over_square => 0],
-        sqrt => [sqrt => 1, exp => 0, exp_minus => 0, log => 0, one_over_square => 0],
-        cos => [cos => 0, tan => 0, exp => 0, exp_minus => 0, square => 0, log => 0],
-        tan => [tan => 0, cos => 0, exp => 0, exp_minus => 0, square => 0, log => 0],
-        square => [exp => 0, exp_minus => 0, log => 0, one_over_square => 0, square => 1],
-        (^) => [exp => 0, exp_minus => 0, log => 0]
+        square => [square => 1],
+        sqrt => [sqrt => 1, exp => 0, exp_minus => 0, one_over_square => 0],
+        cos => [cos => 1, tan => 1],
+        tan => [tan => 1, cos => 1],
+        tanh => [tanh => 0],
+        (^) => [exp => 0, exp_minus => 0],
+        abs => [abs => 0, ]
     ]
 else
-    unary_operators = [exp, log, exp_minus, one_over_square, square, sqrt]
+    unary_operators = [exp, exp_minus, one_over_square, square, sqrt, tanh, abs]
     nested_constraints = [
-        log => [log => 0, exp => 0],
-        exp => [exp => 0, log => 0, exp_minus => 0],
-        exp_minus => [exp_minus => 0, exp => 0, log => 0],
+        exp => [exp => 0, exp_minus => 0,],
+        exp_minus => [exp_minus => 0, exp => 0],
         one_over_square => [one_over_square => 0, square => 0],
-        square => [exp => 0, exp_minus => 0, log => 0, one_over_square => 0, square => 1],
-        sqrt => [sqrt => 1, exp => 0, exp_minus => 0, log => 0, one_over_square => 0],
-        (^) => [exp => 0, exp_minus => 0, log => 0]
+        square => [square => 1],
+        sqrt => [sqrt => 1, exp => 0, exp_minus => 0, one_over_square => 0],
+        tanh => [tanh => 0],
+        (^) => [exp => 0, exp_minus => 0],
+        abs => [abs => 0, ]
     ]
 end
 
@@ -166,6 +168,11 @@ if parsed_args["use_dim_constraints"]
     X_units = config["input"]["units"]
     dimensional_constraint_penalty = 10^5
 end
+
+
+parsimony = parsed_args["loss"] == "chi2" ? 1E6 : 0.02
+
+
 
 opt = Options(
     binary_operators=[+, *, /, -, ^],
@@ -184,18 +191,20 @@ opt = Options(
     should_simplify=true,
     mutation_weights = MutationWeights(optimize=0.005),
     bumper = true,
-    warmup_maxsize_by=0.3,
+    warmup_maxsize_by=nothing,
     complexity_of_constants=1,
     complexity_of_variables=1,
     complexity_of_operators = [
         (^) => 2,
     ],
-    parsimony = 0.002,
-    adaptive_parsimony_scaling=100,
-    output_file = joinpath(outdir, "hof_$(now()).csv"),
+    parsimony = 0.02,
+    adaptive_parsimony_scaling=1000,
+    output_directory = outdir,
+    save_to_file = true,
     progress=parsed_args["verbose"],
-    fraction_replaced_hof=0.1,
-    dimensional_constraint_penalty=dimensional_constraint_penalty
+    fraction_replaced_hof=0.15,
+    dimensional_constraint_penalty=dimensional_constraint_penalty,
+    use_frequency=true,
 
 )
 
@@ -220,7 +229,7 @@ end
 
 jldsave(joinpath(parsed_args["output"], "config.jld2"), config=parsed_args)
 
-
+logger = SRLogger(TBLogger("/home/wecapstor3/capn/capn100h/tensorboard/sr/run_$(parsed_args["loss"])"), log_interval=2)
 
 if parsed_args["multiproc"]
 
@@ -236,7 +245,8 @@ if parsed_args["multiproc"]
         X_units=X_units,
         runtests=false,
         return_state=true,
-        saved_state=state
+        saved_state=state,
+        logger=logger
     )
 
 else
@@ -251,7 +261,8 @@ else
         X_units=X_units,
         runtests=false,
         return_state=true,
-        saved_state=state
+        saved_state=state,
+        logger=logger
     )
 end
 

@@ -8,6 +8,7 @@ include("surrogate_models/SurrogateModels.jl")
 include("event_reconstruction/EventReconstruction.jl")
 include("fisher_information/FisherInformation.jl")
 include("weighting/Weighting.jl")
+include("detector_optimization/DetectorOptimization.jl")
 
 @reexport using .Processing
 @reexport using .EventGeneration
@@ -15,4 +16,5 @@ include("weighting/Weighting.jl")
 @reexport using .EventReconstruction
 @reexport using .FisherInformation
 @reexport using .Weighting
+@reexport using .DetectorOptimization
 end

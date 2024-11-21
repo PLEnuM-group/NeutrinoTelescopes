@@ -21,34 +21,32 @@ function transform_input_old(pmt_pos, particle_pos, particle_dir)
     return part_pos_rot_sph[1], part_dir_rot_sph[1], delta_phi
 end
 
-function transform_input(pmt_axis, module_pos, particle_pos, particle_dir)
+function transform_input(pmt_pos, particle_pos, particle_dir)
 
+    # Rotate the particle position and direction such that the PMT is at the origin and the z-axis is aligned with the PMT
+    rot = calc_rot_matrix(pmt_pos, [0, 0, 1])
 
-    # Calculate vector from particle to module
-    rel_pos = module_pos - particle_pos
-    rel_pos_norm = norm(rel_pos)
-    rel_pos_normed = rel_pos ./ rel_pos_norm
+    part_pos_rot = rot * particle_pos
+    part_dir_rot = rot * particle_dir
 
+    # Convert the rotated particle position to cylindrical coordinates
+    pos_cyl = cart_to_cyl(part_pos_rot)
 
-    # Assume Cherenkov emission is cylindrically symmetric around particle direction
-    # Hence the emitted intensity depends only on the angle to the particle direction
-    ang_dist = acos(dot(particle_dir, rel_pos_normed))
+    # Calculate Rotation matrix that rotates the particle direction to the xz-plane
+    rotm = RotZ(-pos_cyl[2])
 
-    # Rotate to particle axis frame
-    rot = calc_rot_matrix(particle_dir, [0, 0, 1])
+    # Apply the rotation matrix to the particle direction
+    part_dir_rot_xz = rotm * part_dir_rot
+    part_dir_rot_xz_sph = cart_to_sph(part_dir_rot_xz)
 
-    # Calculate PMT axis in particle frame
-    pmt_axis_rot = rot * pmt_axis
+    # We dont have to apply the rotation matrix to the particle position as we are only interested in the zenith angle
+    part_pos_rot_sph = cart_to_sph(part_pos_rot ./ norm(part_pos_rot))
 
-    pmt_axis_rot_sph = cart_to_sph(pmt_axis_rot)
- 
-
-    return pmt_axis_rot_sph[1], pmt_axis_rot_sph[2], ang_dist
+    return part_pos_rot_sph[1], part_dir_rot_xz_sph[1], part_dir_rot_xz_sph[2]
 end
 
 
-
-function load_data(files, fit_gamma=false)
+function _read_single_hd5_file(fname; fit_gamma)
 
     target = POM(SA_F32[0, 0, 0], 1)
     r = RotMatrix3(I)
@@ -56,76 +54,87 @@ function load_data(files, fit_gamma=false)
 
     params = []
 
-    @progress name="files" for fname in files
-        fid = h5open(fname)
+    fid = h5open(fname)
 
-        datasets = keys( fid["pmt_hits"])
+    datasets = keys( fid["pmt_hits"])
+    
+    @progress name="datasets" for ds in datasets
+        hits = fid["pmt_hits/$ds"][:, :]
+        attributes = attrs(fid["pmt_hits/$ds"])
+
+        pos = attributes["distance"] * sph_to_cart(attributes["pos_theta"], attributes["pos_phi"])
+        dir = sph_to_cart(attributes["dir_theta"], attributes["dir_phi"])
+        particle = Particle(pos, dir, 0., attributes["energy"], 0, PEMinus)
+
+        if length(hits) == 0
+            continue
+        end
+
+        if size(hits, 2) != 3
+            @show fname, ds
+            continue
+        end
+
+        df = DataFrame(hits, [:time, :pmt_ix, :weight])
+        df[!, :time] .+= randn(length(df.time))*2
+
+        for pmt_ix in 1:16
+
+            pmt_pos = pmt_positions[pmt_ix]
+
+            theta_pos, theta_dir, phi_dir = transform_input(pmt_pos, pos, dir)
+
+            sel = df[df.pmt_ix .== pmt_ix, :]
+
+            tshift = NaN
+            gfit_alpha = NaN
+            gfit_theta = NaN
+
+            if (nrow(sel) > 10) && fit_gamma
+                tshift = minimum(sel[:, :time])
+                #@show sel.time .- tshift .+ 1E-10
+                gfit = fit_mle(Gamma, sel.time .- tshift .+ 1E-10, sel.weight)
+                gfit_alpha = gfit.α
+                gfit_theta = gfit.θ
+            end
+
+            push!(
+                params,
+                (
+                    nhits = sum(sel.weight, init=0),
+                    variance = sum(sel.weight .^2, init=0),
+                    pmt_ix=pmt_ix,
+                    pos=pos,
+                    dir=dir,
+                    tshift=tshift,
+                    gfit_alpha=gfit_alpha,
+                    gfit_theta=gfit_theta,
+                    energy=particle.energy,
+                    theta_pos=theta_pos,
+                    theta_dir=theta_dir,
+                    phi_dir=phi_dir,
+                    abs_scale=attributes["abs_scale"],
+                    sca_scale=attributes["sca_scale"],
+                    distance=attributes["distance"],
+                )
+            )
         
-        @progress name="datasets" for ds in datasets
-            hits = fid["pmt_hits/$ds"][:, :]
-            attributes = attrs(fid["pmt_hits/$ds"])
-
-            pos = attributes["distance"] * sph_to_cart(attributes["pos_theta"], attributes["pos_phi"])
-            dir = sph_to_cart(attributes["dir_theta"], attributes["dir_phi"])
-            particle = Particle(pos, dir, 0., attributes["energy"], 0, PEMinus)
-
-            if length(hits) == 0
-                continue
-            end
-
-            if size(hits, 2) != 3
-                @show fname, ds
-                continue
-            end
-
-            df = DataFrame(hits, [:time, :pmt_ix, :weight])
-            df[!, :time] .+= randn(length(df.time))*2
-
-            for pmt_ix in 1:16
-
-                pmt_pos = pmt_positions[pmt_ix]
-
-                theta_pos, theta_dir, delta_phi = transform_input_old(pmt_pos, pos, dir)
-
-                sel = df[df.pmt_ix .== pmt_ix, :]
-
-                tshift = NaN
-                gfit_alpha = NaN
-                gfit_theta = NaN
-
-                if (nrow(sel) > 10) && fit_gamma
-                    tshift = minimum(sel[:, :time])
-                    #@show sel.time .- tshift .+ 1E-10
-                    gfit = fit_mle(Gamma, sel.time .- tshift .+ 1E-10, sel.weight)
-                    gfit_alpha = gfit.α
-                    gfit_theta = gfit.θ
-                end
-
-                push!(
-                        params,
-                        (
-                            nhits = sum(sel.weight, init=0),
-                            variance = sum(sel.weight .^2, init=0),
-                            pmt_ix=pmt_ix,
-                            pos=pos,
-                            dir=dir,
-                            tshift=tshift,
-                            gfit_alpha=gfit_alpha,
-                            gfit_theta=gfit_theta,
-                            energy=particle.energy,
-                            theta_pos=theta_pos,
-                            theta_dir=theta_dir,
-                            delta_phi=delta_phi,
-                            abs_scale=attributes["abs_scale"],
-                            sca_scale=attributes["sca_scale"],
-                            distance=attributes["distance"],
-                        )
-                    )
-              
-            end
         end
     end
-    params = DataFrame(params)
+
+    return DataFrame(params)
+end
+
+
+function load_data(files, fit_gamma=false)
+    params = []
+
+    for fname in files
+        df = _read_single_hd5_file(fname, fit_gamma=fit_gamma)
+        push!(params, df)            
+    end
+
+    params = reduce(vcat, params)
     return params
 end
 
@@ -157,6 +166,19 @@ const LogL1Loss = LogLPLoss{1}
 const LogL2Loss = LogLPLoss{2}
 
 
+struct Chi2Loss <: SupervisedLoss end
+
+function (loss::Chi2Loss)(prediction, target)
+    return ((prediction - target)^2 / abs(prediction+eps()))
+end
+
+struct LogChi2Loss <: SupervisedLoss end
+
+function (loss::LogChi2Loss)(prediction, target)
+    return ((log(prediction+1) - log(target+1))^2 / log(prediction+1))
+end
+
+
 function select_loss_func(loss_name)
     if loss_name == "poisson"
         loss_func = PoissonLoss()
@@ -168,6 +190,10 @@ function select_loss_func(loss_name)
         loss_func = L1DistLoss()
     elseif loss_name == "l2"
         loss_func = L2DistLoss()
+    elseif loss_name == "chi2"
+        loss_func = Chi2Loss()
+    elseif loss_name == "logchi2"
+        loss_func = LogChi2Loss()
     else
         error("Unknown loss function $(loss_name)")
     end
@@ -238,226 +264,6 @@ function make_weight_func(full_df)
 
 end
 
-   
-function plot_theta_dir_energy(X, y, func, fixed_vars=nothing, ax=nothing)
-
-    if isnothing(ax)
-        fig = Figure()
-        ax = Axis(fig[1, 1], yscale=log10, xscale=log10, xlabel="Theta Dir", ylabel="Theta Dir")
-    end
-
-    log_ebins = 2:0.5:8
-
-    cmap = cgrad(:viridis)
-    get_color_e(val) = cmap[(val-minimum(log_ebins)) / (maximum(log_ebins) - minimum(log_ebins))]
-    
-    scatter!(ax, X[6, :], y[:], color=get_color_e.(log10.(X[1, :])))
-
-    bin_centers = 10 .^ (0.5 * (log_ebins[1:end-1] + log_ebins[2:end]))
-
-    xs = 0:0.01:π
-    xeval = zeros(size(X, 1), length(xs))
-
-    for (i, val) in fixed_vars
-        xeval[i, :] .= val
-    end
-
-    for ebin in bin_centers
-        xeval[1, :] .= ebin
-        xeval[6, :] .= xs
-        ys = func(xeval)
-        
-        lines!(ax, xs, ys, color=:white, linewidth=5)
-        lines!(ax, xs, ys, color=get_color_e(log10(ebin)), linewidth=3)
-    end
-    ylims!(ax, 1E-3, 1E6)
-
-    return ax
-end
-
-
-function plot_distance_energy(X, y, func, fixed_vars=nothing, ax=nothing)
-
-    if isnothing(ax)
-        fig = Figure()
-        ax = Axis(fig[1, 1], yscale=log10, xscale=log10, xlabel="Distance", ylabel="Number of Hits")
-    end
-
-    log_ebins = 2:0.5:8
-
-    cmap = cgrad(:viridis)
-    get_color_e(val) = cmap[(val-minimum(log_ebins)) / (maximum(log_ebins) - minimum(log_ebins))]
-    
-    scatter!(ax, X[2, :], y[:], color=get_color_e.(log10.(X[1, :])))
-
-    bin_centers = 10 .^ (0.5 * (log_ebins[1:end-1] + log_ebins[2:end]))
-
-    xs = 10 .^ (0:0.01:log10(250))
-    xeval = zeros(size(X, 1), length(xs))
-
-    for (i, val) in fixed_vars
-        xeval[i, :] .= val
-    end
-
-    for ebin in bin_centers
-        xeval[1, :] .= ebin
-        xeval[2, :] .= xs
-        ys = func(xeval)
-        
-        lines!(ax, xs, ys, color=:white, linewidth=5)
-        lines!(ax, xs, ys, color=get_color_e(log10(ebin)), linewidth=3)
-    end
-    ylims!(ax, 1E-3, 1E6)
-
-    return ax
-end
-
-function plot_abs_energy(X, y, func, fixed_vars=nothing, ax=nothing)
-
-    if isnothing(ax)
-        fig = Figure()
-        ax = Axis(fig[1, 1], yscale=log10, xscale=log10, xlabel="Distance", ylabel="Number of Hits")
-    end
-
-    log_ebins = 2:1:8
-
-    cmap = cgrad(:viridis)
-    get_color_e(val) = cmap[(val-minimum(log_ebins)) / (maximum(log_ebins) - minimum(log_ebins))]
-    
-    scatter!(ax, X[3, :], y[:], color=get_color_e.(log10.(X[1, :])))
-
-    bin_centers = 10 .^ (0.5 * (log_ebins[1:end-1] + log_ebins[2:end]))
-
-    xs = 0.8:0.01:1.2
-    xeval = zeros(size(X, 1), length(xs))
-
-    for (i, val) in fixed_vars
-        xeval[i, :] .= val
-    end
-
-    for ebin in bin_centers
-        xeval[3, :] .= xs
-        xeval[1, :] .= ebin
-        ys = func(xeval)
-        
-        lines!(ax, xs, ys, color=:white, linewidth=5)
-        lines!(ax, xs, ys, color=get_color_e(log10(ebin)), linewidth=3)
-    end
-    ylims!(ax, 1E-3, 1E6)
-
-    return ax
-end
-
-
-function plot_energy_distance(X, y, func, fixed_vars=nothing, ax=nothing)
-
-    if isnothing(ax)
-        fig = Figure()
-        ax = Axis(fig[1, 1], yscale=log10, xscale=log10, xlabel="Energy", ylabel="Number of Hits")
-    end
-
-    log_dist_bins = 0:0.2:log10(200)
-
-    cmap = cgrad(:viridis)
-    get_color_d(val) = cmap[(val-minimum(log_dist_bins)) / (maximum(log_dist_bins) - minimum(log_dist_bins))]
-    
-    scatter!(ax, X[1, :], y[:], color=get_color_d.(log10.(X[2, :])))
-
-    bin_centers = 10 .^ (0.5 * (log_dist_bins[1:end-1] + log_dist_bins[2:end]))
-
-    xs = 10 .^ (2:0.1:8)
-    xeval = zeros(size(X, 1), length(xs))
-
-    for (i, val) in fixed_vars
-        xeval[i, :] .= val
-    end
-
-    for dbin in bin_centers
-        xeval[1, :] .= xs
-        xeval[2, :] .= dbin
-        ys = func(xeval)
-        
-        lines!(ax, xs, ys, color=:white, linewidth=5)
-        lines!(ax, xs, ys, color=get_color_d(log10(dbin)), linewidth=3)
-    end
-    ylims!(ax, 1E-3, 1E6)
-
-    return ax
-end
-
-
-function plot_phi_energy(X, y, func, fixed_vars=nothing, ax=nothing)
-
-    if isnothing(ax)
-        fig = Figure()
-        ax = Axis(fig[1, 1], yscale=log10, xscale=log10, xlabel="Delta Phi", ylabel="Number of Hits")
-    end
-
-    log_ebins = 2:0.5:8
-
-    cmap = cgrad(:viridis)
-    get_color_e(val) = cmap[(val-minimum(log_ebins)) / (maximum(log_ebins) - minimum(log_ebins))]
-    
-    scatter!(ax, X[5, :], y[:], color=get_color_e.(log10.(X[1, :])))
-
-    bin_centers = 10 .^ (0.5 * (log_ebins[1:end-1] + log_ebins[2:end]))
-
-    xs = -2*pi:0.1:2*pi
-    xeval = zeros(size(X, 1), length(xs))
-
-    for (i, val) in fixed_vars
-        xeval[i, :] .= val
-    end
-
-    for ebin in bin_centers
-        xeval[5, :] .= xs
-        xeval[1, :] .= ebin
-        ys = func(xeval)
-        
-        lines!(ax, xs, ys, color=:white, linewidth=5)
-        lines!(ax, xs, ys, color=get_color_e(log10(ebin)), linewidth=3)
-    end
-    ylims!(ax, 1E-3, 1E6)
-
-    return ax
-end
-
-function plot_delta_pos_delta_dir(X, y, func, fixed_vars=nothing, ax=nothing)
-
-    if isnothing(ax)
-        fig = Figure()
-        ax = Axis(fig[1, 1], yscale=log10, xscale=log10, xlabel="Delta Phi", ylabel="Number of Hits")
-    end
-
-    log_ebins = 2:0.5:8
-
-    cmap = cgrad(:viridis)
-    get_color_e(val) = cmap[(val-minimum(log_ebins)) / (maximum(log_ebins) - minimum(log_ebins))]
-    
-    scatter!(ax, X[5, :], y[:], color=get_color_e.(log10.(X[1, :])))
-
-    bin_centers = 10 .^ (0.5 * (log_ebins[1:end-1] + log_ebins[2:end]))
-
-    xs = -2*pi:0.1:2*pi
-    xeval = zeros(size(X, 1), length(xs))
-
-    for (i, val) in fixed_vars
-        xeval[i, :] .= val
-    end
-
-    for ebin in bin_centers
-        xeval[5, :] .= xs
-        xeval[1, :] .= ebin
-        ys = func(xeval)
-        
-        lines!(ax, xs, ys, color=:white, linewidth=5)
-        lines!(ax, xs, ys, color=get_color_e(log10(ebin)), linewidth=3)
-    end
-    ylims!(ax, 1E-3, 1E6)
-
-    return ax
-end
-
 
 function plot_variable_slice(X, y, func, fixed_vars, plot_variable, slice_variable, ax=nothing)
     if isnothing(ax)
@@ -488,7 +294,7 @@ function plot_variable_slice(X, y, func, fixed_vars, plot_variable, slice_variab
         
         xeval[slice_var_ix, :] .= itf(sp)
         ys = func(xeval)
-        
+
         lines!(ax, plot_var_points, ys, color=:white, linewidth=5)
         lines!(ax, plot_var_points, ys, color=get_color_slice(sp), linewidth=3)
     end
@@ -576,18 +382,20 @@ function prepare_data(cfile)
     y = test_dataset.nhits
     w = test_dataset.variance
 
-    # limit to 100k
+    # limit to 1E6 samples
 
-    if length(y) > 100000
-        sel = 1:100000
+    if length(y) > 1000000
+        sel = 1:1000000
         X = X[:, sel]
         y = y[sel]
         w = w[sel]
     end
 
-    ys = y[y .> 0]
-    ws = w[y .> 0]
-    Xs = X[:, y .> 0]
+    sel = y .> 1E-3
+
+    ys = y[sel]
+    ws = w[sel]
+    Xs = X[:, sel]
     weights = ys ./ sqrt.(ws)
 
     return Xs, ys, weights
@@ -623,7 +431,7 @@ function read_results(result_dir, verbose=false)
         
         eq_sym = node_to_symbolic(member.tree, sr_opt, variable_names=config["input"]["fit_variables"])
 
-        eq_latex = latexify(string(simplify(eq_sym)))
+        eq_latex = latexify(string(SymbolicUtils.simplify(eq_sym)))
 
         push!(sr_summary, (val_loss=sum(loss_func, yeval, ys, weights), train_loss=loss, complexity=complexity, equation=equation, eq_str=eq_string, eq_sym=eq_sym, eq_latex=eq_latex, sucess=did_succeed))
     end

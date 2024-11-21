@@ -1,0 +1,8 @@
+[input]
+filename = "/home/wecapstor3/capn/capn100h/symbolic_regression/sr_dataset_full.jld2"
+variables = ["energy", "distance", "abs_scale", "sca_scale", "theta_pos", "theta_dir", "phi_dir"]
+fit_variables = ["energy", "distance", "abs_scale", "sca_scale", "theta_pos", "theta_dir", "phi_dir"]
+train_size = 60000
+units = ["Constants.GeV", "m", "", "", "", "", ""]
+
+
